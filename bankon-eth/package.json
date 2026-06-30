@@ -1,0 +1,9 @@
+{
+  "name": "bankon-eth",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "BANKON.ETH WaaS — non-custodial EVM Wallet-as-a-Service (twin of bankon-waas/bankon-algo). EVM-generic via eth_chainId. Keys client-side; node tracks watch-only addresses only.",
+  "scripts": { "start": "node server.mjs" },
+  "dependencies": { "express": "^4.19.2" }
+}

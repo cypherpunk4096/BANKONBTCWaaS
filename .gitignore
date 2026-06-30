@@ -1,0 +1,27 @@
+# ── dependencies & build artifacts ───────────────────────────────
+node_modules/
+**/target/
+*.tmp
+__pycache__/
+*.pyc
+
+# ── logs & runtime state (generated) ──────────────────────────────
+*.log
+.monitor.state
+oracle-logs/
+bankon-console/fast-nodes.json
+bankon-console/favourite-nodes.json
+
+# ── per-deployment wallet registry (watch-only metadata, still local) ──
+**/registry.json
+
+# ── local operator config (may hold secrets) — see bankon.env.example ──
+bankon.env
+
+# ── large GeoIP databases (70 MB, MaxMind GeoLite2 EULA — download ────
+#    separately; geoip/LICENSE is kept for attribution) ──────────────
+geoip/*.mmdb
+
+# ── OS / editor cruft ─────────────────────────────────────────────
+.DS_Store
+*.swp

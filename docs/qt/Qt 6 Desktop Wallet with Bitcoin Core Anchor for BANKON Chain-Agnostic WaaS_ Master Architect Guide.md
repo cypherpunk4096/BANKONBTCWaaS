@@ -1,0 +1,117 @@
+# Master Architect Guide: A Qt 6 Desktop Wallet with a Bitcoin Core Canonical Anchor for the BANKON Chain-Agnostic WaaS
+
+> **Status — aspirational target architecture.** This guide describes the intended
+> end-state. The *current* build is the PySide6 **QtWidgets** diagnostics + non-custodial
+> **WaaS** app (`bankon-qt/`, `bankon-waas/`, `bankon-console/`). The Bitcoin foundation
+> from this guide is being implemented incrementally — **done so far:** ZMQ push
+> (`bankon-qt/services/zmq_service.py`), the **OP_RETURN canonical anchor**
+> (`bankon-waas/anchor.mjs`, regtest-proven), and a **ChainAdapter** layer
+> (`bankon-qt/adapters/`). EVM/Foundry, Algorand/x402, DAIO and SATPAY remain future work.
+>
+> **Reconciliations vs the text below:**
+> 1. **Licensing.** This guide assumes *Apache-2.0*; BANKON actually ships **dual-licensed —
+>    GPLv3 for client-facing crypto, MIT for infrastructure** (see `POLICY.md`/`README.md`).
+>    The Qt **LGPLv3 dynamic-link** analysis and the "avoid the GPL-only Qt modules" rule are
+>    unchanged; read "Apache-2.0 app" as "BANKON's MIT-licensed infrastructure."
+> 2. **Qt UI.** The QML/Qt Quick recommendation assumes a GPU. This node host is an **Intel
+>    HD 3000 running Qt under software rendering**, where Qt Quick's scene graph regresses, so
+>    the shipping UI is **QtWidgets** with the guide's MVVM **service-layer** discipline. QML
+>    remains the target for a GPU-capable deployment.
+> 3. **Node version:** the deployed node is **Bitcoin Core v31** (the v30 history below is
+>    retained as context; v31 includes it).
+
+## TL;DR
+- Build the application as a thin, modern Qt 6 / Qt Quick (QML) front end that treats a self-hosted `bitcoind` node as the canonical "truth" backend over JSON-RPC and ZeroMQ — exactly the architecture Bitcoin Core itself moved toward when it split its GUI into the `bitcoin-core/gui` staging repository and began an experimental QML rewrite (`bitcoin-core/gui-qml`).
+- Make the wallet chain-agnostic via a strict adapter layer: a Bitcoin Core adapter (canonical anchor + OP_RETURN timestamping), EVM adapters whose settlement contracts are tested with Foundry and deployed mainnet-only with no admin keys, and an Algorand adapter that performs x402 (`x402-avm`) pay-per-use settlement in USDC (ASA 31566704). A `chainmapping` registry (the user's `allchain.html`) is the single source of truth for chain metadata.
+- License under Apache-2.0, keep Qt as dynamically-linked LGPLv3, avoid the GPL-only Qt modules (Charts, Data Visualization), store secrets in the OS keychain via QtKeychain, keep all RPC/ZMQ work off the UI thread, and adopt a flat snake_case repository with a phased roadmap that ships the Bitcoin anchor first.
+
+## Key Findings
+
+**Bitcoin Core is already structured the way this project needs.** `bitcoind` is a "border router" that maintains the blockchain database, makes consensus decisions, and exposes a queryable JSON-RPC interface plus a read-only REST interface and a push-based ZeroMQ notification interface. The GUI (`bitcoin-qt`) is a separate concern connected to the node through interface abstractions, and the project deliberately split GUI development into `bitcoin-core/gui` and started a clean-slate QML front end in `bitcoin-core/gui-qml`. Per the `gui-qml` README, "All development must adhere to the current upstream Qt Version… Currently, the required version is Qt 6.2," and the project's own rationale is blunt: "The current Bitcoin Core GUI has gathered enough technical debt and hacked on features; it is time to begin anew." This validates the core thesis: a high-quality, independent Qt 6 GUI talking to an unmodified node is a sanctioned pattern, not a hack.
+
+**The truth model is RPC + ZMQ.** The GUI should never hold canonical state; it should query `getblockchaininfo`, `getbalance`, `listunspent`, `getrawtransaction`, and broadcast with `sendrawtransaction`, while subscribing to ZMQ topics (`hashblock`, `rawtx`, `rawblock`, `sequence`) for real-time updates instead of polling. ZMQ is unauthenticated and write-only from the node's perspective, so it must be firewalled or SSH-tunneled and its data must be validated against RPC.
+
+**Qt 6 / Qt Quick (QML) is the right choice for a "better UI than bitcoin-qt."** QML provides a GPU-accelerated scene graph, declarative property bindings, animations, dark mode, and responsive layouts that Qt Widgets cannot match without heavy manual painting. The discipline is to keep business logic in C++ (or Python via PySide6) and use QML only for presentation, following an MVVM separation.
+
+**x402 on Algorand is real and production-aligned.** The Algorand Foundation and GoPlausible built `x402-avm`, with Algorand support merged into Coinbase's upstream x402 repository via PR #361, implementing the `exact` scheme with atomic transaction groups, fee abstraction, and USDC settlement. Python (`pip install x402-avm`) and TypeScript packages exist.
+
+**"Parsec" / `parsec-wallet` is a private repository.** Per the user, `github.com/parsec-wallet` is private, so it is a proprietary internal component (a Parsec wallet/payment layer with a WebSocket interface) rather than a public project to be researched. This guide treats it as a first-class adapter behind the wallet's interface and documents only the public integration surface around it: the official AlgoKit Subscriber for real-time Algorand events (poll-based; you add the WebSocket transport), the `x402-avm` settlement path, and USDC (ASA 31566704). The user supplies the Parsec interface contract.
+
+## Details
+
+### 1. Bitcoin Core architecture and the canonical anchor
+
+Bitcoin Core builds five executables from one codebase: `bitcoind` (the full-node daemon), `bitcoin-cli` (a thin JSON-RPC client over HTTP), `bitcoin-tx`, `bitcoin-wallet`, and `bitcoin-qt` (the GUI that bundles the node). Since v0.21 wallets are not created by default, reflecting the separation of node and wallet concerns. The daemon exposes three external interfaces: an authenticated JSON-RPC server (the primary control surface), a read-only unauthenticated REST interface (enabled with `-rest`), and a ZeroMQ notification interface for push events. Internally these connect through a validation interface (`CValidationInterface`) — the same mechanism `CZMQNotificationInterface` registers against.
+
+For the diagnostic anchor role, the wallet should run its own `bitcoind` with `txindex=1` (so any transaction is retrievable by hash), `server=1`, and ZMQ publishers configured, e.g. `zmqpubhashblock=tcp://127.0.0.1:28332` and `zmqpubrawtx=tcp://127.0.0.1:28333`. Note that ZMQ hashes are delivered in little-endian byte order, the reverse of how the RPC interface and block explorers display them — convert before correlating. Authentication should use the cookie file (`.cookie` in the data directory) for local operation, or the `rpcauth` salted-hash mechanism (generated by `share/rpcauth/rpcauth.py`) for a separate GUI process — never the deprecated plaintext `rpcuser`/`rpcpassword`, which logs a deprecation warning and exposes the password in cleartext. RPC must stay bound to localhost (`rpcbind=127.0.0.1`, `rpcallowip=127.0.0.1`) because the password is transmitted unencrypted; remote access should be tunneled over SSH.
+
+The "diagnostic anchor" / canonical verification layer is implemented with OP_RETURN. OP_RETURN's standardized data output was introduced in Bitcoin Core v0.9.0 (March 2014), initially limited to 40 bytes, then raised to 80/83 bytes in v0.11. It attaches data to a provably-unspendable, prunable output, so a SHA-256 digest (32 bytes) fits comfortably. Bitcoin Core v30.0 was released October 12, 2025, raising the default `-datacarriersize` from 83 to 100,000 bytes and allowing multiple OP_RETURN outputs; per CoinDesk the change came via PR #32406 authored by Greg Sanders and merged June 2025 by maintainer Gloria Zhao, who said the aim was to "correct a mismatch between the harmfulness and standardness of data storage techniques." Anchoring a hash of BANKON/DAIO state, or of a batch of cross-chain events, gives a Bitcoin-timestamped proof-of-existence that the wallet can later verify by retrieving the transaction and re-hashing the source data. This is the same mechanism used historically by OpenTimestamps, Stampery, and Factom.
+
+### 2. Modern Qt 6 desktop wallet best practices
+
+Use Qt 6 with Qt Quick / QML for the view layer and C++ for logic, mirroring the official `gui-qml` effort. Architect with MVVM: QML views bind to view-model objects (QObject subclasses exposing `Q_PROPERTY` and signals, or `QAbstractListModel` subclasses for transaction lists), and the view-models call into a service layer that owns RPC/ZMQ clients.
+
+The cardinal threading rule: Qt GUI operations are not thread-safe and must occur only on the main thread, and you must never block the main thread. As KDAB's "Eight Rules of Multithreaded Qt" puts it, no secondary thread may touch "widgets, QtQuick, QPixmap, or anything that touches the window manager." All RPC calls and ZMQ socket reads belong on worker threads (`QThread` + worker objects, or `QtConcurrent`), marshaling results back to the UI via queued signal/slot connections. Bitcoin Core's own GUI uses an `InitExecutor` running initialization on a separate thread for exactly this reason. If you adopt Qt Quick, enable the threaded render loop (`QSG_RENDER_LOOP=threaded`) so rendering is offloaded from the GUI thread, and keep performance-critical logic in C++ rather than QML.
+
+Security practices: store secrets (RPC credentials, seed material if the wallet ever custodies keys) using QtKeychain, which transparently uses the macOS Keychain, GNOME Keyring/KWallet/libsecret on Linux, and the Windows Credential Store; it "will not store any data unencrypted unless explicitly requested (`setInsecureFallback(true)`)" and is distributed under the permissive Modified BSD license. Prefer hardware wallets / external signers for spending keys; never embed private keys in environment variables or client code. Validate all addresses and amounts before constructing transactions.
+
+To exceed `bitcoin-qt`'s UI: real-time balance and confirmation updates driven by ZMQ rather than polling; a clean transaction-history view backed by a `QAbstractListModel`; a diagnostic dashboard with charts; dark mode and responsive layouts via Qt Quick Controls styling; and lazy-loaded views.
+
+**Licensing.** Qt is dual-licensed: commercial or open-source. The primary open-source license is LGPLv3, which, per The Qt Company, "allows for keeping your application source code closed as long as all the requirements of LGPLv3 are met" — and, more relevant here, lets an Apache-2.0 application link Qt provided Qt is dynamically linked and users can relink against a modified Qt, which is straightforward on Linux. Crucially, some modules are GPL-or-commercial only: Qt Charts, Qt Data Visualization, Qt Virtual Keyboard, and the Qt Wayland Compositor. Using Qt Charts in an Apache-2.0/LGPL project would force GPL on the whole application, so use a permissively-licensed charting approach (draw with QML Canvas, or a BSD/MIT charting component) instead. Note also the LGPL static-linking caveat: if a target platform or app store requires static linking, you may be pushed toward a commercial license. Package for Linux in a Podman-friendly OCI image; Apache-2.0 is fully compatible with shipping LGPL Qt dynamically.
+
+### 3. Chain-agnostic WaaS architecture
+
+Define one `ChainAdapter` interface exposing a common vocabulary — `get_balance`, `get_height`, `build_tx`, `sign_tx`, `broadcast_tx`, `track_finality`, and `health_check` — and implement it per backend. The UI and business logic stay chain-agnostic; adapters absorb each chain's quirks (UTXO vs. account model, finality depth, gas vs. fee-per-byte, ASA opt-in). This is the standard chain-abstraction adapter pattern: as one multi-chain integration guide describes it, "for non-EVM (Solana, Cosmos), provide adapters that expose a common interface: getBalance, estimateGas/fees, sendTx, trackFinality. This lets UI and business logic stay chain-agnostic while adapters handle quirks."
+
+The `chainmapping` registry (the user's `allchain.html`) is the declarative source of truth: each entry carries a CAIP-2 network id (`bip122:...` for Bitcoin, `eip155:1` etc. for EVM, `algorand:...` for Algorand), the settlement asset, RPC endpoints, finality depth, and the adapter class to instantiate. x402 already uses CAIP-2 network identifiers, so the same registry feeds both wallet routing and x402 payment requirements.
+
+WaaS diagnostics: each adapter implements a uniform `health_check` returning sync status, peer/connection count, latest height, and latency. The dashboard aggregates these, and Bitcoin Core is the canonical anchor — when cross-chain state needs an immutable reference, its block height and an OP_RETURN anchor provide it.
+
+### 4. x402 + Algorand + settlement asset
+
+x402 revives HTTP 402 Payment Required as a machine-native payment handshake: the client requests a resource, the server returns 402 with payment requirements (scheme, CAIP-2 network, asset, amount, recipient, expiry), the client signs a payment payload and retries with it in a header, and a facilitator verifies/settles on-chain. The `exact` scheme transfers a fixed amount; `upto` authorizes a maximum for metered use; an EVM `batch-settlement` scheme uses escrow and off-chain vouchers to redeem many small charges in batches.
+
+On Algorand, `x402-avm` (Algorand Foundation + GoPlausible) implements `exact` using atomic transaction groups, with optional fee abstraction where a facilitator co-signs a fee-covering transaction so the user needs no ALGO. GoPlausible's Algorand x402 support was merged via Coinbase x402 PR #361; the Algorand Foundation announced full operational status on Feb 23, 2026 with GoPlausible as the designated facilitator. Settlement is in USDC ASA id 31566704 (unit name "USDC", issued by Circle/Centre, created Sept 4, 2020 at creation round 8874561, 6 decimals, per Pera Algorand Explorer); the testnet ASA id is 10458941.
+
+For the desktop wallet, integrate the Python client (`pip install x402-avm`, imports under `x402.*`) on a worker thread. Per GoPlausible's x402-avm httpx docs, the `x402AsyncTransport` intercepts 402s and "the registered ExactAvmScheme creates an atomic transaction group (ASA transfer) and signs it via AlgorandSigner," defaulting to the facilitator `https://x402.org/facilitator`; V2 uses CAIP-2 network ids (Algorand mainnet `algorand:SGO1GKSzyE7IEPItTxCByw9x8FmnrCDexi9/cOUJOiI=`). This enables pay-per-use access to metered BANKON services. Use the synchronous `requests` integration with `x402ClientSync` if your worker is synchronous, and the `httpx` async transport with `x402Client` otherwise.
+
+**Parsec.** The user's reference to a "Parsec" Algorand WebSocket wallet could not be verified. The name collides with a remote-desktop product, Parsec Finance (an EVM DeFi/NFT analytics terminal), MIT's PArSEC CBDC research platform (a Federal Reserve Bank of Boston/MIT DCI collaboration), a CNCF "Platform AbstRaction for SECurity" project, a CryptoNote coin (`parsecnode/parsec`), and a VR game on Algorand at `prsc.app` (with an associated PRSC ASA). GoPlausible — the dominant Algorand x402 builder — has no "Parsec" repository anywhere in its org. Notably, Algorand's core `algod` has no native WebSocket subscription; real-time consumption is poll-based. For real-time Algorand payment data the user should use the official AlgoKit Subscriber, described in the Algorand docs as a library that "gives developers real-time access to Algorand on-chain events" and that "will work with whatever… queuing/messaging (e.g. queues, topics, buses, web hooks, web sockets)… you want to use" — i.e. you add the WebSocket layer — or a third-party true-WebSocket feed such as Bitquery's GraphQL subscriptions at `wss://streaming.bitquery.io/graphql`. The user should fill in their specific Parsec implementation here if it is a proprietary internal component.
+
+### 5. EVM settlement with Foundry
+
+Use Foundry as the canonical Solidity toolchain: `forge test` for unit, fuzz, and invariant tests; fork tests against mainnet state (`vm.createFork`) to validate against real deployed contracts; `forge script` for deployment. Adopt "Foundry for testing, mainnet-only for deployment": exercise everything locally and against a mainnet fork, then deploy straight to mainnet, consistent with the cypherpunk standard of no testnet theater and no admin surface. Foundry's own best-practices guidance reinforces the key disciplines: cover access control and boundary conditions in tests, gate deployments on large fuzz suites in CI, and "store keys encrypted, not as plaintext environment variables" — using `cast wallet import` for an encrypted keystore, or `forge script --ledger` for a hardware wallet on mainnet deployments.
+
+Sovereignty constraints for settlement contracts: Apache-2.0, no admin keys after deploy (no retained `Ownable`, no pausable backdoors), and no upgradeable proxies — the deployed bytecode is final and immutable. The desktop wallet's EVM adapter holds the deployed contract addresses (from the `chainmapping` registry / Foundry's `broadcast/run-latest.json` artifacts) and interacts read/write through its EVM RPC client.
+
+### 6. BANKON / DAIO integration
+
+These are proprietary; the patterns are general. Treat BANKON as a sovereign identity and payment layer that the wallet consumes as a service: the wallet authenticates the user's BANKON identity and uses it to authorize x402 payments and DAIO governance actions. The DAIO (a DAO variant) governance surface should be a chain adapter like any other — proposals and votes are transactions, and the wallet renders them through the same MVVM view-model path. A "SATPAY bridge" connecting Bitcoin settlement to other chains should be modeled as an explicit, auditable adapter: a Bitcoin-side receipt (a confirmed transaction, optionally OP_RETURN-anchored) triggers a corresponding action on the destination chain, with the Bitcoin block height as the canonical ordering reference. The user fills in the specific BANKON/DAIO endpoints and contract addresses; the architecture keeps them behind the same adapter and registry abstractions as every other chain.
+
+### 7. Overall master architecture
+
+The synthesized stack is: **Qt 6 / QML GUI (MVVM)** → **service layer (off-thread RPC/ZMQ/HTTP clients)** → **ChainAdapter registry driven by `allchain.html` chainmapping** → {**Bitcoin Core adapter** (canonical anchor, OP_RETURN, ZMQ), **EVM adapters** (Foundry-tested, mainnet-only, no admin keys), **Algorand adapter** (x402-avm, USDC ASA 31566704)} → **BANKON identity/payment layer** → **DAIO governance**. Bitcoin Core is the canonical truth and diagnostic anchor; every other chain is a peer adapter; the GUI never holds canonical state.
+
+Recommended project structure is flat and snake_case, e.g. `bankon_wallet/` with `qml/`, `core/` (C++/PySide view-models and services), `adapters/` (`bitcoin_core.py`, `evm.py`, `algorand_x402.py`), `chainmapping/` (parser for `allchain.html`), `contracts/` (Foundry project: `src/`, `test/`, `script/`, `foundry.toml`), `diagnostics/`, and `packaging/` (Podman/OCI). Build tooling: CMake with `qt_add_qml_module` for the Qt side (keeping QML files beside the `CMakeLists.txt` and compiling them ahead-of-time, as Qt's QML best-practices guidance recommends), Foundry for contracts, and a single `make`/`just` orchestrator.
+
+## Recommendations
+
+**Phase 0 — Anchor first.** Stand up a self-hosted `bitcoind` (`txindex=1`, ZMQ enabled, cookie auth, localhost-bound) and a minimal Qt 6/QML shell that displays `getblockchaininfo` and live block updates from `hashblock`. This proves the canonical-truth backbone and the off-thread RPC/ZMQ plumbing. Benchmark: the UI updates within one block of a regtest-generated block without ever blocking.
+
+**Phase 1 — Bitcoin wallet + diagnostic anchor.** Add balance/UTXO views (`listunspent`), a `QAbstractListModel` transaction history, send/receive with `sendrawtransaction`, and an OP_RETURN anchoring/verification function. Benchmark: anchor a hash and independently verify it via `getrawtransaction`.
+
+**Phase 2 — Chain-agnostic layer.** Implement the `ChainAdapter` interface, the `allchain.html` chainmapping parser, and the diagnostic dashboard with `health_check` across backends.
+
+**Phase 3 — EVM settlement.** Build the Foundry contract project (no admin keys, no proxies), achieve high fuzz/invariant coverage and mainnet-fork tests, deploy mainnet-only via hardware wallet, and wire the EVM adapter.
+
+**Phase 4 — Algorand x402.** Integrate `x402-avm` for pay-per-use USDC settlement and AlgoKit Subscriber for real-time Algorand events.
+
+**Phase 5 — BANKON/DAIO + SATPAY.** Wire the sovereign identity/payment layer and DAO governance as adapters, and the SATPAY bridge as an auditable Bitcoin→chain adapter.
+
+**Decision thresholds.** If you need static linking (some platforms/app stores require it) or any GPL-only Qt module, re-evaluate toward a commercial Qt license. If ZMQ ever crosses a host boundary, require an SSH tunnel or mTLS. If a settlement contract needs post-deploy changes, that is a signal to redeploy a new immutable contract and migrate, not to add an upgrade proxy. If real-time Algorand latency under the AlgoKit Subscriber's poll model is inadequate, escalate to a true-WebSocket third-party feed before building bespoke streaming infrastructure.
+
+## Caveats
+- Several cited explainers (QuickNode, MoltPe, Eco, vendor blogs) are secondary; the primary specs are the x402 repositories (Coinbase / x402-foundation), GoPlausible's `x402-avm` documentation, Bitcoin Core's `doc/zmq.md` and developer onboarding docs, The Qt Company's licensing pages, and Foundry's docs. The x402 protocol has versioned headers (`PAYMENT-REQUIRED`/`PAYMENT-SIGNATURE`/`PAYMENT-RESPONSE` in V2 vs. earlier `X-PAYMENT` forms) — pin to a specific x402 version in code.
+- "Parsec" in the Algorand/x402 context is unverified; do not assume a public payment-streaming WebSocket project of that name exists. Treat any internal "Parsec" component as proprietary and document its interface yourself.
+- BANKON, DAIO, SATPAY, and the `allchain.html` chainmapping are proprietary to the user and not publicly documented; this guide supplies the architectural scaffolding, and the user must fill in concrete endpoints, contract addresses, and identity-layer semantics. (Note: prior Drive material referencing "bankon.wallet" with Alchemy Account Kit, RainbowKit, and an Unstoppable Domains subdomain minter appears to describe an earlier web/React iteration, distinct from the Qt desktop architecture specified here.)
+- Bitcoin Core v30's OP_RETURN policy change is recent and was contentious in the community; relay/standardness behavior may vary by node version and miner policy, so anchoring tooling should not assume universal relay of large OP_RETURN payloads. A 32-byte SHA-256 anchor remains conservative and broadly relayed.
+- The Algorand x402 packages are evolving rapidly (e.g. `algosdk` was removed as a direct dependency in favor of `@algorandfoundation/algokit-utils` in the v2.6+ TypeScript line); pin versions and re-validate signer code against current docs before production use.

@@ -1,0 +1,13 @@
+{
+  "name": "bankon-algo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "BANKON ALGO WaaS — non-custodial Algorand Wallet-as-a-Service. Twin of bankon-waas (Bitcoin). Keys are minted client-side; the node tracks watch-only addresses only.",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

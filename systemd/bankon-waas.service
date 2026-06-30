@@ -1,0 +1,17 @@
+[Unit]
+Description=BANKON WaaS API (non-custodial Wallet-as-a-Service)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/bankon-tools/bankon-waas
+ExecStart=/usr/bin/env node server.mjs
+Environment=BANKON_PORT=8088
+# Set a token to require auth in production:
+# Environment=BANKON_API_TOKEN=change-me
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

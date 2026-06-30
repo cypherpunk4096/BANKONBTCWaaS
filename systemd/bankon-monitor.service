@@ -1,0 +1,6 @@
+[Unit]
+Description=BANKON health watchdog (one-shot, driven by bankon-monitor.timer)
+
+[Service]
+Type=oneshot
+ExecStart=%h/bankon-tools/bankon-monitor.sh

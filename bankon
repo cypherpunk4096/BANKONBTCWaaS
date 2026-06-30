@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+#
+# bankon — effortless modular extension for a running Bitcoin Core.
+#
+# BANKON attaches to an already-running Bitcoin Core node and brings up the
+# WaaS API + diagnostics Console with one command. It can also one-click
+# install Bitcoin Core itself if it isn't present.
+#
+#   bankon up            detect running Core → start WaaS + Console (the common path)
+#   bankon status        node + module status
+#   bankon stop          stop BANKON services (leaves the node running)
+#   bankon doctor        environment checks
+#   bankon install-core  one-click download+verify+install Bitcoin Core v31
+#   bankon qt            launch the Qt diagnostics UI
+#   bankon optimize      auto-tune the node conf (dbcache/par/rpc) to this hardware  [full|pruned]
+#   bankon algo          BANKON ALGO WaaS (Algorand twin) on :4444  [up|stop|status]
+#   bankon eth           BANKON.ETH WaaS (EVM twin) on :4448  [up|stop|status]
+#   bankon permaweb      bridge pgvectorscale → Arweave permaweb  [run|verify|watch]
+#
+set -uo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BTC_VER="31.0"
+BTC_DIR="$HOME/bitcoin-$BTC_VER"
+export PATH="$BTC_DIR/bin:$PATH"
+# Operator config (rage.pythai.net handoff, rageRPC policy, ports). Auto-exported so the
+# Console/WaaS node children inherit RAGE_TOKEN etc.
+[ -f "$HERE/bankon.env" ] && { set -a; . "$HERE/bankon.env"; set +a; }
+WAAS_DIR="$HERE/bankon-waas"; CONSOLE_DIR="$HERE/bankon-console"
+WAAS_PORT=8088; CONSOLE_PORT="${BANKON_CONSOLE_PORT:-8090}"
+c(){ printf '\033[%sm%s\033[0m' "$1" "$2"; }
+ok(){ echo "$(c '1;32' '✓') $*"; }; warn(){ echo "$(c '1;33' '!') $*"; }; err(){ echo "$(c '1;31' '✗') $*"; }
+
+node_running(){ bitcoin-cli getblockcount >/dev/null 2>&1 || \
+  curl -s --max-time 5 --user "$(cat "$HOME/.bitcoin/.cookie" 2>/dev/null)" \
+    --data-binary '{"jsonrpc":"1.0","method":"uptime","params":[]}' http://127.0.0.1:8332/ 2>/dev/null | grep -q result; }
+svc_up(){ curl -s -o /dev/null --max-time 3 "http://127.0.0.1:$1/"; }
+
+start_svc(){ # name dir port
+  local name="$1" dir="$2" port="$3"
+  if svc_up "$port"; then ok "$name already up on :$port"; return; fi
+  ( cd "$dir" && [ -d node_modules ] || npm install --no-audit --no-fund >/dev/null 2>&1 )
+  ( cd "$dir" && nohup node server.mjs >"$HOME/bankon-tools/.$name.log" 2>&1 & )
+  ok "$name starting on :$port  (log: ~/bankon-tools/.$name.log)"
+}
+
+cmd="${1:-up}"
+case "$cmd" in
+  up)
+    echo "$(c '1;36' 'BANKON') — modular extension for Bitcoin Core"
+    if node_running; then ok "Bitcoin Core detected on RPC :8332"
+    else warn "Bitcoin Core not reachable on :8332."; echo "   • start it:  bitcoind   (or)  bankon install-core"; fi
+    # auto-tune the node conf to this hardware (writes conf only; applies on the node's next restart)
+    "$HERE/bankon-nodes.sh" optimize full >/dev/null 2>&1 \
+      && ok "node conf optimized for $(nproc) cores / $(free -m 2>/dev/null|awk 'NR==2{print $2}')MB (dbcache·par·rpc — effective next node restart)"
+    start_svc waas    "$WAAS_DIR"    "$WAAS_PORT"
+    start_svc console "$CONSOLE_DIR" "$CONSOLE_PORT"
+    echo; ok "WaaS (create wallets): $(c '4;36' http://127.0.0.1:$WAAS_PORT)"
+    ok "Console (diagnostics):  $(c '4;36' http://127.0.0.1:$CONSOLE_PORT)"
+    ;;
+  stop)
+    pkill -f "bankon-waas/server.mjs" 2>/dev/null && ok "WaaS stopped" || warn "WaaS not running"
+    pkill -f "bankon-console/server.mjs" 2>/dev/null && ok "Console stopped" || warn "Console not running"
+    pkill -f "bankon-algo/server.mjs" 2>/dev/null && ok "ALGO WaaS stopped" || warn "ALGO WaaS not running"
+    pkill -f "bankon-eth/server.mjs" 2>/dev/null && ok "ETH WaaS stopped" || warn "ETH WaaS not running"
+    ;;
+  status)
+    if node_running; then
+      info="$(bitcoin-cli getblockchaininfo 2>/dev/null)"
+      b=$(echo "$info"|grep -oE '"blocks": *[0-9]+'|grep -oE '[0-9]+')
+      p=$(echo "$info"|grep -oE '"verificationprogress": *[0-9.]+'|grep -oE '[0-9.]+')
+      conns=$(bitcoin-cli getconnectioncount 2>/dev/null)
+      ok "node: block $b  $(awk -v v="${p:-0}" 'BEGIN{printf "%.2f", v*100}')%  peers ${conns:-?}"
+    else err "node: not reachable on :8332"; fi
+    svc_up "$WAAS_PORT" && ok "WaaS:    up on :$WAAS_PORT" || warn "WaaS:    down"
+    svc_up "$CONSOLE_PORT" && ok "Console: up on :$CONSOLE_PORT" || warn "Console: down"
+    svc_up "${BANKON_ALGO_PORT:-4444}" && ok "ALGO:    up on :${BANKON_ALGO_PORT:-4444}" || warn "ALGO:    down (bankon algo)"
+    svc_up "${BANKON_ETH_PORT:-4448}" && ok "ETH:     up on :${BANKON_ETH_PORT:-4448}" || warn "ETH:     down (bankon eth)"
+    ;;
+  doctor)
+    command -v bitcoind >/dev/null && ok "bitcoind: $(bitcoind --version 2>/dev/null|head -1)" || err "bitcoind not on PATH ($BTC_DIR/bin)"
+    command -v node >/dev/null && ok "node: $(node -v)" || err "node.js missing (needed for WaaS/Console)"
+    command -v npm >/dev/null && ok "npm: $(npm -v)" || err "npm missing"
+    node_running && ok "RPC reachable on :8332" || warn "RPC not reachable — start Bitcoin Core"
+    [ -f "$HOME/.bitcoin/.cookie" ] && ok "cookie auth present" || warn "no ~/.bitcoin/.cookie"
+    ;;
+  install-core)
+    if command -v bitcoind >/dev/null && bitcoind --version 2>/dev/null | grep -q "$BTC_VER"; then
+      ok "Bitcoin Core v$BTC_VER already installed at $BTC_DIR"; exit 0; fi
+    set -e
+    base="https://bitcoincore.org/bin/bitcoin-core-$BTC_VER"
+    tarball="bitcoin-$BTC_VER-x86_64-linux-gnu.tar.gz"
+    tmp="$(mktemp -d)"; echo "Downloading Bitcoin Core v$BTC_VER…"
+    curl -fL# "$base/$tarball" -o "$tmp/$tarball"
+    curl -fsL "$base/SHA256SUMS" -o "$tmp/SHA256SUMS"
+    echo "Verifying SHA256…"
+    ( cd "$tmp" && grep "$tarball" SHA256SUMS | sha256sum -c - ) || { err "checksum FAILED — aborting"; exit 1; }
+    ok "checksum verified"
+    tar -xzf "$tmp/$tarball" -C "$HOME"
+    ok "installed to $BTC_DIR"
+    if [ ! -f "$HOME/.bitcoin/bitcoin.conf" ]; then
+      mkdir -p "$HOME/.bitcoin"
+      cat > "$HOME/.bitcoin/bitcoin.conf" <<EOF
+server=1
+daemon=1
+dbcache=2000
+dns=1
+EOF
+      ok "wrote default ~/.bitcoin/bitcoin.conf"
+    fi
+    echo "Next: start it →  bitcoind   then  bankon up"
+    rm -rf "$tmp"
+    ;;
+  qt)  exec "$HERE/bankon-qt.sh" ;;
+  optimize)  exec "$HERE/bankon-nodes.sh" optimize "${2:-full}" ;;   # auto-tune the node conf to this hardware
+  algo)  # BANKON ALGO WaaS — Algorand twin, in tandem on :4444 (algod recognized from ~/.algorand)
+    ALGO_DIR="$HERE/bankon-algo"; ALGO_PORT="${BANKON_ALGO_PORT:-4444}"
+    case "${2:-up}" in
+      up|"") start_svc algo "$ALGO_DIR" "$ALGO_PORT"
+             ok "ALGO WaaS:  $(c '4;36' http://127.0.0.1:$ALGO_PORT)  (algod ${ALGOD_URL:-~/.algorand :8080})" ;;
+      stop)  pkill -f "bankon-algo/server.mjs" 2>/dev/null && ok "ALGO WaaS stopped" || warn "ALGO WaaS not running" ;;
+      status) svc_up "$ALGO_PORT" && ok "ALGO WaaS: up on :$ALGO_PORT" || warn "ALGO WaaS: down" ;;
+      *) echo "usage: bankon algo [up|stop|status]"; exit 1 ;;
+    esac ;;
+  eth)  # BANKON.ETH WaaS — EVM twin, in tandem on :4448 (EVM JSON-RPC recognized from ETH_RPC_URL)
+    ETH_DIR="$HERE/bankon-eth"; ETH_PORT="${BANKON_ETH_PORT:-4448}"
+    case "${2:-up}" in
+      up|"") start_svc eth "$ETH_DIR" "$ETH_PORT"
+             ok "ETH WaaS:   $(c '4;36' http://127.0.0.1:$ETH_PORT)  (EVM ${ETH_RPC_URL:-:8545})" ;;
+      stop)  pkill -f "bankon-eth/server.mjs" 2>/dev/null && ok "ETH WaaS stopped" || warn "ETH WaaS not running" ;;
+      status) svc_up "$ETH_PORT" && ok "ETH WaaS: up on :$ETH_PORT" || warn "ETH WaaS: down" ;;
+      *) echo "usage: bankon eth [up|stop|status]"; exit 1 ;;
+    esac ;;
+  permaweb)  # web2→web3 bridge: pgvectorscale → Arweave permaweb (uses bankon.env config)
+    BR="$WAAS_DIR/permaweb-bridge"
+    command -v cargo >/dev/null || { err "Rust/cargo not found — install: https://rustup.rs"; exit 1; }
+    [ -n "${DATABASE_URL:-}" ] || { err "DATABASE_URL not set (the pgvectorscale store) — set it in $HERE/bankon.env"; exit 1; }
+    case "${2:-run}" in
+      verify) ok "permaweb: offline sign+verify self-check (no upload)…"; exec cargo run --release --manifest-path "$BR/Cargo.toml" -- --verify ;;
+      watch)  ok "permaweb: continuous bridge (BRIDGE_INTERVAL_SECS=${BRIDGE_INTERVAL_SECS:-?})…"; exec cargo run --release --manifest-path "$BR/Cargo.toml" ;;
+      run|"") ok "permaweb: one-shot snapshot → permaweb…"; exec cargo run --release --manifest-path "$BR/Cargo.toml" ;;
+      *) echo "usage: bankon permaweb [run|verify|watch]"; exit 1 ;;
+    esac ;;
+  *) grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -16; exit 1 ;;
+esac

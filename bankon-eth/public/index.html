@@ -1,0 +1,120 @@
+<!doctype html>
+<!-- BANKON.ETH WaaS — non-custodial EVM wallet. In-browser keygen + signing (ethers.js) is
+     client-facing crypto: GPL-3.0-or-later. UI/markup MIT. Twin of bankon-waas (Bitcoin). -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BANKON.ETH — EVM Wallet as a Service</title>
+<style>
+  :root { color-scheme: dark; --eth:#627EEA; --ethaccent:#8aa2f2; --cash:#0AC18E; }
+  html { font-size: clamp(13px, calc(0.55vw + 0.75vh), 28px); }   /* proportional: everything is rem/% */
+  body { font-family:system-ui,sans-serif; line-height:1.5; width:94vw; max-width:1500px; margin:1rem auto;
+         padding:0 1rem; box-sizing:border-box; background:#0b0e16; color:#e6edf3; }
+  h1 { font-size:1.5rem; color:#fff; background:linear-gradient(90deg,#1a1f3a,#2b3566); border-left:4px solid var(--eth);
+       font-weight:700; padding:.5rem .85rem; border-radius:8px; } h1 small { color:#c3cdf5; font-weight:400; font-size:.8rem; }
+  fieldset { border:1px solid #2a3142; border-radius:10px; margin:1rem 0; } legend { color:var(--ethaccent); font-weight:600; padding:0 .4rem; }
+  label { display:block; margin:.4rem 0 .2rem; color:#8b93a7; }
+  input, button, textarea { font:inherit; padding:.5rem .7rem; border-radius:8px; border:1px solid #2a3142; background:#121726; color:#e6edf3; }
+  button { background:var(--eth); border-color:var(--eth); color:#0a0f22; font-weight:700; cursor:pointer; } button:hover { background:var(--ethaccent); }
+  button.secondary { background:#121726; color:#e6edf3; font-weight:400; }
+  code, pre { font-family:ui-monospace,monospace; background:#05070d; padding:.15rem .35rem; border-radius:5px; word-break:break-all; white-space:pre-wrap; }
+  .warn { color:#e3b341; } .ok { color:var(--cash); } .err { color:#f85149; } .muted { color:#8b93a7; font-size:.85rem; }
+  .row { display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; }
+  .pill { display:inline-block; background:var(--eth); color:#0a0f22; font-weight:700; font-size:.72rem; padding:.1rem .5rem; border-radius:5px; }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+  <h1>BANKON<span style="color:var(--ethaccent)">.ETH</span> <small>EVM&nbsp;Wallet&nbsp;as&nbsp;a&nbsp;Service · non-custodial · twin of BANKON BTC/ALGO</small></h1>
+  <p class="muted">Keys (BIP39 phrase → secp256k1 → EVM address) are generated <b>here, in your browser</b> (ethers.js). BANKON never receives them — only your <b>public address</b> (watch-only) and already-<b>signed</b> raw transactions reach the node. EVM-generic: works on Ethereum, L2s and testnets (chain detected via <code>eth_chainId</code>).</p>
+  <p class="muted" id="health">checking EVM node…</p>
+
+  <fieldset>
+    <legend>1 · Create a wallet (client-side keygen)</legend>
+    <button id="gen">Generate EVM wallet</button>
+    <div id="genout" class="hidden" style="margin-top:.6rem"></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>2 · Track an address (watch-only)</legend>
+    <div class="row"><input id="waddr" placeholder="0x… EVM address" style="flex:1;min-width:20rem"/>
+      <input id="wlabel" placeholder="label (optional)" style="width:10rem"/><button id="wadd">Track</button></div>
+    <div id="balout" style="margin-top:.5rem"></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>3 · Send (build → sign locally → broadcast)</legend>
+    <label>from (0x… you hold the phrase for)</label><input id="sfrom" placeholder="0x…" style="width:100%"/>
+    <label>to</label><input id="sto" placeholder="0x… recipient" style="width:100%"/>
+    <label>amount (ETH / native)</label><input id="samt" placeholder="0.01" style="width:100%"/>
+    <label>BIP39 recovery phrase <span class="warn">(used only in your browser to sign; never sent)</span></label>
+    <textarea id="smn" rows="2" style="width:100%" placeholder="paste your 12/24 words to sign this send"></textarea>
+    <button id="ssend" style="margin-top:.5rem">Sign locally &amp; broadcast</button>
+    <div id="sendout" style="margin-top:.5rem"></div>
+  </fieldset>
+
+  <div id="oracle"></div>
+  <script>window.BANKON_ORACLE={name:'Ξ ETH.oracle', word:'block', accent:'#627EEA', chain:'evm', file:'bankon-eth-oracle', poll:12000};</script>
+  <script src="oracle.js"></script>
+
+  <p class="muted">Port <b>:4448</b> (twin of BANKON BTC :8088 · ALGO :4444). Non-custodial invariant identical — the server rejects any request containing a phrase/private key.</p>
+
+<script type="module">
+import { Wallet, parseEther } from 'https://esm.sh/ethers@6.13.4';
+const $ = s => document.getElementById(s);
+const api = (p, opt) => fetch(p, opt).then(r => r.json());
+
+(async () => { try { const h = await api('/api/health');
+  $('health').innerHTML = h.state === 'running'
+    ? `<span class="ok">● EVM node up</span> · ${h.node} · ${h.chain} · block ${h.block}${h.client ? ' · ' + h.client.split('/')[0] : ''}`
+    : `<span class="err">● node ${h.state}</span> · ${h.node} · ${h.error || ''}`;
+} catch { $('health').innerHTML = '<span class="err">node check failed</span>'; } })();
+
+$('gen').onclick = () => {
+  const w = Wallet.createRandom();                         // address + phrase + privkey — stays in browser
+  $('genout').classList.remove('hidden');
+  $('genout').innerHTML = `<div style="border:1px solid #9e6a03;border-radius:8px;padding:.6rem;background:#1c1710">
+    <span class="pill">ADDRESS (public, safe)</span><pre>${w.address}</pre>
+    <span class="warn">⚠ RECOVERY PHRASE — write it down, never share. NOT sent to BANKON.</span><pre>${w.mnemonic.phrase}</pre>
+    <button id="trackgen" class="secondary">Track this address (watch-only)</button></div>`;
+  $('sfrom').value = w.address;
+  $('trackgen').onclick = () => track(w.address, 'generated');
+};
+
+async function track(address, label) {
+  $('balout').innerHTML = 'tracking…';
+  const r = await api('/api/wallet', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ address, label }) });
+  if (!r.ok) { $('balout').innerHTML = `<span class="err">${r.error}</span>`; return; }
+  showBalance(address);
+}
+async function showBalance(address) {
+  try { const b = await api(`/api/wallet/${address}/balance`);
+    $('balout').innerHTML = b.ok
+      ? `<span class="ok">✓ tracked</span> <code>${address}</code><br>balance: <b>${b.eth}</b> · nonce ${b.nonce}`
+      : `<span class="err">${b.error}</span>`;
+  } catch (e) { $('balout').innerHTML = `<span class="err">${e.message}</span>`; }
+}
+$('wadd').onclick = () => { const a = $('waddr').value.trim(); if (a) track(a, $('wlabel').value.trim() || null); };
+
+$('ssend').onclick = async () => {
+  const from = $('sfrom').value.trim(), to = $('sto').value.trim();
+  const amt = $('samt').value.trim(), mn = $('smn').value.trim(), out = $('sendout');
+  if (!from || !to || !amt || !mn) { out.innerHTML = '<span class="err">need from, to, amount and your phrase</span>'; return; }
+  try {
+    out.innerHTML = 'building + signing locally…';
+    const w = Wallet.fromPhrase(mn);                       // phrase → key, IN BROWSER ONLY
+    if (w.address.toLowerCase() !== from.toLowerCase()) { out.innerHTML = '<span class="err">phrase does not match "from"</span>'; return; }
+    const ctx = await api(`/api/tx-context/${from}`);
+    if (!ctx.ok) { out.innerHTML = `<span class="err">${ctx.error}</span>`; return; }
+    const tx = { to, value: parseEther(amt), nonce: parseInt(ctx.nonce, 16),
+      gasLimit: 21000n, gasPrice: BigInt(ctx.gasPrice || '0x3b9aca00'), chainId: BigInt(ctx.chainId), type: 0 };
+    const rawTx = await w.signTransaction(tx);             // sign locally
+    const r = await api('/api/broadcast', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ rawTx }) });
+    out.innerHTML = r.ok ? `<span class="ok">✓ broadcast</span> tx: <code>${r.txHash}</code>` : `<span class="err">${r.error}</span>`;
+    $('smn').value = '';
+  } catch (e) { out.innerHTML = `<span class="err">${e.message}</span>`; }
+};
+</script>
+</body>
+</html>

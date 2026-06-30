@@ -1,0 +1,20 @@
+{
+  "name": "bankon-waas",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "BANKON Wallet-as-a-Service — non-custodial. Keys are minted client-side; the node holds watch-only descriptors only.",
+  "scripts": {
+    "keygen": "node keygen.mjs",
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@scure/base": "^2.2.0",
+    "@scure/bip32": "^1.4.0",
+    "@scure/bip39": "^1.3.0",
+    "@scure/btc-signer": "^1.3.2",
+    "express": "^4.19.2",
+    "maxmind": "^5.0.6",
+    "pg": "^8.22.0"
+  }
+}

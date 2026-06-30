@@ -1,0 +1,155 @@
+# BANKON QT — Complete Reference
+
+The native desktop face of BANKON: a **PySide6 / Qt Widgets** diagnostics & node-control app for a
+running Bitcoin Core — *"the agnostic face of Bitcoin Core."* This document is the authoritative
+reference for the **shipped** app (`bankon-qt/`) and reviews the four aspirational `docs/qt/` guides
+against what is actually built, so the design intent and the implementation gap are explicit.
+
+> **One-line truth:** BANKON QT is a Qt **Widgets** app under **software rendering** (Intel HD 3000),
+> reading one Bitcoin Core instance, resilient during IBD. The `docs/qt/` guides describe a future
+> **Qt Quick 3D** chain-agnostic globe; this app implements their *hardware-independent* substance
+> today and defers the GPU/multi-chain parts. See [§7](#7-review-of-the-docsqt-guides).
+
+---
+
+## 1. Run it
+
+```bash
+~/bankon-tools/bankon qt          # or: ~/bankon-tools/bankon-qt.sh
+```
+First run installs **PySide6** (~150 MB, one-time). The launcher forces **software rendering** with
+`QT_OPENGL=software` because the Intel HD 3000 GL driver black-screens — the same reason the node
+itself runs headless. Requires a `DISPLAY`.
+
+> **HD 3000 gotcha:** use **only** `QT_OPENGL=software`. Adding `LIBGL_ALWAYS_SOFTWARE=1` or
+> `QT_XCB_FORCE_SOFTWARE_OPENGL=1` forces a GL path that hangs — the process runs but **no window
+> appears**. `QT_OPENGL=software` alone loads fast.
+
+Manual launch:
+```bash
+cd ~/bankon-tools/bankon-qt
+QT_OPENGL=software python3 bankon_qt.py
+```
+
+---
+
+## 2. Architecture (as built) — MVVM service layer in Qt Widgets
+
+The app follows the master guide's **MVVM service-layer discipline** without QML: a clean data layer
+(`services/`) and chain abstraction (`adapters/`) under thin widget **views** (`bankon_qt.py`).
+
+```
+bankon-qt/
+  bankon_qt.py            # views (9 tabs) + Main window, toolbar, timers, ZMQ wiring
+  services/
+    rpc_service.py        # rpc() → Console cache (resilient) w/ direct-node fallback; rpc_cached, synctip, fetch_json, flag
+    zmq_service.py        # ZmqService(QThread): subscribes hashblock → block(hash,seq) signal (push refresh)
+    geoip_service.py      # GeoLite2 City+ASN readers: geolocate(ip), asn(ip), WORLD outlines
+    geodesy.py            # WGS84 constants, geodetic_to_ecef, great_circle_points (slerp arcs)
+    network_view.py       # known_nodes(): whole network from getnodeaddresses (addrman), geolocated
+  adapters/
+    base.py               # ChainAdapter ABC (health_check, get_height, get_balance, build_tx, broadcast_tx, anchor, verify_anchor)
+    bitcoin_core.py       # BitcoinCoreAdapter (CAIP-2 bip122:…) over rpc_service + WaaS
+```
+
+**Why Widgets, not QML:** the guides recommend Qt Quick 3D for its GPU scene graph. Under software
+rendering on the HD 3000 that scene graph *regresses*, so Widgets is the pragmatic choice here; the
+MVVM separation the guides actually care about is adopted regardless. QML/3D is the GPU-host target
+(see [roadmap.md](roadmap.md)).
+
+---
+
+## 3. Data flow & IBD resilience
+
+The node spends long stretches lock-bound during IBD, so the app never depends on a single live RPC:
+
+- **Cache-routed RPC** — `rpc()` calls the **Console** proxy (`:8090/api/rpc`), which serves
+  last-known cache instantly and is **concurrency-limited** so it can't flood the node's work queue;
+  if the Console is down it falls back to the node directly (cookie auth).
+- **Sync from the log** — the gauge reads `/api/synctip` (a tail of `debug.log` `UpdateTip`), which is
+  always current with **no RPC**, plus a "+N blocks since last refresh" delta.
+- **ZMQ push** — `ZmqService` subscribes to `zmqpubhashblock` (tcp://127.0.0.1:28332); each new block
+  triggers `do_refresh()`, so updates are event-driven and the rate timer is a fallback heartbeat.
+- **Off the UI thread** — every RPC/HTTP call runs in a `QThread` worker (`spawn` for RPC,
+  `spawn_fn` for arbitrary fetches); results marshal back via queued signals. The UI never blocks.
+- **Central refresh** — `Main.do_refresh()` drives the active tab from the timer / ↻ button / ZMQ /
+  tab-switch and stamps `↻ HH:MM:SS · every <rate>`.
+
+---
+
+## 4. The tabs
+
+| Tab | What it shows |
+|-----|---------------|
+| **Overview** | Live sync gauge (log-based, 6-digit, candle-green ramp ≥51%→99%, FULL NODE at 100%), +N-blocks delta, height/peers/mempool/disk, BTC.oracle (avg blocktime), filesystem |
+| **Node** | Node state (running/booting/validating/stopped), Start/Stop, live `debug.log` stream, "what/how/where Bitcoin Core is doing" |
+| **Network** | Peer table (addr, subver, direction, ping, height) |
+| **Net Map** | EtherApe-style: our node centre (`bankon:<addr>`), connected peers radial with **traffic-gradient** links (blue→green→orange), **inbound/outbound** tint, sizes by traffic, and a faint **cloud of all known nodes** (addrman) |
+| **Geo Map** | The **whole known network** (addrman, geolocated) as a density layer + connected peers with **great-circle arcs** + **ASN/org** colour & tooltips; EPSG:4326 plate carrée; disclosures (arcs inferred, geo approximate) |
+| **Mempool** | size, vbytes, memory, min relay fee |
+| **Blocks** | Live chain tip (cached) + avg blocktime + recent-blocks table (from `/api/recentblocks`) |
+| **Indexes** | txindex height / tip / % (live), refresh-stamped |
+| **RPC Console** | Run any read-only whitelisted RPC |
+
+---
+
+## 5. The network view (single instance, no external API)
+
+Both maps source the network from **one Bitcoin Core instance** via `getnodeaddresses` — the node's
+addrman, which *is* the `getaddr`-gossiped reachable set (the same mechanism Bitnodes crawls).
+`services/network_view.py::known_nodes()` pulls it, geolocates each IP with GeoLite2 (City + ASN),
+and caches ~3 min. This is deliberately **no third party** (bitnodes.io is unreliable/down). Edges
+are *inferred* (Core exposes no peer-edge list) and IP geolocation is approximate — both disclosed
+in-UI.
+
+---
+
+## 6. Theming
+
+Multi-chain palette (Bitcoin orange, Polygon purple, Ethereum blue, cash green; Cardano-blue/Solana
+accents), **BANKON corporate blue/grey**, an **electric-blue auric shimmer** on the outer periphery
+(animated `QGraphicsDropShadowEffect`), and a **candle-green** sync gauge that ramps from dark
+(<51%) to candle green (`#16C784`, ≥99%) and flips to **FULL NODE** at 100%.
+
+---
+
+## 7. Review of the `docs/qt` guides
+
+The four guides in [`docs/qt/`](qt/) are **aspirational target architecture**. How BANKON QT relates:
+
+| Guide | Implemented | Adapted | Deferred |
+|-------|-------------|---------|----------|
+| **Master Architect Guide** (RPC+ZMQ, ChainAdapter, OP_RETURN anchor, MVVM) | ZMQ push; `ChainAdapter`/`BitcoinCoreAdapter`; OP_RETURN anchor (`bankon-waas/anchor.mjs`, regtest-proven); MVVM service layer | QtWidgets instead of QML/Qt Quick | EVM/Foundry, Algorand/x402, DAIO, SATPAY adapters |
+| **Engineering Reference** (QML house style, tooling, LGPL matrix) | Off-UI-thread threading discipline; dynamic-link posture | Licensing read as **GPLv3 (client crypto) + MIT (infra)**, not Apache-2.0 | `qmllint`/`qmlformat`/QML module tooling (N/A to Widgets) |
+| **3D Globe Reference** (Qt Quick 3D, WGS84, geodesics, instancing) | WGS84 geodesy (`geodesy.py`), great-circle slerp arcs, GeoIP, ASN colour | Density layer rendered to a 2D pixmap (the "instancing for tens of thousands" idea on a software renderer) | The 3D Qt Quick 3D / QRhi globe (needs a GPU) |
+| **Clean-house allchain Globe** (no Cesium/WebEngine/Tauri; span `allchainz`; 3-tier sources) | Clean-house affirmed (zero web engine); Tier-2 self-crawl via `getnodeaddresses` for Bitcoin | Single-chain today | `allchain` registry, GlobeNode/GlobeEdge, multi-chain layers, cross-chain arcs |
+
+**Net:** the science and structure the guides insist on (WGS84, slerp arcs, MVVM, ZMQ, clean-house,
+single-node sovereignty) are **in the app today**; the GPU 3D globe and multi-chain `allchainz`
+expansion are the forward path, gated on a GPU-capable host and the proprietary `allchain` registry.
+
+---
+
+## 8. Environment & config
+
+| Var | Default | Purpose |
+|-----|---------|---------|
+| `BANKON_CONSOLE_URL` | `http://127.0.0.1:8090` | Console cache the app routes RPC through |
+| `BANKON_WAAS_URL` | `http://127.0.0.1:8088` | WaaS (Create-Wallet button, adapter anchor/broadcast) |
+| `BITCOIN_RPC_URL` / `BITCOIN_COOKIE` | `:8332` / `~/.bitcoin/.cookie` | direct-node fallback |
+| `BANKON_GEOIP` / `BANKON_GEOIP_ASN` | `../geoip/GeoLite2-*.mmdb` | GeoIP databases |
+| ZMQ | `tcp://127.0.0.1:28332/3/5` | requires `zmqpub*` in `bitcoin.conf` (+ node restart) |
+
+---
+
+## 9. Troubleshooting
+
+- **Black screen / GL crash** → use the launcher (software-rendering flags); never run raw `bitcoin-qt`-style GL here.
+- **Tabs empty during IBD** → expected; the node is lock-bound. Data fills from cache/log as gaps open; the ↻ stamp confirms refreshes are firing.
+- **Net/Geo Map sparse** → `getnodeaddresses` is starved during heavy IBD; it populates when the node has capacity (off-thread, never blocks the UI).
+- **ZMQ chip shows `○`** → `zmqpub*` not in `bitcoin.conf` or node not restarted; the app falls back to timer/log refresh.
+- **GeoIP "DB missing"** → ensure `geoip/GeoLite2-City.mmdb` (+ `GeoLite2-ASN.mmdb`) exist.
+
+---
+
+*See also: [QT roadmap](roadmap.md) · [the four design guides](qt/) · [Console](console.md) · [Architecture](architecture.md) · [NAV](NAV.md).*

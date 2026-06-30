@@ -1,0 +1,16 @@
+[Unit]
+Description=Bitcoin Core daemon (full node — BANKON backend)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# -daemon must NOT be used under systemd; run in the foreground.
+ExecStart=%h/bitcoin-31.0/bin/bitcoind -datadir=%h/.bitcoin -nodaemon
+ExecStop=%h/bitcoin-31.0/bin/bitcoin-cli -datadir=%h/.bitcoin stop
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=600
+
+[Install]
+WantedBy=default.target

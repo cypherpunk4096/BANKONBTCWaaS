@@ -1,0 +1,76 @@
+[ping]
+
+# Logfile
+logfile = log/ping.f9beb4d9.log
+
+# Network magic number
+magic_number = f9beb4d9
+
+# Redis database number
+db = 0
+
+# Max. number of concurrent workers (greenlets) in a pool
+workers = 2000
+
+# Print debug output
+debug = False
+
+# Public IP address for network interface
+ipv4_source_address = 0.0.0.0
+ipv6_source_address = ::
+
+# Protocol version to use for outgoing version message
+protocol_version = 70016
+
+# User agent (BIP 0014) to use for outgoing version message
+# -----------------------------------------------------------------------------
+#                                 NOTE TO USERS
+# Please consider changing the user agent before running an instance of this
+# crawler. This is so that users will not confuse your crawler with another
+# instance that is already running and generating data for the project.
+# -----------------------------------------------------------------------------
+user_agent = /bitnodes.io:0.3/
+
+# Services to use for outgoing network address message
+services = 0
+
+# Set to 1 to receive all txs
+relay = 1
+
+# Open timeout
+open_timeout = 5
+
+# Socket timeout
+socket_timeout = 30
+
+# Run cron tasks every given interval
+cron_delay = 10
+
+# List of CIDRs and their associated limit from external URL
+cidr_limits_from_url =
+
+# Limit max. nodes per IPv6 network prefix
+ipv6_prefix = 64
+nodes_per_ipv6_prefix = 1
+
+# Redis TTL for cached RTT
+rtt_ttl = 10800
+
+# Redis TTL for cached block inv messages
+inv_ttl = 10800
+
+# Check version every given interval
+version_delay = 86400
+
+# Attempt to establish connection with .onion nodes
+onion = True
+
+# Set to 1 to receive all txs from .onion nodes
+onion_relay = 1
+
+# Tor proxy is required to connect to .onion address
+tor_proxies =
+    127.0.0.1:9050
+
+# Relative path to directory containing timestamp-prefixed JSON crawl files
+crawl_dir = data/crawl/f9beb4d9

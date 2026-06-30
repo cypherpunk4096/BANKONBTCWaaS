@@ -1,0 +1,32 @@
+BANKON — Licensing (dual, by component)
+=======================================
+
+BANKON is dual-licensed by component. The SPDX header in each source file is
+authoritative; this file summarizes the split. Rationale: see POLICY.md.
+
+1. CLIENT-FACING ENCRYPTION SOFTWARE  →  GNU GPLv3-or-later  (LICENSE.GPLv3)
+   Code that generates keys or signs transactions — i.e. software users trust
+   with their secrets:
+     - bankon-waas/keygen.mjs
+     - bankon-waas/sign.mjs
+     - bankon-waas/public/offline-client.html
+     - the in-browser keygen/signing in bankon-waas/public/index.html
+   Like GnuPG (the GPL implementation of OpenPGP/PGP), cryptographic software
+   that holds users' keys is kept copyleft so every derivative stays free and
+   auditable. The "PGP is GPL" argument — see POLICY.md.
+
+2. EVERYTHING ELSE  →  MIT  (LICENSE.MIT)
+   Infrastructure, APIs, diagnostics, ops tooling — permissive to ease
+   integration. None of it ever holds a user's private key or passphrase.
+
+USER SOVEREIGNTY
+----------------
+Neither license, nor BANKON itself, asserts any control over your machine.
+BANKON preserves your right to OWN YOUR FILESYSTEM and to do to your filesystem
+anything you, as its owner, deem appropriate — install, modify, copy, delete,
+inspect, relocate, or destroy any part of this software or its data. Your keys,
+your device, your data, your rules. BANKON runs entirely on infrastructure you
+control and never phones home. See POLICY.md.
+
+Copyright (c) 2026 BANKON (cypherpunk2048).
+GNU GPLv3: https://www.gnu.org/licenses/gpl-3.0.html

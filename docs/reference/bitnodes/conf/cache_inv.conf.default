@@ -1,0 +1,62 @@
+[cache_inv]
+
+# Logfile
+logfile = log/cache_inv.f9beb4d9.log
+
+# Network magic number
+magic_number = f9beb4d9
+
+# Redis database number
+db = 0
+
+# Print debug output
+debug = False
+
+# Redis TTL for cached messages
+ttl = 10800
+
+# Number of round-trip time (RTT) values to keep for each node
+rtt_count = 36
+
+# Number of messages for the same tx inv to cache from each pcap file
+inv_1_count = 1000
+
+# Number of messages for the same block inv to cache from each pcap file
+inv_2_count = 5000
+
+# Sampling rate of tx invs from each pcap file
+inv_1_sampling_rate = 100
+
+# Sampling rate of block invs from each pcap file
+inv_2_sampling_rate = 100
+
+# Include tx invs from .onion nodes
+onion_inv_1 = True
+
+# Include block invs from .onion nodes
+onion_inv_2 = True
+
+# Tor proxy (must match the list in ping.conf)
+tor_proxies =
+    127.0.0.1:9050
+
+# Relative path to directory containing pcap files
+pcap_dir = data/pcap/f9beb4d9
+
+# File extension for pcap files to process
+pcap_suffix = pcap
+
+# Set to True to keep all processed pcap files
+persist_pcap = False
+
+# Sampling rate of pcap files
+pcap_sampling_rate = 100
+
+# JSON file containing a list of old block hashes in 16-char suffixes
+blockhash_suffixes = data/archive/f9beb4d9/blockhash_suffixes.json
+
+# List of excluded source addresses
+exclude_src_addrs =
+
+# List of excluded source addresses from external URL
+exclude_src_addrs_from_url =

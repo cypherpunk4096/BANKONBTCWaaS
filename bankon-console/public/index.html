@@ -1,0 +1,680 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BANKON Console — Bitcoin Core diagnostics</title>
+<style>
+  :root { color-scheme: dark;
+    --btc:#F7931A;   /* Bitcoin orange — primary */
+    --poly:#8247E5;  /* Polygon purple */
+    --eth:#627EEA;   /* Ethereum blue */
+    --cash:#0AC18E;  /* Cash green — success */
+    --cardano:#0033AD; /* Cardano blue — hover */
+    --solana:#9945FF;  /* Solana royal */
+    --bankon:#1C66C9;  /* BANKON blue — corporate brand */
+    --grey:#8B949E;    /* BANKON grey — corporate secondary */
+  } * { box-sizing: border-box; }
+  button:hover, .seg button:hover { border-color:var(--cardano); }
+  button.tab:hover { color:var(--cardano); }
+  body { font: 14px/1.5 system-ui, sans-serif; margin:0; background:#0e1116; color:#e6edf3; }
+  header { display:flex; align-items:center; gap:.7rem; padding:.6rem 1rem; background:#131a24; border-bottom:2px solid var(--bankon); position:sticky; top:0; z-index:6; flex-wrap:wrap; }
+  header h1 { font-size:1.05rem; margin:0; color:var(--btc); background:var(--bankon); padding:.2rem .6rem; border-radius:6px; font-weight:700; letter-spacing:.02em; } .sub{ color:var(--grey); font-size:.8rem; }
+  select, button, input { font:inherit; padding:.35rem .55rem; border-radius:7px; border:1px solid #30363d; background:#0d1117; color:#e6edf3; }
+  button { cursor:pointer; }
+  .seg { display:inline-flex; border:1px solid #30363d; border-radius:7px; overflow:hidden; }
+  .seg button { border:none; border-radius:0; background:#0d1117; color:#7d8590; padding:.35rem .7rem; }
+  .seg button.on { background:var(--poly); color:#fff; }
+  a.waas { background:var(--btc); border:1px solid var(--btc); color:#1a1200; padding:.4rem .7rem; border-radius:7px; text-decoration:none; font-weight:700; }
+  a.waas:hover { background:var(--cardano); border-color:var(--cardano); color:#fff; }
+  nav { display:flex; gap:.1rem; padding:0 1rem; background:#161b22; border-bottom:1px solid #30363d; overflow-x:auto; position:sticky; top:50px; z-index:5; }
+  button.tab { border:none; background:none; padding:.55rem .85rem; color:#7d8590; border-bottom:2px solid transparent; white-space:nowrap; }
+  button.tab.active { color:#e6edf3; border-bottom-color:var(--btc); }
+  main { padding:1rem; max-width:1100px; margin:0 auto; }
+  .panel { display:none; } .panel.active { display:block; }
+  .coremon { display:inline-flex; align-items:center; gap:.3rem; margin-left:.45rem; padding:.12rem .5rem;
+    border-radius:7px; font-weight:800; font-size:.74rem; letter-spacing:.5px; border:2px solid transparent; transition:box-shadow .3s; }
+  .coremon.on  { color:#F7931A; }                                  /* Bitcoin Orange = ON */
+  .coremon.off { color:#f85149; }                                  /* red = OFF */
+  .coremon.feeding { border-color:#16C784; box-shadow:0 0 9px #16C78488; }  /* green surround = connecting/feeding */
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:.7rem; }
+  .card { background:#161b22; border:1px solid #30363d; border-radius:10px; padding:.7rem .8rem; }
+  .card .k { color:#7d8590; font-size:.72rem; text-transform:uppercase; letter-spacing:.04em; }
+  .card .v { font-size:1.2rem; font-weight:600; margin-top:.15rem; word-break:break-all; } .card .v.sm{font-size:.92rem;font-weight:500;}
+  table { width:100%; border-collapse:collapse; font-size:.82rem; } th,td { text-align:left; padding:.35rem .5rem; border-bottom:1px solid #21262d; white-space:nowrap; }
+  th { color:#7d8590; position:sticky; top:0; background:#0e1116; }
+  .scroll { overflow:auto; max-height:60vh; border:1px solid #30363d; border-radius:10px; }
+  .progress { height:26px; background:#0d1117; border:1px solid #30363d; border-radius:8px; overflow:hidden; }
+  .progress > div { height:100%; background:linear-gradient(90deg,var(--btc),var(--cash)); display:flex; align-items:center; padding-left:.5rem; font-size:.78rem; font-weight:600; color:#001; white-space:nowrap; }
+  .row { display:flex; align-items:center; gap:.5rem; margin:.2rem 0; } .row .lbl{ width:150px; color:#7d8590; font-size:.78rem; text-align:right; font-family:ui-monospace,monospace;}
+  .row .track{ flex:1; background:#0d1117; border-radius:4px; overflow:hidden;} .bar{ height:18px; background:var(--btc); border-radius:4px;}
+  details { border:1px solid #30363d; border-radius:9px; margin:.5rem 0; background:#0d1117; }
+  details[open] { border-color:var(--solana); } summary { cursor:pointer; padding:.5rem .75rem; font-weight:600; list-style:none; display:flex; justify-content:space-between; align-items:center; }
+  summary::-webkit-details-marker{display:none;} summary::after{content:'＋';color:#7d8590;font-weight:400;} details[open] summary::after{content:'－';}
+  .body { padding:.2rem .8rem .7rem; } pre{ font-family:ui-monospace,monospace; background:#010409; padding:.7rem; border-radius:8px; overflow:auto; max-height:50vh; font-size:.78rem; }
+  code{font-family:ui-monospace,monospace; color:var(--eth);} .muted{color:#7d8590;} .ok{color:var(--cash);} .warn{color:#e3b341;} .err{color:#f85149;}
+  h3{margin:1.1rem 0 .5rem; font-size:.95rem;} .pill{display:inline-block;padding:.05rem .5rem;border-radius:999px;font-size:.72rem;background:#101d33;color:var(--eth);}
+  .nodestat{font-size:.8rem;padding:.1rem .55rem;border-radius:999px;border:1px solid #30363d;white-space:nowrap}
+  .nodestat.running{color:var(--cash);border-color:#0c2e23;background:#06140f}
+  .nodestat.booting,.nodestat.busy{color:var(--btc);border-color:#3a2d10;background:#1c1710}
+  .nodestat.down{color:#f85149;border-color:#3a1414;background:#1c1010}
+  .logpane{font-family:ui-monospace,monospace;font-size:.82rem;line-height:1.45;background:#010409;border:2px solid var(--btc);border-radius:8px;padding:.7rem .8rem;max-height:52vh;overflow:auto;white-space:pre-wrap;user-select:text;-webkit-user-select:text}
+  .logpane::selection,.logpane *::selection{background:#00BFFF;color:#001018}
+  .logpane .u{color:var(--cash)}.logpane .i{color:var(--eth)}.logpane .w{color:#e3b341}
+  button.danger{background:#a4242b;border-color:#a4242b;color:#fff}
+  .hero{ background:linear-gradient(135deg,#10241a,#0d1726); border:1px solid #238636; border-radius:14px; padding:1.4rem; text-align:center; }
+  .hero a.waas{ font-size:1.05rem; padding:.7rem 1.4rem; display:inline-block; margin-top:.6rem; }
+  .mrow{ display:flex; gap:.5rem; align-items:center; padding:.3rem 0; border-bottom:1px solid #21262d; flex-wrap:wrap; }
+  .mrow code{ min-width:190px; } .mrow .d{ color:#7d8590; flex:1; font-size:.82rem; }
+</style>
+</head>
+<body>
+<header>
+  <h1>BANKON Console</h1><span class="sub">the agnostic face of Bitcoin Core · read-only diagnostics</span>
+  <span id="nodestat" class="nodestat" title="Bitcoin Core node status">● checking…</span>
+  <span id="coremon" class="coremon off" title="Bitcoin Core monitor — orange ON · red OFF · green ring = connecting/feeding">● CORE</span>
+  <span id="sysmon" class="sub" title="host CPU · temperature · memory" style="margin-left:.4rem">🖥 —</span>
+  <span style="margin-left:auto"></span>
+  <span class="sub">detail</span>
+  <span class="seg" id="lvl"><button data-l="0" class="on">Basic</button><button data-l="1">Detailed</button><button data-l="2">Expert</button></span>
+  <span class="sub">node</span>
+  <select id="node"><option value="full">full :8332</option><option value="pruned">pruned :8342</option></select>
+  <button id="refresh" title="refresh now">↻</button>
+  <span id="refreshed" class="sub" title="last UI refresh (clock)">—</span>
+  <label class="sub">refresh
+    <select id="rate">
+      <option value="0">off</option>
+      <option value="10000">10s</option>
+      <option value="30000" selected>30s</option>
+      <option value="60000">1 min</option>
+      <option value="300000">5 min</option>
+    </select>
+  </label>
+  <a class="waas" href="http://127.0.0.1:8088" target="_blank" rel="noopener">+ Create Wallet</a>
+</header>
+<nav id="tabs"></nav>
+<main>
+  <div class="panel active" id="p-overview"></div>
+  <div class="panel" id="p-blocks"></div>
+  <div class="panel" id="p-mempool"></div>
+  <div class="panel" id="p-network"></div>
+  <div class="panel" id="p-indexes"></div>
+  <div class="panel" id="p-oracle"></div>
+  <div class="panel" id="p-wallets"></div>
+  <div class="panel" id="p-create"></div>
+  <div class="panel" id="p-reference"></div>
+  <div class="panel" id="p-node"></div>
+  <div class="panel" id="p-console"></div>
+  <div class="panel" id="p-monitor"></div>
+</main>
+<script type="module">
+const TABS=[['overview','Overview'],['node','Node'],['blocks','Blocks'],['mempool','Mempool'],['network','Network'],['indexes','Indexes'],['oracle','BTC.oracle'],['wallets','Wallets'],['create','Create Wallet'],['reference','Reference'],['console','RPC Console'],['monitor','Monitor']];
+const $=s=>document.querySelector(s); let cur='overview', level=0, timer=null;
+let lastSyncHeight=null;   // for "+N blocks since last refresh"
+const IDX={tip:0,t:0,tx:0,rate:0,spin:0,first:0,txt:''};   // Indexes "crunching" state
+const OMEAS={rows:[],seen:new Set(),primed:false};         // BTC.oracle auto-measure (new-block stream)
+const nav=$('#tabs'); TABS.forEach(([id,label],i)=>{const b=document.createElement('button');b.className='tab'+(i===0?' active':'');b.textContent=label;b.onclick=()=>select(id,b);nav.appendChild(b);});
+$('#lvl').querySelectorAll('button').forEach(b=>b.onclick=()=>{level=+b.dataset.l;$('#lvl').querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));render();});
+const node=()=>$('#node').value;
+async function rpc(method,params=[],wallet=null){const r=await fetch('/api/rpc',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({node:node(),method,params,wallet})}).then(r=>r.json());if(!r.ok)throw new Error(r.error);return r.result;}
+const fmt=n=>n==null?'—':Number(n).toLocaleString(); const gib=b=>b==null?'—':(b/1073741824).toFixed(1)+' GB';
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const card=(k,v,sm)=>`<div class="card"><div class="k">${k}</div><div class="v ${sm?'sm':''}">${v}</div></div>`;
+// ---- peer diagnostics (browser topology) — mirrors the Qt peer_diag_lines surface ----
+const _dur=s=>{s=Math.max(0,s|0);const h=s/3600|0,m=(s%3600)/60|0;return h?`${h}h ${m}m`:(m?`${m}m ${s%60}s`:`${s}s`);};
+function peerDiag(p){const now=Date.now()/1000,age=now-(p.conntime||now);const recv=p.bytesrecv||0,sent=p.bytessent||0;
+  const svc=Array.isArray(p.servicesnames)&&p.servicesnames.length?p.servicesnames.join(', '):(p.services||'—');
+  return [['address',p.addr||'—'],['local / bind',p.addrlocal||p.addrbind||'—'],['network',p.network||'—'],
+    ['direction',p.inbound?'↓ inbound':'↑ outbound'],['conn type',p.connection_type||'—'],['client',(p.subver||'').replace(/\//g,'')||'—'],
+    ['protocol',p.version??'—'],['services',svc],['relays txs',p.relaytxes?'yes':'no'],
+    ['ping now/min',`${((p.pingtime||0)*1000).toFixed(0)} / ${((p.minping||0)*1000).toFixed(0)} ms`],
+    ['↓ recv rate',(recv/Math.max(1,age)/1024).toFixed(1)+' KB/s'],['↓ received',(recv/1048576).toFixed(2)+' MiB'],
+    ['↑ sent',(sent/1048576).toFixed(2)+' MiB'],['connected for',_dur(age)],['their blocks',p.synced_blocks??'—'],
+    ['their headers',p.synced_headers??'—'],['starting ht',p.startingheight??'—'],['blocks in-flight',(p.inflight||[]).length],
+    ['manual (addnode)',p.addnode?'yes':'no']];}
+// EtherApe-style traffic spectrum: blue (idle) → green (busy) → orange (hot).
+function topoColor(f){f=Math.max(0,Math.min(1,f)); if(f<0.5){const t=f/0.5;return `rgb(${0+t*22|0},${191+t*8|0},${255-t*123|0})`;} const t=(f-0.5)/0.5;return `rgb(${22+t*225|0},${199-t*52|0},${132-t*106|0})`;}
+// Sync gauge color: <51% dark; 51%→99% dark green → lighter; ≥99% candle green (held to 100%).
+const CANDLE='#16C784';
+function syncColor(p){
+  if(p>=99) return CANDLE;
+  if(p<51) return '#0a3d27';
+  const t=(p-51)/48, L=(a,b)=>Math.round(a+(b-a)*t);
+  return `rgb(${L(11,22)},${L(93,199)},${L(52,132)})`;   // #0b5d34 → #16C784
+}
+const acc=(title,open,html)=>`<details ${open?'open':''}><summary>${title}</summary><div class="body">${html}</div></details>`;
+const raw=(title,obj)=> level>=2 ? acc('⌁ raw · '+title, false, `<pre>${esc(JSON.stringify(obj,null,2))}</pre>`) : '';
+let logTimer=null;
+const stateLabel=s=>({running:'<span class="ok">● running</span>',booting:'<span class="warn">● booting…</span>',busy:'<span class="warn">● validating (busy)</span>',down:'<span class="err">● stopped</span>'}[s]||esc(s));
+async function loadLog(){
+  const pane=document.getElementById('logpane'); if(!pane) return;
+  const sel=window.getSelection();   // don't clobber a selection the user is copying
+  if(sel && !sel.isCollapsed && pane.contains(sel.anchorNode)) return;
+  const r=await fetch('/api/node/log?lines=120').then(r=>r.json()).catch(()=>({ok:false,error:'unreachable'}));
+  if(!r.ok){ pane.textContent=r.error||'log unavailable'; return; }
+  const atBottom=pane.scrollTop+pane.clientHeight>=pane.scrollHeight-30;
+  pane.innerHTML=r.lines.map(l=>{const c=/UpdateTip|new best/.test(l)?'u':/init message|Bitcoin Core|Done loading|Opened|thread start|peer/i.test(l)?'i':/Warning|error|corrupt/i.test(l)?'w':'';return c?`<span class="${c}">${esc(l)}</span>`:esc(l);}).join('\n');
+  if(atBottom) pane.scrollTop=pane.scrollHeight;
+}
+async function nodeAction(act){
+  const msg=document.getElementById('nodemsg'); if(msg) msg.textContent=act==='start'?'starting…':'stopping…';
+  const r=await fetch('/api/node/'+act,{method:'POST',headers:{'content-type':'application/json'},body:'{}'}).then(r=>r.json()).catch(e=>({ok:false,error:String(e)}));
+  if(msg) msg.innerHTML=r.ok?`<span class="ok">${esc(r.note||r.message||act+' ok')}</span>`:`<span class="err">${esc(r.error)}</span>`;
+  setTimeout(pollHealth,1500);
+}
+async function pollSystem(){
+  const el=document.getElementById('sysmon'); if(!el) return;
+  try{ const d=await fetch('/api/system').then(r=>r.json()); if(!d.ok){el.textContent='🖥 —';return;}
+    let col='#16C784'; const t=d.tempC;
+    if(t>=99)col='#ff2b2b'; else if(t>=96)col='#FF5E3A'; else if(t>=85)col='#F7931A';
+    el.innerHTML=`🖥 ${d.cpuPct}%`+(t!=null?` · <span style="color:${col}">🌡 ${t}°C</span>`:'')+(d.memUsedPct!=null?` · mem ${d.memUsedPct}%`:'');
+  }catch{}
+}
+let NETACT={events:[],tally:{},local:[]};   // last log-based connection activity (also feeds the topology ring)
+async function netActivityHtml(){
+  try{ const na=await fetch('/api/netactivity?n=40').then(r=>r.json()); if(!na.ok) return ''; NETACT=na;
+    const ty=na.tally||{}, col={connected:'#16C784',failed:'#f85149',disconnect:'#F7931A',inbound:'#00BFFF'};
+    const rows=(na.events||[]).slice().reverse().map(e=>`<tr><td>${esc((e.time||'').slice(-8))}</td><td style="color:${col[e.kind]||'#c9d4e0'}">${esc(e.kind)}</td><td>${esc(e.addr||(e.peer?'peer='+e.peer:'—'))}</td><td class="muted">${esc((e.text||'').slice(0,70))}</td></tr>`).join('');
+    return `<h3>Connection activity <span class="muted">· log-based (works during RPC choke)</span></h3>`
+      +`<div class="muted">✓ ${ty.connected||0} connected · ✗ ${ty.failed||0} failed · ⟲ ${ty.disconnect||0} dropped · ⇣ ${ty.inbound||0} inbound${na.local&&na.local.length?' · local: '+na.local.slice(0,3).join(', '):''}</div>`
+      +`<div class="scroll"><table><thead><tr><th>time</th><th>event</th><th>addr/peer</th><th>detail</th></tr></thead><tbody>${rows||'<tr><td colspan=4 class="muted">—</td></tr>'}</tbody></table></div>`;
+  }catch{ return ''; }
+}
+async function pollCoremon(){
+  const el=document.getElementById('coremon'); if(!el) return;
+  try{ const m=await fetch('/api/coremon?node='+node()).then(r=>r.json());
+    if(!m.up){ el.className='coremon off'; el.textContent='● CORE OFF'; el.title='Bitcoin Core not reachable on :'+(m.port||'8332'); }
+    else if(m.feeding){ el.className='coremon on feeding'; el.textContent='● CORE ON'; el.title=`Bitcoin Core ON · feeding from connect (block ${m.height}, tip ${m.logAgeSec}s ago)`; }
+    else { el.className='coremon on'; el.textContent='● CORE ON'; el.title=`Bitcoin Core ON (block ${m.height||'?'})`; }
+  }catch{ el.className='coremon off'; el.textContent='● CORE ?'; el.title='monitor error'; }
+}
+async function pollHealth(){
+  const pill=document.getElementById('nodestat'); if(!pill) return;
+  try{ const h=await fetch('/api/health?node='+node()).then(r=>r.json());
+    pill.className='nodestat '+h.state;
+    pill.textContent={running:`● node :${h.port} · block ${h.blocks!=null?Number(h.blocks).toLocaleString():'?'}`,booting:`● node :${h.port} booting…`,busy:`● node :${h.port} validating…`,down:`● node :${h.port||'8332'} stopped`}[h.state]||('● '+h.state);
+  }catch{ pill.className='nodestat down'; pill.textContent='● node unreachable'; }
+}
+function select(id,btn){cur=id;document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));btn?.classList.add('active');document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));$('#p-'+id).classList.add('active');render();}
+async function render(){
+  const panel=$('#p-'+cur);
+  // maintain state: don't clobber a selection the user is copying in this panel
+  const sel=window.getSelection();
+  if(sel && !sel.isCollapsed && panel && panel.contains(sel.anchorNode)) return;
+  const rf=document.getElementById('refreshed');
+  if(rf){ rf.textContent='⟳ refreshing…'; rf.style.color='var(--btc)'; }
+  // capture scroll positions of scrollable children so a refresh doesn't jump
+  const before=[...panel.querySelectorAll('.scroll,.logpane,pre')].map(e=>e.scrollTop);
+  try{ await RENDER[cur](); }catch(e){ panel.innerHTML=`<p class="err">${esc(e.message)}</p>`; }
+  const after=panel.querySelectorAll('.scroll,.logpane,pre');
+  after.forEach((e,i)=>{ if(before[i]!=null) e.scrollTop=before[i]; });
+  if(rf){ rf.textContent='✓ '+new Date().toLocaleTimeString(); rf.style.color='var(--cash)'; }
+}
+
+const RENDER={
+  async node(){
+    const el=$('#p-node');
+    if(!el.dataset.init){ el.dataset.init=1;
+      el.innerHTML=`<h3>Bitcoin Core — status &amp; control</h3>
+        <div id="activity"></div>
+        <div id="nodecards" class="grid"></div>
+        <p style="margin-top:.6rem">
+          <button id="nstart">▶ Start node</button>
+          <button id="nstop" class="danger">■ Stop node</button>
+          <button id="nreflog" class="secondary">↻ Log</button>
+          <label class="muted"><input type="checkbox" id="nauto" checked/> live (3s)</label>
+        </p>
+        <p id="nodemsg" class="muted"></p>
+        <h3>Live boot / sync log <span class="muted">(debug.log tail)</span></h3>
+        <div id="logpane" class="logpane">loading…</div>`;
+      el.querySelector('#nstart').onclick=()=>nodeAction('start');
+      el.querySelector('#nstop').onclick=()=>{ if(confirm('Stop Bitcoin Core?')) nodeAction('stop'); };
+      el.querySelector('#nreflog').onclick=loadLog;
+      el.querySelector('#nauto').onchange=e=>{ clearInterval(logTimer); if(e.target.checked) logTimer=setInterval(()=>{ if(cur==='node') loadLog(); },3000); };
+      logTimer=setInterval(()=>{ if(cur==='node'&&document.getElementById('nauto')?.checked) loadLog(); },3000);
+    }
+    const h=await fetch('/api/health?node='+node()).then(r=>r.json()).catch(()=>({state:'down'}));
+    const pct=h.progress!=null?(h.progress*100).toFixed(2)+'%':'—';
+    $('#nodecards').innerHTML=card('state',stateLabel(h.state))+card('port',h.port||'—')+card('height',h.blocks!=null?fmt(h.blocks):'—')+card('headers',h.headers!=null?fmt(h.headers):'—')+card('sync',pct,1)+card('IBD',h.ibd==null?'—':String(h.ibd));
+    // Activity — WHAT Bitcoin Core is doing, HOW, and WHERE.
+    try {
+      const fs=await fetch('/api/filesystem').then(r=>r.json()).catch(()=>({}));
+      const dd=fs.datadir||'~/.bitcoin'; const drv=fs.df?`${fs.df.source} ${fs.df.fstype} @ ${fs.df.mount}`:'';
+      const p=h.progress!=null?(h.progress*100):null;
+      const what=h.state==='down'?'Stopped':h.state==='booting'?'Starting up — loading block index / chainstate':
+        h.ibd?'Initial Block Download — validating the chain':h.state==='busy'?'Validating a block (RPC briefly busy)':'Full node — synced &amp; serving the network';
+      const how=(h.blocks!=null)?`validating block <b>${fmt(h.blocks)}</b> of <b>${fmt(h.headers)}</b> headers · ${p!=null?p.toFixed(4)+'%':'—'} · replaying &amp; verifying every block and signature`:'node busy — retrying';
+      $('#activity').innerHTML=`<div class="card" style="border-color:var(--btc);margin-bottom:.6rem">
+        <div class="k" style="color:var(--btc)">what bitcoin core is doing</div><div class="v sm">${what}</div>
+        <div class="muted" style="margin-top:.35rem"><b>how:</b> ${how}</div>
+        <div class="muted"><b>where:</b> datadir <code>${esc(dd)}</code>${drv?` · <code>${esc(drv)}</code>`:''} · files <code>blocks/</code> + <code>chainstate/</code>${h.ibd?' + <code>indexes/txindex</code>':''} · log <code>debug.log</code></div></div>`;
+    } catch(e){}
+    const sd=el.querySelector('#nstart'), sp=el.querySelector('#nstop');
+    if(sd) sd.disabled=['running','booting','busy'].includes(h.state);
+    if(sp) sp.disabled=h.state==='down';
+    if(h.control===false) el.querySelector('#nodemsg').innerHTML='<span class="warn">node control disabled (BANKON_NODE_CONTROL=0)</span>';
+    loadLog();
+  },
+  async overview(){
+    const resp=await fetch('/api/overview?node='+node()).then(r=>r.json());
+    const o=resp.result; const c=o.chain||{},n=o.net||{},m=o.mempool||{},mi=o.mining||{};
+    // ACTUAL sync from debug.log (no RPC needed) — current even while RPC is saturated.
+    let st={}; try{ st=await fetch('/api/synctip').then(r=>r.json()); }catch(e){}
+    const liveProg = st.progress!=null ? st.progress : (c.verificationprogress||0);
+    const liveBlocks = st.height!=null ? st.height : c.blocks;
+    const pct=(liveProg*100);
+    // +N blocks since last refresh
+    const dBlk=(lastSyncHeight!=null&&liveBlocks!=null)?(liveBlocks-lastSyncHeight):null;
+    const deltaHtml=dBlk==null?'':dBlk>0?` · <span style="color:var(--cash);font-weight:700">+${fmt(dBlk)} block${dBlk!==1?'s':''} since last refresh</span>`:' · <span class="muted">no new blocks since last refresh</span>';
+    if(liveBlocks!=null) lastSyncHeight=liveBlocks;
+    const fresh=st.logTime?('log '+st.logTime.replace('T',' ').replace('Z','')):(resp.asOf?new Date(resp.asOf).toLocaleTimeString():'—');
+    const anyStale=resp.stale&&Object.keys(resp.stale).length;
+    const synced=(!c.initialblockdownload)&&pct>=99.99;
+    const mode=synced
+      ? `<span class="pill" style="background:${CANDLE};color:#012;font-weight:700">● FULL NODE</span>`
+      : '<span class="pill" style="background:#1c1710;color:var(--btc)">● IBD · syncing</span>';
+    const col=syncColor(pct);
+    // Expanded syncing detail — the ACTUAL sync state, shown while in IBD.
+    let ibd='';
+    if(c.initialblockdownload){
+      const remaining=Math.max(0,(c.headers||0)-(liveBlocks||0));
+      const tipDate=st.blockDate?st.blockDate.replace('T',' ').replace('Z','')+' UTC':(c.time?new Date(c.time*1000).toISOString().slice(0,19).replace('T',' ')+' UTC':'—');
+      const behindMs=st.blockDate?(Date.now()-Date.parse(st.blockDate)):(c.mediantime?(Date.now()-c.mediantime*1000):0);
+      const behindD=behindMs/86400000;
+      const behind=behindD>365?(behindD/365).toFixed(2)+' yr':behindD.toFixed(1)+' d';
+      ibd=`<div class="grid" style="margin-top:.5rem">
+          ${card('validated block',fmt(liveBlocks))}${card('of headers',fmt(c.headers))}${card('blocks remaining',fmt(remaining))}
+          ${card('synced to (block date)',tipDate,1)}${card('behind chain tip',behind,1)}${card('progress',pct.toFixed(6)+'%',1)}</div>
+        <div class="muted" style="font-size:.78rem">replaying history — validating block ${fmt(c.blocks)} of ~${fmt(c.headers)} (headers complete); reading the datadir drive</div>`;
+    }
+    let h=`<div class="muted" style="font-size:.78rem">data as of ${fresh}${anyStale?' · <span class="warn">some cached (node validating)</span>':' · live'}${deltaHtml}</div>
+      <h3>Sync ${mode}</h3>
+      <div class="progress"><div style="width:${Math.max(pct,6)}%;background:${col};color:#02140c">${pct.toFixed(6)}% · ${fmt(liveBlocks)} / ${fmt(c.headers)}</div></div>${ibd}
+      <div class="grid" style="margin-top:.7rem">
+        ${card('height',fmt(liveBlocks))}${card('peers',`${n.connections??'—'}`)}${card('mempool txs',fmt(m.size))}${card('disk',gib(c.size_on_disk))}</div>`;
+    if(level>=1){ h+=`<h3>Chain</h3><div class="grid">
+        ${card('chain',c.chain||'—')}${card('headers',fmt(c.headers))}${card('difficulty',c.difficulty?Number(c.difficulty).toExponential(3):'—',1)}
+        ${card('pruned',String(c.pruned))}${card('uptime',o.uptime?(o.uptime/3600).toFixed(1)+' h':'—',1)}${card('verify % (digits)',pct.toFixed(8),1)}</div>
+      <h3>Network</h3><div class="grid">
+        ${card('conn in/out',`${n.connections_in??0} / ${n.connections_out??0}`,1)}${card('subversion',(n.subversion||'—').replace(/\//g,''),1)}
+        ${card('protocol',n.protocolversion||'—')}${card('relay fee',(n.relayfee??'—')+'',1)}${card('net hashrate',mi.networkhashps?Number(mi.networkhashps).toExponential(2):'—',1)}</div>`; }
+    // BTC.oracle — the time on a Bitcoin block (avg blocktime) + derived throttle.
+    try {
+      const oc=(await fetch('/api/oracle').then(r=>r.json())).oracle||{};
+      const fmin=s=>s?(s/60).toFixed(2)+' min':'—';
+      h+=`<h3>BTC.oracle <span class="muted">· the time on a Bitcoin block (genesis starts the clock)</span></h3><div class="grid">
+        ${card('avg block time',fmin(oc.avgBlockTimeWindow||oc.avgBlockTimeAllTime))}
+        ${card('all-time avg',fmin(oc.avgBlockTimeAllTime),1)}
+        ${card('window avg (2016)',fmin(oc.avgBlockTimeWindow),1)}
+        ${card('target',fmin(oc.targetBlockTime),1)}
+        ${card('throttle poll',oc.recommendedPollMs?(oc.recommendedPollMs/1000).toFixed(0)+'s':'—',1)}</div>`;
+    } catch(e){}
+    // Filesystem — the drive the node's datadir lives on (external 2 TB HD here).
+    try {
+      const fsr=await fetch('/api/filesystem').then(r=>r.json()); const f=fsr.df||{};
+      const usedPct=f.size?((f.used/f.size)*100):0;
+      h+=`<h3>Filesystem <span class="muted">· node datadir drive</span></h3>
+        <div class="progress"><div style="width:${Math.max(usedPct,4)}%;background:linear-gradient(90deg,var(--cash),var(--btc))">${usedPct.toFixed(0)}% used</div></div>
+        <div class="grid" style="margin-top:.6rem">
+          ${card('drive',(f.source||'—')+' '+(f.fstype||''),1)}${card('free',gib(f.avail))}${card('total',gib(f.size))}
+          ${card('chain data',gib(fsr.chainBytes))}${card('mount',(f.mount||'—'),1)}</div>`;
+    } catch(e){}
+    h+=raw('getblockchaininfo',c)+raw('getnetworkinfo',n)+raw('getmininginfo',mi);
+    $('#p-overview').innerHTML=h;
+  },
+  async blocks(){
+    const el=$('#p-blocks');
+    if(!el.dataset.init){el.dataset.init=1;el.innerHTML=`<div class="row"><input id="bq" placeholder="height or hash" style="flex:1"/><button id="bgo">Lookup</button></div><div id="bout"></div><div id="blatest"></div>`;
+      el.querySelector('#bgo').onclick=lookup;el.querySelector('#bq').onkeydown=e=>{if(e.key==='Enter')lookup();};}
+    // Chain tip from cached getblockchaininfo (no per-block cs_main needed) — always shows.
+    const ci=await rpc('getblockchaininfo').catch(()=>null);
+    let tip='';
+    if(ci) tip=`<h3>Chain tip</h3><div class="grid">${card('height',fmt(ci.blocks))}${card('best hash',(ci.bestblockhash||'').slice(0,20)+'…',1)}${card('median time',ci.mediantime?new Date(ci.mediantime*1000).toISOString().slice(0,19):'—',1)}${card('difficulty',ci.difficulty?Number(ci.difficulty).toExponential(3):'—',1)}${card('size on disk',ci.size_on_disk?(ci.size_on_disk/1073741824).toFixed(1)+' GB':'—',1)}</div>`;
+    // Recent-block table from the server cache (built when the node has a cs_main gap).
+    const r=await fetch('/api/recentblocks').then(r=>r.json()).catch(()=>({blocks:[]}));
+    const blocks=(r.blocks||[]).slice(0, level>=1?12:6);
+    const rows=blocks.map(b=>`<tr><td>${fmt(b.height)}</td><td><code>${(b.hash||'').slice(0,18)}…</code></td><td>${new Date(b.time*1000).toISOString().replace('T',' ').slice(0,19)}</td><td>${fmt(b.nTx)}</td></tr>`).join('');
+    el.querySelector('#blatest').innerHTML=tip+`<h3>Latest blocks</h3>${rows?`<div class="scroll"><table><thead><tr><th>height</th><th>hash</th><th>time UTC</th><th>txs</th></tr></thead><tbody>${rows}</tbody></table></div>`:'<p class="muted">per-block table builds when the node has an RPC gap (it\'s validating now) — the chain tip above is live.</p>'}`;
+    async function lookup(){const q=el.querySelector('#bq').value.trim();if(!q)return;const hash=/^[0-9]+$/.test(q)?await rpc('getblockhash',[+q]):q;
+      const b=await rpc('getblock',[hash, level>=2?2:1]); let extra='';
+      if(level>=1){try{const s=await rpc('getblockstats',[b.height]);extra=acc('block stats',true,`<div class="grid">${card('txs',fmt(s.txs))}${card('weight',fmt(s.total_weight)+' WU',1)}${card('size',fmt(s.total_size)+' B',1)}${card('median feerate',(s.medianfeerate||0)+' sat/vB',1)}${card('total fee',fmt(s.totalfee)+' sat',1)}${card('subsidy',fmt(s.subsidy)+' sat',1)}</div>`);}catch(e){}}
+      el.querySelector('#bout').innerHTML=`<h3>Block ${fmt(b.height)}</h3><div class="grid">${card('hash',b.hash.slice(0,22)+'…',1)}${card('time',new Date(b.time*1000).toISOString().slice(0,19),1)}${card('txs',fmt(b.nTx))}${card('size',fmt(b.size)+' B',1)}${card('confirmations',fmt(b.confirmations))}</div>${extra}${raw('getblock',b)}`;}
+  },
+  async mempool(){
+    const m=await rpc('getmempoolinfo'); let raw_={};try{raw_=await rpc('getrawmempool',[true]);}catch(e){}
+    let h=`<div class="grid">${card('txs',fmt(m.size))}${card('virtual size',fmt(m.bytes)+' vB',1)}${card('memory / max',(m.usage/1048576).toFixed(1)+' / '+((m.maxmempool||0)/1048576).toFixed(0)+' MiB',1)}${card('min relay fee',(m.minrelaytxfee??'—')+' BTC/kvB',1)}${card('mempool min fee',(m.mempoolminfee??'—')+' BTC/kvB',1)}${card('total fee',(m.total_fee!=null?m.total_fee+' BTC':'—'),1)}${card('unbroadcast',fmt(m.unbroadcastcount||0),1)}${card('RBF / loaded','fullrbf='+(m.fullrbf??'?')+' · loaded='+(m.loaded??'?'),1)}</div>`;
+    if(level>=1){const ed=[1,2,5,10,20,50,100,1e9],bk={};ed.forEach(e=>bk[e]=0);
+      for(const k in raw_){const f=raw_[k];const vb=f.vsize||f.size||1;const r=(f.fees?.base?f.fees.base*1e8:0)/vb;for(const e of ed){if(r<e){bk[e]++;break;}}}
+      const mx=Math.max(1,...Object.values(bk));const lb={1:'<1',2:'1–2',5:'2–5',10:'5–10',20:'10–20',50:'20–50',100:'50–100',[1e9]:'100+'};
+      h+=`<h3>Fee-rate distribution</h3>`+ed.map(e=>`<div class="row"><span class="lbl">${lb[e]} sat/vB</span><div class="track"><div class="bar" style="width:${bk[e]/mx*100}%"></div></div><span class="muted">${bk[e]}</span></div>`).join('');}
+    if(level>=1){try{const f=await rpc('estimatesmartfee',[6]);h+=acc('fee estimate (6 blocks)',false,`<pre>${esc(JSON.stringify(f))}</pre>`);}catch(e){}}
+    h+=raw('getmempoolinfo',m); $('#p-mempool').innerHTML=h;
+  },
+  async network(){
+    const el=$('#p-network');
+    if(!el.dataset.init){ el.dataset.init=1;
+      const seeds=['seed.bitcoin.sipa.be:8333','dnsseed.bluematt.me:8333','seed.bitcoin.sprovoost.nl:8333','dnsseed.emzy.de:8333','seed.bitcoin.wiz.biz:8333','seed.bitcoinstats.com:8333'];
+      el.innerHTML=`<div style="border:1px solid #2e4a63;border-radius:6px;background:#0e1620;padding:10px;margin-bottom:10px">
+          <b id="ncount">connections: —</b>
+          &nbsp;&nbsp; add node <select id="nsel">${seeds.map(s=>`<option>${s}</option>`).join('')}</select>
+          <input id="naddr" placeholder="or ip:port" style="width:130px"/>
+          &nbsp;<button id="nadd">＋ Add</button> <button id="n1" title="connect once">1-try</button> <button id="nrm" title="remove">✕</button>
+          <div id="nstatus" class="muted" style="margin-top:6px">Pick a seed (or type ip:port) and Add to grow connections.</div>
+        </div>
+        <div style="border:2px solid #00BFFF;border-radius:12px;background:#05080d;padding:8px;margin-bottom:10px">
+          <div class="muted" id="ntopo-info" style="margin-bottom:4px">Network map — your node (centre), connected peers · flowing dots = traffic · gold = ★favourite · orange = inbound · click a node</div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap">
+            <canvas id="ntopo" width="600" height="380" style="flex:2;min-width:340px;background:#05080d;border-radius:8px;cursor:pointer"></canvas>
+            <div id="ntopo-diag" style="flex:1;min-width:240px;border:1px solid #14405c;border-radius:8px;padding:8px;align-self:stretch;overflow:auto;max-height:380px"></div>
+          </div>
+        </div>
+        <div id="net-body"></div>`;
+      const send=async(cmd)=>{const addr=(el.querySelector('#naddr').value.trim()||el.querySelector('#nsel').value); if(!addr)return;
+        el.querySelector('#nstatus').textContent=cmd+' '+addr+' …';
+        try{const r=await fetch('/api/node/addnode',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({addr,command:cmd})}).then(r=>r.json());
+          el.querySelector('#nstatus').innerHTML=r.ok?`<span class="ok">✓ ${esc(cmd)} ${esc(addr)} — peers update shortly</span>`:`<span class="err">✗ ${esc(r.error||'failed')}</span>`;}
+        catch(e){el.querySelector('#nstatus').innerHTML='<span class="err">'+esc(e.message)+'</span>';}};
+      el.querySelector('#nadd').onclick=()=>send('add'); el.querySelector('#n1').onclick=()=>send('onetry'); el.querySelector('#nrm').onclick=()=>send('remove');
+      // ---- live topology: our node at centre, peers radial, animated traffic packets, click-to-diagnose ----
+      const cv=el.querySelector('#ntopo'), ctx=cv.getContext('2d'), diag=el.querySelector('#ntopo-diag');
+      const NET={peers:[],name:'node',sel:null,phase:0,hits:[],cloud:[],acts:[]}; el.__NET=NET;
+      const renderDiag=()=>{const p=NET.sel;
+        if(!p){diag.innerHTML='<div class="muted" style="padding:6px">◎ click a peer node for diagnostics</div>';return;}
+        const rows=peerDiag(p).map(([k,v])=>`<div style="display:flex;justify-content:space-between;gap:8px;font-family:ui-monospace,monospace;font-size:11px;padding:1px 0"><span class="muted">${esc(k)}</span><span style="color:#d6e3ef;text-align:right;word-break:break-all">${esc(v)}</span></div>`).join('');
+        const a=esc(p.addr);
+        const fav=p.addnode?`<button onclick="bkPeer('unpromote','${a}')" style="color:#FFD37A">★ Promoted</button>`:`<button onclick="bkPeer('promote','${a}')">★ Promote</button>`;
+        diag.innerHTML=`<div style="color:#F7931A;font-weight:700;font-family:ui-monospace,monospace;border-bottom:1px solid #5a3a0a;padding-bottom:4px;margin-bottom:6px;word-break:break-all">◎ ${a}</div>${rows}<div style="display:flex;gap:6px;margin-top:8px">${fav}<button onclick="bkPeer('boot','${a}')" style="color:#f85149">⏏ Boot</button></div>`;};
+      el.__renderTopoDiag=renderDiag; renderDiag();
+      const layout=()=>{const w=cv.width,h=cv.height,cx=w/2,cy=h/2,R=Math.min(w,h)/2-58,ps=NET.peers;
+        const mx=Math.max(1,...ps.map(p=>(p.bytessent||0)+(p.bytesrecv||0)));
+        return ps.map((p,i)=>{const ang=2*Math.PI*i/Math.max(1,ps.length);const frac=((p.bytessent||0)+(p.bytesrecv||0))/mx;
+          return {x:cx+R*Math.cos(ang),y:cy+R*Math.sin(ang),r:7+9*frac,frac,p,ang,cx,cy};});};
+      cv.onclick=(e)=>{const rc=cv.getBoundingClientRect();const mx=(e.clientX-rc.left)*cv.width/rc.width,my=(e.clientY-rc.top)*cv.height/rc.height;
+        let best=null,bd=1e9; for(const it of NET.hits){const dd=(mx-it.x)**2+(my-it.y)**2; if(dd<=(it.r+10)**2&&dd<bd){best=it.p;bd=dd;}}
+        NET.sel=best; renderDiag();};
+      (function draw(){ requestAnimationFrame(draw); if(cur!=='network')return;
+        const w=cv.width,h=cv.height,cx=w/2,cy=h/2; ctx.fillStyle='#05080d'; ctx.fillRect(0,0,w,h);
+        // faint known-node cloud backdrop (golden-angle scatter)
+        ctx.fillStyle='rgba(90,150,180,0.35)'; for(let i=0;i<NET.cloud.length;i++){const ang=2*Math.PI*((i*0.61803398875)%1),rr=Math.min(w,h)/2-18+(i%6)*4;ctx.beginPath();ctx.arc(cx+rr*Math.cos(ang),cy+rr*Math.sin(ang),1.2,0,7);ctx.fill();}
+        // IBD FALLBACK: when peers are few/unavailable, show the log-based connection-activity ring so the
+        // map is never bare during verification — connected=green · failed=red · inbound=blue · drop=orange.
+        const AC={connected:'#16C784',failed:'#f85149',inbound:'#00BFFF',disconnect:'#F7931A'};
+        const acts=(NET.peers.length<4?(NET.acts||[]):[]).filter(e=>AC[e.kind]).slice(-40);
+        acts.forEach((e,i)=>{const ang=2*Math.PI*((i*0.61803398875)%1),rr=Math.min(w,h)/2*0.6+(i%6)*8;
+          const x=cx+rr*Math.cos(ang),y=cy+rr*Math.sin(ang),c=AC[e.kind];
+          ctx.strokeStyle=c+'66'; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(x,y); ctx.stroke();
+          const pk=(NET.phase+i*0.11)%1; ctx.fillStyle=c; ctx.beginPath(); ctx.arc(cx+(x-cx)*pk,cy+(y-cy)*pk,1.8,0,7); ctx.fill();
+          ctx.beginPath(); ctx.arc(x,y,4,0,7); ctx.fill();
+          const lab=e.addr||(e.peer?'peer='+e.peer:''); if(lab){ctx.fillStyle=c;ctx.font='8px ui-monospace,monospace';ctx.textAlign=x>=cx?'left':'right';ctx.fillText(lab.slice(0,20),x+(x>=cx?6:-6),y-4);}});
+        if(acts.length){ctx.fillStyle='#8aa0b4';ctx.font='9px ui-monospace,monospace';ctx.textAlign='center';ctx.fillText('log activity (peer RPC busy) · '+acts.length+' events',cx,h-8);}
+        const hits=layout(); NET.hits=hits;
+        for(const it of hits){const col=topoColor(it.frac); ctx.strokeStyle=col; ctx.lineWidth=1+5*it.frac; ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(it.x,it.y); ctx.stroke();}
+        NET.phase=(NET.phase+0.05)%1;
+        hits.forEach((it,k)=>{ if(it.frac<0.015)return; const col=topoColor(it.frac); for(let j=0;j<2;j++){const t=(NET.phase+j*0.5+k*0.13)%1;ctx.fillStyle=col;ctx.beginPath();ctx.arc(cx+(it.x-cx)*t,cy+(it.y-cy)*t,2+3*it.frac,0,7);ctx.fill();}});
+        for(const it of hits){const p=it.p,col=topoColor(it.frac); ctx.fillStyle=col;
+          ctx.strokeStyle=p.addnode?'#FFD37A':(p.inbound?'#F7931A':'#14405c'); ctx.lineWidth=p.addnode?3:(p.inbound?2:1);
+          ctx.beginPath(); ctx.arc(it.x,it.y,it.r,0,7); ctx.fill(); ctx.stroke();
+          const seld=NET.sel&&NET.sel.addr===p.addr;
+          if(seld){const hr=it.r+6+4*Math.sin(NET.phase*2*Math.PI);ctx.strokeStyle='#FFD37A';ctx.lineWidth=2.5;ctx.beginPath();ctx.arc(it.x,it.y,hr,0,7);ctx.stroke();}
+          ctx.fillStyle=seld?'#FFD37A':'#9fb4c6'; ctx.font='9px ui-monospace,monospace'; ctx.textAlign=it.x>=cx?'left':'right';
+          ctx.fillText((p.addr||'').slice(0,22),it.x+(it.x>=cx?10:-10),it.y-2);}
+        ctx.fillStyle='#F7931A'; ctx.strokeStyle='#F7931A'; ctx.lineWidth=3; ctx.beginPath(); ctx.arc(cx,cy,16,0,7);
+        ctx.fillStyle='#1a1200'; ctx.fill(); ctx.stroke();
+        ctx.fillStyle='#F7931A'; ctx.font='bold 10px ui-monospace,monospace'; ctx.textAlign='center'; ctx.fillText(NET.name,cx,cy+30);
+      })();
+    }
+    // Peers via /api/rpc so we can tell "node busy" (ok:false) from "0 peers" — honest, not a false 0.
+    let peers=null, stale=false;
+    try{ const r=await fetch('/api/rpc',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({node:node(),method:'getpeerinfo',params:[]})}).then(r=>r.json());
+      if(r.ok&&Array.isArray(r.result)){ peers=r.result; stale=!!r.stale; } }catch(e){}
+    const cnt=el.querySelector('#ncount');
+    const actHtml=await netActivityHtml();
+    if(peers===null){ cnt.innerHTML='connections: <span class="warn">— (node RPC busy — can\'t read peers during heavy IBD)</span>';
+      const NETb=el.__NET; if(NETb){ NETb.peers=[]; NETb.acts=NETACT.events||[];   // feed the IBD fallback ring
+        const ti=el.querySelector('#ntopo-info'); if(ti) ti.innerHTML='Network map — <span style="color:#F7931A">peer RPC busy (IBD)</span> · showing live connection activity from the log · green=connected · red=failed · blue=inbound'; }
+      el.querySelector('#net-body').innerHTML='<p class="muted">peer list needs RPC headroom — meanwhile, live connection activity from the log:</p>'+actHtml; return; }
+    const TGT=12; const col=peers.length>=TGT?'var(--cash)':peers.length>=3?'var(--btc)':'var(--err,#f85149)';
+    const _in=peers.filter(p=>p.inbound).length, _out=peers.length-_in;
+    // target is a FLOOR (min desired), not a cap — exceeding it is healthy, not "backwards".
+    cnt.innerHTML=`connections: <b style="color:${col}">${peers.length}</b> (${_out} out · ${_in} in) · target ≥ ${TGT} ${peers.length>=TGT?'✓':'building…'}`+(stale?' <span class="muted">(cached)</span>':'');
+    const tot=await rpc('getnettotals').catch(()=>({})); const ni=await rpc('getnetworkinfo').catch(()=>({}));
+    const inb=peers.filter(p=>p.inbound).length, outb=peers.length-inb;
+    const nets=(ni.networks||[]).filter(x=>x.reachable).map(x=>x.name).join(', ')||'—';
+    const v={};peers.forEach(p=>{const s=(p.subver||'?').replace(/\//g,'');v[s]=(v[s]||0)+1;});const mx=Math.max(1,...Object.values(v));
+    const la=(ni.localaddresses||[]).map(a=>a.address+':'+a.port).slice(0,3).join(' · ')||'(no public address advertised — likely behind NAT)';
+    // feed the live topology map: peers, our-node label, keep an open diagnostics panel current
+    const NET=el.__NET; if(NET){ NET.peers=peers; NET.acts=NETACT.events||[]; NET.name='bankon:'+((ni.localaddresses&&ni.localaddresses[0])?ni.localaddresses[0].address:((ni.subversion||'node').replace(/\//g,'')));
+      if(NET.sel){const fr=peers.find(p=>p.addr===NET.sel.addr); NET.sel=fr||null; el.__renderTopoDiag&&el.__renderTopoDiag();}
+      const ti=el.querySelector('#ntopo-info'); if(ti) ti.textContent=`Network map — ${peers.length} peers · flowing dots = traffic · gold = ★favourite · orange = inbound · click a node for diagnostics`;
+      if(!NET.cloud.length){ rpc('getnodeaddresses',[200]).then(a=>{NET.cloud=Array.isArray(a)?a.slice(0,200):[];}).catch(()=>{}); } }
+    let h=`<div class="muted" style="font-family:ui-monospace,monospace;color:#58a6ff;margin-bottom:6px">⌂ our node: ${esc(la)} · ${esc((ni.subversion||'').replace(/\//g,''))} · protocol ${ni.protocolversion??'?'}</div>
+      <div class="grid">
+        ${card('peers',peers.length)}${card('in / out',inb+' / '+outb,1)}${card('reachable nets',nets,1)}
+        ${card('total sent',gib(tot.totalbytessent))}${card('total recv',gib(tot.totalbytesrecv))}${card('relay fee',(ni.relayfee!=null?ni.relayfee:'—')+'',1)}</div>
+      <h3>Peers by version</h3>`+
+      (peers.length?Object.entries(v).sort((a,b)=>b[1]-a[1]).map(([s,c])=>`<div class="row"><span class="lbl" style="width:210px">${esc(s)}</span><div class="track"><div class="bar" style="width:${c/mx*100}%;background:var(--eth)"></div></div><span class="muted">${c}</span></div>`).join(''):'<p class="muted">no peers connected</p>');
+    // per-peer node actions: ★ Promote (favourite + persistent addnode) · ⏏ Boot (disconnect now)
+    window.bkPeer=async(kind,addr)=>{
+      const path=kind==='boot'?'/api/node/boot':'/api/node/promote';
+      const body=kind==='boot'?{addr}:{addr,on:kind==='promote'};
+      const st=document.querySelector('#nstatus'); if(st) st.textContent=kind+' '+addr+' …';
+      try{const r=await fetch(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json());
+        if(st) st.innerHTML=r.ok?`<span class="ok">✓ ${esc(kind)} ${esc(addr)}</span>`:`<span class="err">✗ ${esc(r.error||'failed')}</span>`;
+        if(r.ok) setTimeout(render,800);
+      }catch(e){ if(st) st.innerHTML='<span class="err">'+esc(e.message)+'</span>'; }};
+    const now=Date.now()/1000;
+    const rows=peers.map(p=>{const rate=(p.bytesrecv||0)/Math.max(1,now-(p.conntime||now))/1024; const a=esc(p.addr);
+      const fav=p.addnode?`<button title="un-promote" onclick="bkPeer('unpromote','${a}')" style="color:#FFD37A">★</button>`
+                         :`<button title="promote (favourite)" onclick="bkPeer('promote','${a}')">☆</button>`;
+      const boot=`<button title="boot (disconnect)" onclick="bkPeer('boot','${a}')" style="color:#f85149">⏏</button>`;
+      return `<tr${p.addnode?' style="color:#FFD37A"':''}><td>${a}</td><td>${esc((p.subver||'').replace(/\//g,''))}</td><td>${p.inbound?'in':'out'}</td><td>${esc(p.connection_type||'')}</td><td>${(p.pingtime*1000||0).toFixed(0)}ms</td><td>${rate.toFixed(1)}</td><td>${(p.bytessent/1048576).toFixed(1)}</td><td>${(p.bytesrecv/1048576).toFixed(1)}</td><td>${p.synced_blocks??'—'}</td><td style="white-space:nowrap">${fav} ${boot}</td></tr>`;}).join('');
+    h+=`<h3>Connected peers (${peers.length}) <span class="muted" style="font-weight:400">— ★ promote · ⏏ boot</span></h3><div class="scroll"><table><thead><tr><th>addr</th><th>subver</th><th>dir</th><th>type</th><th>ping</th><th>↓KB/s</th><th>MiB↑</th><th>MiB↓</th><th>height</th><th>act</th></tr></thead><tbody>${rows||'<tr><td colspan=10 class="muted">—</td></tr>'}</tbody></table></div>`;
+    h+=raw('getnetworkinfo',ni)+raw('getnettotals',tot);
+    el.querySelector('#net-body').innerHTML=h+actHtml;
+  },
+  async indexes(){
+    const el=$('#p-indexes');
+    if(!el.dataset.init){ el.dataset.init=1;
+      el.innerHTML=`<div class="muted" style="font-size:.78rem">live — updates as the node indexes</div>
+        <div id="crunch" style="color:#5a6b7b;font-weight:800;font-family:monospace;font-size:14px;margin:6px 0">⏸ idle</div>
+        <div id="iact" class="ok" style="font-weight:600"></div>
+        <div id="idx-body"></div>
+        <p class="muted">txindex enables arbitrary tx-by-txid lookup. It builds during IBD and catches up to the chain tip.</p>`;
+      const SP='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏';
+      // spinner animates ONLY while the index advanced within the last 6s; glow THROBS while crunching
+      setInterval(()=>{ if(cur!=='indexes')return; const c=el.querySelector('#crunch'); if(!c)return;
+        const indexing=IDX.t&&((Date.now()/1000-IDX.t)<6);
+        if(indexing){ IDX.spin=(IDX.spin+1)%SP.length; c.style.color='#00BFFF';
+          c.style.textShadow='0 0 '+(8+16*Math.abs(Math.sin(Date.now()/180))).toFixed(0)+'px #00BFFF';
+          c.textContent=SP[IDX.spin]+'  crunching  ·  '+(IDX.txt||'—'); }
+        else { c.style.color='#5a6b7b'; c.style.textShadow='none'; c.textContent='⏸  idle  ·  '+(IDX.txt||'—'); }
+      },110);
+    }
+    // IBD-proof: cached getindexinfo + log-based tip (no cs_main) so it stays live during IBD
+    const ii=await fetch('/api/indexinfo').then(r=>r.json()).catch(()=>({indexes:{}}));
+    const st=await fetch('/api/synctip').then(r=>r.json()).catch(()=>({}));
+    const idx=ii.indexes||{}; const tip=st.height||IDX.tip||0;
+    if(tip){ const now=Date.now()/1000;
+      if(IDX.tip&&tip>IDX.tip&&(now-IDX.t)>=2){ const inst=(tip-IDX.tip)/((now-IDX.t)/60); IDX.rate=IDX.rate?0.6*IDX.rate+0.4*inst:inst; }
+      if(tip!==IDX.tip){ IDX.tip=tip; IDX.t=now; }
+      const dtx=(st.tx&&IDX.tx&&st.tx>=IDX.tx)?st.tx-IDX.tx:0; if(st.tx)IDX.tx=st.tx;
+      IDX.txt=`block #${fmt(tip)}  ·  +${fmt(dtx)} txs  ·  cache ${st.cache||'—'}`;
+      if(!IDX.first)IDX.first=tip;
+      el.querySelector('#iact').textContent=`activity:  ▲ ${IDX.rate.toFixed(1)} blk/min  ·  +${fmt(tip-IDX.first)} indexed since open`;
+    }
+    const keys=Object.keys(idx); let h='';
+    if(!keys.length){ h=tip?`<h3>txindex <span class="pill" style="background:#1c1710;color:var(--btc)">indexing…</span></h3><div class="progress"><div style="width:99%">≈ tip ${fmt(tip)} (tracking validation)</div></div>`:'<p class="muted">no index data yet</p>'; }
+    else { for(const k of keys){ const e=idx[k]; const best=e.best_block_height||0; const lag=Math.max(0,tip-best); const pct=tip>0?(best/tip*100):0; const ok=e.synced&&lag===0;
+      h+=`<h3>${esc(k)} ${ok?'<span class="pill" style="background:#06140f;color:var(--cash)">synced</span>':'<span class="pill" style="background:#1c1710;color:var(--btc)">indexing…</span>'}</h3>
+        <div class="progress"><div style="width:${Math.max(pct,4)}%">${pct.toFixed(3)}% · ${fmt(best)} / ${fmt(tip)}</div></div>
+        <div class="grid" style="margin-top:.6rem">${card('index height',fmt(best))}${card('chain tip',fmt(tip))}${card('blocks behind',fmt(lag))}${card('synced',String(e.synced))}</div>`; } }
+    el.querySelector('#idx-body').innerHTML=h;
+  },
+  async oracle(){
+    const el=$('#p-oracle');
+    if(!el.dataset.init){ el.dataset.init=1;
+      el.innerHTML=`<div style="border:2px solid var(--btc);border-radius:12px;background:#06090e;padding:10px">
+          <div style="text-align:center;color:var(--btc);font-weight:800;letter-spacing:1px;border-bottom:1px solid #5a3a0a;padding-bottom:6px">₿  BTC.oracle — the clock kept on a Bitcoin block</div>
+          <div style="display:flex;gap:12px;margin-top:8px;flex-wrap:wrap">
+            <canvas id="omesh" width="560" height="300" style="flex:2;min-width:320px;background:#04070c;border-radius:8px"></canvas>
+            <div id="ostats" class="grid" style="flex:1;min-width:240px;align-content:start"></div>
+          </div></div>
+        <div style="margin-top:10px">
+          <div class="row" style="gap:8px;align-items:center">
+            <b>🔬 measurement log</b> <span class="muted">— live new-block stream (node heartbeat)</span>
+            <label style="margin-left:auto"><input type="checkbox" id="oauto" checked/> ⚡ auto-measure</label>
+            <button id="oj" class="secondary">JSON</button><button id="ojl" class="secondary">JSONL</button>
+            <button id="ocsv" class="secondary">CSV</button><button id="oclr" class="secondary">clear</button>
+          </div>
+          <pre id="omlog" style="min-height:120px;max-height:32vh;overflow:auto">// new blocks stream here as they arrive — your visual confirmation the node is connected + feeding</pre>
+        </div>`;
+      const cv=el.querySelector('#omesh'), ctx=cv.getContext('2d');
+      const O={phase:0,series:[],headline:'—',sub:''}; el.__O=O;
+      const dl=(name,text,type)=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([text],{type}));a.download=name;a.click();};
+      el.querySelector('#oj').onclick=()=>dl('bankon-oracle-measurements.json',JSON.stringify(OMEAS.rows,null,2),'application/json');
+      el.querySelector('#ojl').onclick=()=>dl('bankon-oracle-measurements.jsonl',OMEAS.rows.map(r=>JSON.stringify(r)).join('\n'),'application/x-ndjson');
+      el.querySelector('#ocsv').onclick=()=>{const keys=[...new Set(OMEAS.rows.flatMap(r=>Object.keys(r)))];const csv=[keys.join(',')].concat(OMEAS.rows.map(r=>keys.map(k=>r[k]==null?'':r[k]).join(','))).join('\n');dl('bankon-oracle-measurements.csv',csv,'text/csv');};
+      el.querySelector('#oclr').onclick=()=>{el.querySelector('#omlog').textContent='';};
+      (function draw(){ requestAnimationFrame(draw); if(cur!=='oracle')return;
+        const w=cv.width,h=cv.height,step=16; ctx.fillStyle='#04070c'; ctx.fillRect(0,0,w,h);
+        ctx.strokeStyle='rgba(0,191,255,0.15)'; ctx.lineWidth=1; ctx.beginPath();
+        for(let x=0;x<=w;x+=step){ctx.moveTo(x,0);ctx.lineTo(x,h);} for(let y=0;y<=h;y+=step){ctx.moveTo(0,y);ctx.lineTo(w,y);} ctx.stroke();
+        const cx=O.phase*(w+240)-120;            // shimmer band
+        for(let x=0;x<=w;x+=step){const d=Math.abs(x-cx); if(d<110){ctx.strokeStyle='rgba(150,228,255,'+(0.6*(1-d/110)).toFixed(3)+')'; ctx.lineWidth=1.4; ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,h); ctx.stroke();}}
+        if(O.series.length>1){const mx=Math.max(...O.series)||1; ctx.strokeStyle='#F7931A'; ctx.lineWidth=2; ctx.beginPath();
+          O.series.forEach((v,i)=>{const px=14+i/(O.series.length-1)*(w-28); const py=h-22-(v/mx)*(h-110); i?ctx.lineTo(px,py):ctx.moveTo(px,py);}); ctx.stroke();}
+        const throb=0.5+0.5*Math.sin(O.phase*Math.PI*4);   // THROB headline glow + size
+        ctx.save(); ctx.textAlign='center'; ctx.shadowColor='#00BFFF'; ctx.shadowBlur=10+30*throb;
+        ctx.fillStyle='#eef3f8'; ctx.font='bold '+(26+6*throb).toFixed(0)+'px sans-serif'; ctx.fillText(O.headline,w/2,h/2+8);
+        ctx.shadowBlur=0; ctx.fillStyle='#8aa0b4'; ctx.font='10px sans-serif'; ctx.fillText(O.sub,w/2,h/2+30); ctx.restore();
+        O.phase=(O.phase+0.01)%1;
+      })();
+    }
+    const O=el.__O;
+    const oc=((await fetch('/api/oracle').then(r=>r.json()).catch(()=>({}))).oracle)||{};
+    const st=await fetch('/api/synctip').then(r=>r.json()).catch(()=>({}));
+    const rb=((await fetch('/api/recentblocks?n=60').then(r=>r.json()).catch(()=>({}))).blocks)||[];
+    const fmin=s=>s?(s/60).toFixed(3)+' min':'—'; const a=oc.avgBlockTimeAllTime;
+    O.headline=fmin(a); O.sub='average block time · all-time, from genesis';
+    const srt=rb.filter(b=>b.time&&b.height!=null).sort((x,y)=>x.height-y.height); const ser=[];
+    for(let i=1;i<srt.length;i++){const dt=(srt[i].time-srt[i-1].time)/60; if(dt>=0)ser.push(Math.min(dt,120));} O.series=ser;
+    el.querySelector('#ostats').innerHTML=
+      card('chain height',fmt(oc.height||st.height))+card('avg — all-time',fmin(a),1)+
+      card('avg — recent (2016)',fmin(oc.avgBlockTimeWindow),1)+card('target',fmin(oc.targetBlockTime),1)+
+      card('basis',fmin(oc.basisSeconds),1)+card('recommended poll',oc.recommendedPollMs?(oc.recommendedPollMs/1000).toFixed(0)+'s':'—',1)+
+      card('tip block date',st.blockDate?st.blockDate.replace('T',' ').replace('Z',' UTC'):'—',1);
+    // auto-measure: log every NEW block as it arrives (skip the initial backlog) — the node heartbeat
+    const auto=el.querySelector('#oauto'), ml=el.querySelector('#omlog'), tmap={}; srt.forEach(b=>tmap[b.height]=b.time);
+    for(const b of srt){
+      if(OMEAS.seen.has(b.height)) continue; OMEAS.seen.add(b.height);
+      if(OMEAS.primed && auto && auto.checked){
+        const prev=tmap[b.height-1], iv=prev?((b.time-prev)/60):null, ts=new Date().toISOString().slice(11,19);
+        ml.textContent += `\n[${ts}] ⬢ NEW block #${b.height.toLocaleString()} · ${b.nTx??'?'} txs`+(iv!=null?` · Δ ${iv.toFixed(1)} min`:'');
+        ml.scrollTop=ml.scrollHeight;
+        OMEAS.rows.push({ts:new Date().toISOString(),height:b.height,time:b.time,nTx:b.nTx,interval_min:iv!=null?+iv.toFixed(3):null,hash:b.hash,source:'auto'});
+      }
+    }
+    OMEAS.primed=true;
+  },
+  async wallets(){
+    const names=await rpc('listwallets');const dir=await rpc('listwalletdir').catch(()=>({wallets:[]}));
+    let h=`<h3>Loaded wallets (${names.length})</h3><div class="grid">`+names.map(w=>card(esc(w),'loaded',1)).join('')+`</div>`;
+    if(level>=1){h+=`<h3>On disk</h3><div class="scroll"><table><thead><tr><th>name</th></tr></thead><tbody>`+(dir.wallets||[]).map(x=>`<tr><td>${esc(x.name)}</td></tr>`).join('')+`</tbody></table></div>`;}
+    h+=`<p class="muted">BANKON wallets are <b>watch-only</b> — the node tracks funds without holding keys. Create one on the <a class="waas" href="http://127.0.0.1:8088" target="_blank" rel="noopener">WaaS →</a></p>`;
+    $('#p-wallets').innerHTML=h;
+  },
+  async create(){
+    $('#p-create').innerHTML=`
+      <div class="hero">
+        <h2 style="margin:.2rem 0">Create a Bitcoin wallet — non-custodial</h2>
+        <p><span style="display:inline-block;background:var(--btc);color:#1a1200;font-weight:700;letter-spacing:.06em;font-size:.72rem;padding:.1rem .5rem;border-radius:5px">₿ BTC STANDARD</span></p>
+        <p class="muted" style="max-width:560px;margin:.4rem auto">Your keys and recovery phrase are minted <b>in your browser</b>. BANKON never sees them — only a watch-only descriptor is registered so this node can show balances and prepare transactions.</p>
+        <a class="waas" href="http://127.0.0.1:8088" target="_blank" rel="noopener">Open BANKON WaaS — Create Wallet →</a>
+        <p class="muted" style="font-size:.78rem;margin-top:.6rem">opens the Wallet-as-a-Service at <code>http://127.0.0.1:8088</code> · follows the <a href="https://github.com/cypherpunk2048" target="_blank" rel="noopener" style="color:#f0c050">BTC Standard ↗</a></p>
+      </div>
+      <h3>What you'll choose there</h3>
+      <div class="grid">
+        ${card('Native SegWit','bc1q… · lowest fees · recommended',1)}
+        ${card('Taproot','bc1p… · best privacy',1)}
+        ${card('Legacy','1… · maximum compatibility',1)}
+      </div>
+      <p class="muted">After creation the wallet appears under the <b>Wallets</b> tab here, tracked watch-only.</p>`;
+  },
+  async reference(){
+    const el=$('#p-reference');
+    const {catalog}=await fetch('/api/catalog').then(r=>r.json());
+    let h=`<p class="muted">Every read-only Bitcoin Core RPC the Console can call, by category. Expand a category, then Run any command (examples pre-filled). Spends / stop / config-writes are not exposed.</p>`;
+    for(const [cat,list] of Object.entries(catalog)){
+      const rows=list.map((e,i)=>`<div class="mrow"><code>${e.m}</code><span class="d">${esc(e.d)}${e.heavy?' <span class="warn">(heavy)</span>':''}${e.w?' <span class="pill">wallet</span>':''}</span>
+        <input id="rp-${cat}-${i}" placeholder='params JSON' value='${e.ex?esc(JSON.stringify(e.ex)):''}' style="width:170px"/>
+        <button onclick="window.__run('${e.m}','rp-${cat}-${i}','ro-${cat}-${i}')">Run</button>
+        <pre id="ro-${cat}-${i}" style="display:none;width:100%"></pre></div>`).join('');
+      h+=acc(`${cat} <span class="muted" style="font-weight:400">· ${list.length}</span>`, level>=2, rows);
+    }
+    el.innerHTML=h;
+  },
+  async console(){
+    const el=$('#p-console'); if(el.dataset.init)return; el.dataset.init=1;
+    el.innerHTML=`<h3>RPC Console <span class="muted">read-only whitelist</span></h3>
+      <div style="border:1px solid #2e4a63;border-radius:6px;background:#0e1620;padding:10px;margin-bottom:10px">
+        <label><input type="checkbox" id="rage" checked/> ⚡ <b>rageRPC</b></label>
+        &nbsp;&nbsp; throttle <input id="rin" type="number" min="1" max="32" value="32" style="width:64px"/> in-flight
+        &nbsp; breaker <input id="rds" type="number" min="0" max="120" value="3" style="width:56px"/> s
+        &nbsp; <button id="rapply">Apply</button>
+        &nbsp; <button id="rhand">Handoff → pgvectorscale (rage.pythai.net)</button>
+        <div id="rset" class="muted" style="margin-top:8px;font-family:monospace">settings: —</div>
+        <div id="rhout" class="muted" style="margin-top:4px"></div>
+      </div>
+      <div class="row"><input id="cm" placeholder="method e.g. getblockstats" style="flex:1"/><input id="cp" placeholder='params JSON e.g. [800000]' style="flex:1.2"/><button id="crun">Run</button></div>
+      <pre id="cout">// result appears here</pre>`;
+    const run=async()=>{const m=el.querySelector('#cm').value.trim();let p=[];try{p=el.querySelector('#cp').value.trim()?JSON.parse(el.querySelector('#cp').value):[];}catch{return el.querySelector('#cout').textContent='params must be valid JSON array';}
+      el.querySelector('#cout').textContent='running…';try{const r=await rpc(m,p);el.querySelector('#cout').textContent=JSON.stringify(r,null,2);}catch(e){el.querySelector('#cout').innerHTML='<span class="err">'+esc(e.message)+'</span>';}};
+    el.querySelector('#crun').onclick=run; el.querySelector('#cp').onkeydown=e=>{if(e.key==='Enter')run();};
+    // rageRPC controller (mirrors the Qt RPC console)
+    const showSet=(s)=>{const r=(s||{}).rpc||{};if(!r.maxInflight)return;const cb=r.circuitOpen?'OPEN·backoff':'closed';
+      el.querySelector('#rset').textContent=`rage=${r.rage}  throttle=${r.effInflight}/${r.maxInflight} (adaptive)  breaker=${(r.distressMs||0)/1000}s [${cb}]   ·   inflight=${r.inflight} waiting=${r.waiting}`;};
+    const loadSet=async()=>{try{const s=await fetch('/api/settings').then(r=>r.json());showSet(s.settings);}catch{}};
+    el.querySelector('#rage').onchange=e=>{el.querySelector('#rin').value=e.target.checked?32:4;el.querySelector('#rds').value=e.target.checked?3:12;};
+    el.querySelector('#rapply').onclick=async()=>{const body={rage:el.querySelector('#rage').checked,maxInflight:+el.querySelector('#rin').value,distressMs:(+el.querySelector('#rds').value)*1000};
+      el.querySelector('#rset').textContent='applying…';try{const s=await fetch('/api/settings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json());showSet(s.settings);}catch(e){el.querySelector('#rset').textContent='error: '+esc(e.message);}};
+    el.querySelector('#rhand').onclick=async()=>{const o=el.querySelector('#rhout');o.textContent='handing off to rage.pythai.net…';
+      try{const r=await fetch('/api/rage/handoff',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({count:500})}).then(r=>r.json());
+        o.innerHTML=r.ok?`<span style="color:#16C784">✓ gathered ${r.gathered} nodes → ${esc(r.target)} (HTTP ${r.push.status})</span>`
+          :`<span class="err">✗ ${esc(r.error||(r.push&&r.push.response)||'failed')}${r.gathered!=null?' (gathered '+r.gathered+')':''}</span>`;}
+      catch(e){o.innerHTML='<span class="err">'+esc(e.message)+'</span>';}};
+    loadSet(); setInterval(loadSet,3000);
+  },
+  async monitor(){
+    const el=$('#p-monitor'); if(el.dataset.init)return; el.dataset.init=1;
+    const list=await fetch('/api/monitor').then(r=>r.json()).catch(()=>({commands:{}}));
+    const cmds=list.commands||{};
+    el.innerHTML=`<h3>Node Monitor <span class="muted">· bitcoin-cli + debug.log · read-only · click a command</span></h3>
+      <div id="mbtns" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px"></div>
+      <div class="row" style="gap:6px;margin-bottom:6px"><button id="mall" class="secondary">▶ Run all (snapshot)</button><span class="muted" id="mcmd" style="font-family:monospace;align-self:center"></span></div>
+      <pre id="mout" style="min-height:260px;max-height:62vh;overflow:auto">// click a command above to run it</pre>`;
+    const out=el.querySelector('#mout'), cmdlbl=el.querySelector('#mcmd');
+    const run=async(k,label)=>{ cmdlbl.textContent='running '+label+'…'; out.textContent='running…';
+      try{ const r=await fetch('/api/monitor',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({cmd:k})}).then(r=>r.json());
+        out.textContent=r.ok?(r.output||'(no output)'):('error: '+(r.error||'failed')); cmdlbl.innerHTML='<span class="muted">$ '+esc(r.cmd||label)+'</span>'; }
+      catch(e){ out.textContent='error: '+e.message; } };
+    const bw=el.querySelector('#mbtns');
+    for(const [k,label] of Object.entries(cmds)){ const b=document.createElement('button'); b.textContent=label; b.className='secondary'; b.onclick=()=>run(k,label); bw.appendChild(b); }
+    el.querySelector('#mall').onclick=async()=>{ out.textContent=''; cmdlbl.textContent='running all…';
+      for(const [k,label] of Object.entries(cmds)){ try{ const r=await fetch('/api/monitor',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({cmd:k})}).then(r=>r.json()); out.textContent+=`\n━━ ${label} ━━\n${r.output||''}\n`; out.scrollTop=out.scrollHeight; }catch(e){} } cmdlbl.textContent='snapshot complete'; };
+  },
+};
+// global runner for Reference tab buttons
+window.__run=async(method,inId,outId)=>{const out=document.getElementById(outId);out.style.display='block';out.textContent='running…';
+  let p=[];try{const v=document.getElementById(inId).value.trim();p=v?JSON.parse(v):[];}catch{out.textContent='params must be valid JSON';return;}
+  try{const r=await rpc(method,p);out.textContent=JSON.stringify(r,null,2);}catch(e){out.innerHTML='<span class="err">'+esc(e.message)+'</span>';}};
+$('#refresh').onclick=render; $('#node').onchange=()=>{document.querySelectorAll('.panel').forEach(p=>delete p.dataset.init);render();};
+const LIVE=['overview','node','blocks','mempool','network','indexes','oracle'];
+function applyRate(){ clearInterval(timer); const ms=Number($('#rate').value); if(ms>0) timer=setInterval(()=>{ if(LIVE.includes(cur)) render(); }, ms); }
+$('#rate').onchange=()=>{ applyRate(); render(); };   // change rate → refresh now, then on schedule
+$('#node').addEventListener('change',pollHealth);
+render(); applyRate(); pollHealth(); setInterval(pollHealth,4000);
+pollCoremon(); setInterval(pollCoremon,5000);
+pollSystem(); setInterval(pollSystem,5000);
+$('#node').addEventListener('change',pollCoremon);
+</script>
+</body>
+</html>

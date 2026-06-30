@@ -1,0 +1,16 @@
+[Unit]
+Description=BANKON Console (read-only Bitcoin Core diagnostics)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/bankon-tools/bankon-console
+ExecStart=/usr/bin/env node server.mjs
+Environment=BANKON_CONSOLE_PORT=8090
+# Environment=BANKON_API_TOKEN=change-me
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

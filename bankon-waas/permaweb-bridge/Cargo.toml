@@ -1,0 +1,25 @@
+[package]
+name = "permaweb-bridge"
+version = "0.1.0"
+edition = "2021"
+description = "BANKON web2→web3 bridge — publishes pgvectorscale node-intelligence snapshots to the Arweave permaweb"
+license = "MIT"
+
+[dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json"] }
+sha2 = "0.10"
+hex = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1"
+# Arweave ANS-104 data-item signing
+rsa = { version = "0.9", features = ["sha2"] }
+rand = "0.8"
+base64 = "0.22"
+
+[[bin]]
+name = "permaweb-bridge"
+path = "src/main.rs"

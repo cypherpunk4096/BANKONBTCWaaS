@@ -1,0 +1,12 @@
+*.conf
+*.log
+*.out
+*.pyc
+.DS_Store
+.maxmind_license_key
+/.idea/
+/.pytest_cache/
+/data/
+/internal-tests/
+/test-reports/
+rsync.sh

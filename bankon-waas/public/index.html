@@ -1,0 +1,312 @@
+<!doctype html>
+<!-- The in-browser keygen + PSBT signing below are BANKON client-facing encryption:
+     SPDX-License-Identifier: GPL-3.0-or-later (see POLICY.md). UI/markup is MIT. -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BANKON — Wallet as a Service</title>
+<style>
+  :root { color-scheme: dark;
+    --btc:#F7931A; --poly:#8247E5; --eth:#627EEA; --cash:#0AC18E; --cardano:#0033AD; --solana:#9945FF;
+    --bankon:#1C66C9; --grey:#8B949E; }
+  /* Proportional scaling: the root font tracks the window (width + height), and everything below is
+     in rem/%, so ALL internal aspects grow/shrink with the window. Fluid width — no fixed cap. */
+  html { font-size: clamp(13px, calc(0.55vw + 0.75vh), 28px); }
+  body { font-family: system-ui, sans-serif; line-height:1.5; width: 94vw; max-width: 1500px;
+         margin: 1rem auto; padding: 0 1rem; box-sizing:border-box; background:#0e1116; color:#e6edf3; }
+  h1 { font-size: 1.5rem; color:var(--btc); background:var(--bankon); font-weight:700; padding:.5rem .85rem; border-radius:8px; } h1 small { color:#dce7f5; font-weight: 400; font-size: .8rem; }
+  fieldset { border:1px solid #30363d; border-radius:10px; margin:1rem 0; }
+  label { display:block; margin:.4rem 0 .2rem; color:#7d8590; }
+  select, button { font:inherit; padding:.5rem .7rem; border-radius:8px; border:1px solid #30363d; background:#161b22; color:#e6edf3; }
+  button { background:var(--btc); border-color:var(--btc); color:#1a1200; font-weight:600; cursor:pointer; }
+  button:hover { background:var(--cardano); border-color:var(--cardano); color:#fff; }
+  button.secondary { background:#161b22; color:#e6edf3; font-weight:400; }
+  .private { border-color:#9e6a03; background:#1c1710; }
+  .public  { border-color:var(--eth); background:#0d1726; }
+  code, pre { font-family: ui-monospace, monospace; background:#010409; padding:.15rem .3rem; border-radius:5px; word-break:break-all; white-space:pre-wrap; }
+  .warn { color:#e3b341; } .ok { color:var(--cash); } .muted { color:#7d8590; font-size:.85rem; }
+  .hidden { display:none; }
+  /* accordion */
+  details { border:1px solid #30363d; border-radius:8px; margin:.45rem 0; background:#0d1117; overflow:hidden; }
+  details[open] { border-color:var(--solana); }
+  summary { cursor:pointer; padding:.55rem .8rem; font-weight:600; list-style:none; display:flex; justify-content:space-between; align-items:center; gap:.5rem; }
+  summary::-webkit-details-marker { display:none; }
+  summary::after { content:'+'; color:#7d8590; font-weight:400; }
+  details[open] summary::after { content:'\2013'; }
+  summary .pfx { font-family: ui-monospace, monospace; color:var(--cash); font-weight:400; font-size:.85rem; margin-left:auto; }
+  details .body { padding:0 .85rem .7rem; color:#c9d1d9; }
+  details .body ul { margin:.35rem 0; padding-left:1.1rem; }
+  details .body li { margin:.15rem 0; }
+  .tag { display:inline-block; font-size:.7rem; padding:.05rem .45rem; border-radius:6px; margin:0 .3rem .35rem 0; }
+  .tag.good { background:#06140f; color:var(--cash); }
+  .tag.warn { background:#3a2d10; color:#e3b341; }
+  .tag.info { background:#0d2840; color:#58a6ff; }
+  .feebtn { display:inline-block; min-width:8rem; text-align:center; margin:.2rem .3rem .2rem 0; }
+  .feebtn.on { background:var(--poly); border-color:var(--poly); color:#fff; }
+  table th { text-align:left; color:#7d8590; font-weight:600; border-bottom:1px solid #30363d; padding:.2rem .3rem; }
+  table td { padding:.2rem .3rem; border-bottom:1px solid #21262d; }
+  .standard { border:1px solid var(--btc); background:linear-gradient(135deg,#1c1710,#0e1116); border-radius:10px; padding:.8rem 1rem; margin:.2rem 0 1rem; }
+  .standard .badge { display:inline-block; background:var(--btc); color:#1a1200; font-weight:700; letter-spacing:.06em; font-size:.72rem; padding:.1rem .5rem; border-radius:5px; }
+  .standard a { color:#f0c050; } .standard button { margin-top:.5rem; }
+</style>
+</head>
+<body>
+  <h1>BANKON <small>Wallet&nbsp;as&nbsp;a&nbsp;Service · non-custodial</small></h1>
+  <p class="muted">Your keys and passphrase are generated <b>here, in your browser</b>. BANKON never receives them — only a public watch-only descriptor is sent so the node can show balances and prepare unsigned transactions.</p>
+
+  <fieldset>
+    <legend>1 · Choose how you want your wallet</legend>
+    <div class="standard">
+      <span class="badge">₿ BTC STANDARD</span>
+      <span class="muted" style="margin-left:.4rem">non-custodial · client-side keys · BIP39/32 recovery · Native SegWit default</span>
+      <div style="margin-top:.4rem">BANKON wallets follow the <b>BTC Standard</b> — your keys, your coins, verifiable on your own node.</div>
+      <button id="usestd" class="secondary">Use BTC Standard defaults</button>
+      <a href="https://github.com/cypherpunk2048" target="_blank" rel="noopener" style="margin-left:.6rem">read the standard ↗</a>
+    </div>
+    <label for="type">Address type</label>
+    <select id="type">
+      <option value="native-segwit">Native SegWit — bc1q… (recommended)</option>
+      <option value="taproot">Taproot — bc1p…</option>
+      <option value="legacy">Legacy — 1…</option>
+    </select>
+    <label for="words">Recovery phrase length</label>
+    <select id="words"><option value="256">24 words (strongest)</option><option value="128">12 words</option></select>
+    <label for="owner">Account / owner name <span class="muted">(optional — groups wallets in the registry)</span></label>
+    <input id="owner" placeholder="e.g. alice or treasury" style="width:100%"/>
+
+    <label style="margin-top:.8rem">Not sure which to pick? Tap a type to learn more:</label>
+    <details name="wallettype" open>
+      <summary>Native SegWit <span class="pfx">bc1q…</span></summary>
+      <div class="body">
+        <span class="tag good">Lowest everyday fees</span><span class="tag good">Near-universal support</span><span class="tag info">Recommended</span>
+        <ul>
+          <li><b>The best default for most people.</b> Its transactions are the smallest of the broadly-supported types, so it pays the <b>lowest fees</b> when you spend.</li>
+          <li>Addresses start with <code>bc1q</code> — all-lowercase <i>bech32</i> format that catches typos before you send.</li>
+          <li>Accepted by virtually every modern wallet and exchange.</li>
+          <li>Derivation <code>m/84'/0'/0'</code> (BIP84).</li>
+        </ul>
+      </div>
+    </details>
+    <details name="wallettype">
+      <summary>Taproot <span class="pfx">bc1p…</span></summary>
+      <div class="body">
+        <span class="tag good">Best privacy</span><span class="tag good">Efficient multisig</span><span class="tag info">Newest (2021)</span>
+        <ul>
+          <li>The newest address type. A simple payment and a complex multisig/script look <b>identical on-chain</b>, so Taproot leaks the least information about how your wallet is set up.</li>
+          <li><b>Cheapest for advanced spends</b> (multisig, smart-contract scripts); about the same as Native SegWit for ordinary sends.</li>
+          <li>Addresses start with <code>bc1p</code> — <i>bech32m</i> format. Derivation <code>m/86'/0'/0'</code> (BIP86).</li>
+          <li><span class="tag warn">Heads-up</span> A few older exchanges still can't <i>send</i> to <code>bc1p</code> addresses yet.</li>
+        </ul>
+      </div>
+    </details>
+    <details name="wallettype">
+      <summary>Legacy <span class="pfx">1…</span></summary>
+      <div class="body">
+        <span class="tag info">Maximum compatibility</span><span class="tag warn">Highest fees</span>
+        <ul>
+          <li>The <b>original</b> Bitcoin address format — understood by every wallet and service ever made.</li>
+          <li>Its transactions are the largest, so it costs the <b>most in fees</b> to spend. There's no privacy or fee benefit over the newer types.</li>
+          <li>Addresses start with <code>1</code> — <i>Base58</i> format. Derivation <code>m/44'/0'/0'</code> (BIP44).</li>
+          <li>Only choose this if you must interoperate with very old software.</li>
+        </ul>
+      </div>
+    </details>
+
+    <p><button id="gen">Generate my wallet</button></p>
+  </fieldset>
+
+  <fieldset class="private hidden" id="privBox">
+    <legend>🔐 2 · PRIVATE — write this down, never share</legend>
+    <p class="warn">This is the only copy. BANKON cannot recover it. Anyone with these words controls the funds.</p>
+    <label>Recovery phrase (your passphrase)</label>
+    <pre id="mnemonic"></pre>
+  </fieldset>
+
+  <fieldset class="public hidden" id="pubBox">
+    <legend>🌐 3 · PUBLIC — safe to register with BANKON</legend>
+    <label>First receive address (derived in your browser)</label>
+    <pre id="addr"></pre>
+    <label>Watch-only descriptor sent to the API</label>
+    <pre id="desc"></pre>
+    <p>
+      <button id="register">Register watch-only with BANKON →</button>
+      <button class="secondary" id="copy">Copy phrase</button>
+    </p>
+    <p id="result" class="muted"></p>
+  </fieldset>
+
+  <fieldset class="public hidden" id="sendBox">
+    <legend>💸 4 · Send bitcoin — signed on your device</legend>
+    <p class="muted">BANKON builds an <b>unsigned</b> transaction on the node; your browser signs it with your recovery phrase; only the signed transaction is broadcast. Requires a funded wallet.</p>
+    <label for="sto">To address</label>
+    <input id="sto" placeholder="bc1q… recipient" style="width:100%"/>
+    <label for="samt">Amount (BTC)</label>
+    <input id="samt" placeholder="0.0001" style="width:100%"/>
+    <label>Network fee</label>
+    <div id="feerow" class="muted">loading fee estimates…</div>
+    <label for="smn">Your recovery phrase <span class="muted">(used locally to sign — never sent)</span></label>
+    <textarea id="smn" rows="2" style="width:100%" placeholder="paste your 12 / 24 words"></textarea>
+    <p><button id="sprepare">Prepare &amp; sign locally</button> <button class="secondary" id="sbroadcast" disabled>Broadcast</button></p>
+    <p id="sresult" class="muted"></p>
+  </fieldset>
+
+  <fieldset>
+    <legend>📒 Registered wallets <span class="muted">(watch-only metadata)</span></legend>
+    <div class="row" style="gap:.5rem"><input id="wowner" placeholder="filter by owner (optional)" style="flex:1"/><button id="wload">Load</button></div>
+    <div id="wlist" class="muted">— not loaded —</div>
+  </fieldset>
+
+<script type="module">
+  // Same audited libs as keygen.mjs — keys are minted client-side.
+  import * as bip39 from 'https://esm.sh/@scure/bip39@1.3.0';
+  import { wordlist } from 'https://esm.sh/@scure/bip39@1.3.0/wordlists/english';
+  import { HDKey } from 'https://esm.sh/@scure/bip32@1.4.0';
+  import * as btc from 'https://esm.sh/@scure/btc-signer@1.3.2';
+
+  const TYPES = {
+    'native-segwit': { purpose:84, prefix:'wpkh' },
+    'taproot':       { purpose:86, prefix:'tr' },
+    'legacy':        { purpose:44, prefix:'pkh' },
+  };
+  let current = null, walletName = null, signedHex = null, chosenFee = null;
+  const $ = id => document.getElementById(id);
+
+  // ---- fee estimation: load sat/vB tiers and render a selector ----
+  async function loadFees() {
+    $('feerow').textContent = 'loading fee estimates…';
+    try {
+      const r = await fetch('/api/fees').then(r => r.json());
+      const f = r.fees || {};
+      const tiers = [['fast','Fast ~10 min'], ['medium','Medium ~30 min'], ['slow','Slow ~1 hr']];
+      // fallbacks when the node has no estimate yet (IBD)
+      const fallback = { fast: 8, medium: 4, slow: 2 };
+      $('feerow').innerHTML = tiers.map(([k,label]) => {
+        const rate = f[k] || fallback[k];
+        return `<button class="feebtn secondary" data-rate="${rate}">${label}<br><span class="muted">${rate} sat/vB</span></button>`;
+      }).join(' ') + (r.note ? `<div class="muted" style="font-size:.75rem;margin-top:.3rem">${r.note}</div>` : '');
+      const btns = $('feerow').querySelectorAll('.feebtn');
+      btns.forEach(b => b.onclick = () => { chosenFee = Number(b.dataset.rate); btns.forEach(x => x.classList.toggle('on', x === b)); });
+      // default to medium
+      if (btns[1]) { btns[1].click(); }
+    } catch (e) { $('feerow').innerHTML = `<span class="warn">fee estimate unavailable — using 4 sat/vB</span>`; chosenFee = 4; }
+  }
+
+  // ---- client-side PSBT signing (mirrors sign.mjs; keys never leave here) ----
+  const b64ToBytes = b64 => Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+  const bytesToHex = u8 => [...u8].map(b => b.toString(16).padStart(2,'0')).join('');
+  function signPsbtBrowser(mnemonic, type, psbtB64, gap = 50) {
+    const purpose = TYPES[type].purpose;
+    const seed = bip39.mnemonicToSeedSync(mnemonic.trim());
+    const acct = HDKey.fromMasterSeed(seed).derive(`m/${purpose}'/0'/0'`);
+    const tx = btc.Transaction.fromPSBT(b64ToBytes(psbtB64));
+    let signed = 0;
+    for (const branch of [0,1]) for (let i = 0; i <= gap; i++) {
+      const c = acct.deriveChild(branch).deriveChild(i);
+      if (c.privateKey) { try { signed += tx.sign(c.privateKey); } catch (_) {} }
+    }
+    if (!signed) throw new Error('No inputs matched — wrong phrase/type, or empty PSBT.');
+    tx.finalize();
+    return bytesToHex(tx.extract());
+  }
+
+  $('gen').onclick = () => {
+    const type = $('type').value, t = TYPES[type];
+    const strength = Number($('words').value);
+    const mnemonic = bip39.generateMnemonic(wordlist, strength);
+    const seed = bip39.mnemonicToSeedSync(mnemonic);
+    const root = HDKey.fromMasterSeed(seed);
+    const fp = root.fingerprint.toString(16).padStart(8,'0');
+    const acct = root.derive(`m/${t.purpose}'/0'/0'`);
+    const xpub = acct.publicExtendedKey;
+    const origin = `[${fp}/${t.purpose}'/0'/0']`;
+    const external = `${t.prefix}(${origin}${xpub}/0/*)`;
+    const internal = `${t.prefix}(${origin}${xpub}/1/*)`;
+    const pk = acct.deriveChild(0).deriveChild(0).publicKey;
+    const addr = t.prefix==='wpkh' ? btc.p2wpkh(pk, btc.NETWORK).address
+              : t.prefix==='tr'   ? btc.p2tr(pk.subarray(1), undefined, btc.NETWORK).address
+              :                     btc.p2pkh(pk, btc.NETWORK).address;
+
+    current = { type, fingerprint: fp, xpub, external, internal };
+    $('mnemonic').textContent = mnemonic;          // stays in the DOM only
+    $('addr').textContent = addr;
+    $('desc').textContent = external;
+    $('privBox').classList.remove('hidden');
+    $('pubBox').classList.remove('hidden');
+    $('result').textContent = '';
+  };
+
+  // BTC STANDARD preset → the recommended standard-compliant defaults.
+  $('usestd').onclick = () => { $('type').value = 'native-segwit'; $('words').value = '256'; $('gen').focus(); };
+
+  $('copy').onclick = () => navigator.clipboard.writeText($('mnemonic').textContent);
+
+  $('register').onclick = async () => {
+    // NOTE: we send `current` — which contains NO private fields.
+    current.owner = ($('owner').value || '').trim() || null;
+    $('result').textContent = 'Registering watch-only…';
+    try {
+      const r = await fetch('/api/wallet', {
+        method:'POST', headers:{'content-type':'application/json'},
+        body: JSON.stringify(current),
+      }).then(r=>r.json());
+      if (r.ok) {
+        walletName = r.wallet;
+        $('result').innerHTML = `<span class="ok">Registered watch-only as <code>${r.wallet}</code>. Node receive addr: <code>${r.firstAddress}</code></span>`;
+        $('sendBox').classList.remove('hidden');
+        if ($('mnemonic').textContent) $('smn').value = $('mnemonic').textContent; // prefill from the just-generated phrase
+        loadFees();
+      } else {
+        $('result').innerHTML = `<span class="warn">${r.error}</span>`;
+      }
+    } catch (e) { $('result').innerHTML = `<span class="warn">${e}</span>`; }
+  };
+
+  // ---- Send: build unsigned PSBT (node) → sign locally → broadcast ----
+  $('sprepare').onclick = async () => {
+    const to = $('sto').value.trim(), amt = parseFloat($('samt').value), mn = $('smn').value.trim();
+    if (!to || !amt || !mn) return $('sresult').textContent = 'Need recipient, amount, and recovery phrase.';
+    if (!walletName) return $('sresult').textContent = 'Register the wallet first.';
+    $('sbroadcast').disabled = true; signedHex = null;
+    $('sresult').textContent = 'Building unsigned PSBT on the node…';
+    try {
+      const r = await fetch(`/api/wallet/${encodeURIComponent(walletName)}/send`, {
+        method:'POST', headers:{'content-type':'application/json'},
+        body: JSON.stringify({ to, amountBtc: amt, feeRate: chosenFee || undefined }),
+      }).then(r=>r.json());
+      if (!r.ok) return $('sresult').innerHTML = `<span class="warn">${r.error}</span>`;
+      $('sresult').textContent = 'Signing locally with your phrase…';
+      signedHex = signPsbtBrowser(mn, current.type, r.psbt);
+      $('sbroadcast').disabled = false;
+      $('sresult').innerHTML = `<span class="ok">Signed on your device (network fee ${r.fee} BTC). Review, then Broadcast.</span>`;
+    } catch (e) { $('sresult').innerHTML = `<span class="warn">${e.message || e}</span>`; }
+  };
+  // ---- registry: list registered wallets (public metadata) ----
+  $('wload').onclick = async () => {
+    const owner = ($('wowner').value || '').trim();
+    $('wlist').textContent = 'loading…';
+    try {
+      const r = await fetch('/api/wallets' + (owner ? '?owner=' + encodeURIComponent(owner) : '')).then(r => r.json());
+      const ws = (r.wallets || []);
+      if (!ws.length) return $('wlist').innerHTML = '<span class="muted">no wallets registered yet</span>';
+      $('wlist').innerHTML = '<table style="width:100%;font-size:.8rem"><tr><th>id</th><th>type</th><th>owner</th><th>first address</th><th>created</th></tr>' +
+        ws.map(w => `<tr><td><code>${w.id}</code></td><td>${w.type||''}</td><td>${w.owner||'—'}</td><td><code>${(w.firstAddress||'').slice(0,16)}…</code></td><td class="muted">${(w.createdAt||'').slice(0,10)}</td></tr>`).join('') + '</table>';
+    } catch (e) { $('wlist').innerHTML = `<span class="warn">${e.message || e}</span>`; }
+  };
+
+  $('sbroadcast').onclick = async () => {
+    if (!signedHex) return;
+    $('sresult').textContent = 'Broadcasting…';
+    try {
+      const r = await fetch('/api/broadcast', {
+        method:'POST', headers:{'content-type':'application/json'},
+        body: JSON.stringify({ hex: signedHex }),
+      }).then(r=>r.json());
+      $('sresult').innerHTML = r.ok
+        ? `<span class="ok">Broadcast! txid <code>${r.txid}</code></span>`
+        : `<span class="warn">${r.error}</span>`;
+    } catch (e) { $('sresult').innerHTML = `<span class="warn">${e.message || e}</span>`; }
+  };
+</script>
+</body>
+</html>

@@ -1,0 +1,84 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later — BANKON client-facing encryption (GPLv3); see POLICY.md.
+     Like GnuPG, key-handling code is copyleft so derivatives stay free & auditable. -->
+<html lang="en">
+<head>
+<meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BANKON Offline Client — air-gapped keygen &amp; signing</title>
+<style>
+  :root{color-scheme:dark;--btc:#F7931A;--poly:#8247E5;--eth:#627EEA;--cash:#0AC18E;--cardano:#0033AD;--solana:#9945FF;--bankon:#1C66C9;--grey:#8B949E}
+  body{font:15px/1.6 system-ui,sans-serif;max-width:720px;margin:2rem auto;padding:0 1rem;background:#0e1116;color:#e6edf3}
+  h1{font-size:1.3rem;color:var(--bankon);font-weight:700;border-bottom:2px solid var(--bankon);padding-bottom:.25rem} fieldset{border:1px solid #30363d;border-radius:10px;margin:1rem 0;padding:1rem}
+  legend{color:var(--eth)}
+  label{display:block;color:#7d8590;margin:.5rem 0 .2rem} select,button,input,textarea{font:inherit;padding:.5rem;border-radius:8px;border:1px solid #30363d;background:#161b22;color:#e6edf3;width:100%}
+  button{background:var(--btc);border-color:var(--btc);color:#1a1200;font-weight:600;cursor:pointer;width:auto;padding:.5rem 1rem} button:hover{background:var(--cardano);border-color:var(--cardano);color:#fff} pre{font-family:ui-monospace,monospace;background:#010409;padding:.6rem;border-radius:8px;white-space:pre-wrap;word-break:break-all}
+  a{color:var(--eth)} code{color:var(--eth)}
+  .warn{color:#e3b341} .ok{color:var(--cash)} .muted{color:#7d8590;font-size:.85rem}
+</style>
+</head>
+<body>
+  <h1>BANKON Offline Client</h1>
+  <div style="border:1px solid var(--btc);background:linear-gradient(135deg,#1c1710,#0e1116);border-radius:10px;padding:.7rem 1rem;margin:.5rem 0">
+    <span style="display:inline-block;background:var(--btc);color:#1a1200;font-weight:700;letter-spacing:.06em;font-size:.72rem;padding:.1rem .5rem;border-radius:5px">₿ BTC STANDARD</span>
+    <span class="muted" style="margin-left:.4rem">non-custodial · client-side keys · BIP39/32 recovery · Native SegWit default</span>
+    <div style="margin-top:.3rem">Follows the <b>BTC Standard</b> — <a href="https://github.com/cypherpunk2048" target="_blank" rel="noopener" style="color:var(--btc)">read the standard ↗</a></div>
+  </div>
+  <p class="muted">A single, self-contained file. It <b>never makes a network call</b> — generate a wallet or sign a PSBT entirely on this device, even air-gapped. Save this file and inspect it; nothing here phones home. (First load fetches the audited <code>@scure</code> libraries from a CDN; for true air-gap, vendor them locally — see the comment at the bottom of the source.)</p>
+
+  <fieldset>
+    <legend>Generate a wallet</legend>
+    <label>Type</label>
+    <select id="type"><option value="native-segwit">Native SegWit (bc1q…)</option><option value="taproot">Taproot (bc1p…)</option><option value="legacy">Legacy (1…)</option></select>
+    <p><button id="gen">Generate</button></p>
+    <div id="gout"></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Sign a PSBT offline</legend>
+    <label>Wallet type used for this wallet</label>
+    <select id="stype"><option value="native-segwit">Native SegWit</option><option value="taproot">Taproot</option><option value="legacy">Legacy</option></select>
+    <label>Recovery phrase</label>
+    <textarea id="smn" rows="2" placeholder="your 12 / 24 words"></textarea>
+    <label>Unsigned PSBT (base64)</label>
+    <textarea id="spsbt" rows="3" placeholder="cHNidP8B..."></textarea>
+    <p><button id="sign">Sign locally</button></p>
+    <div id="sout"></div>
+    <p class="muted">Copy the resulting hex and broadcast it from any online node (e.g. BANKON Console → RPC Console → <code>sendrawtransaction</code>).</p>
+  </fieldset>
+
+<script type="module">
+  import * as bip39 from 'https://esm.sh/@scure/bip39@1.3.0';
+  import { wordlist } from 'https://esm.sh/@scure/bip39@1.3.0/wordlists/english';
+  import { HDKey } from 'https://esm.sh/@scure/bip32@1.4.0';
+  import * as btc from 'https://esm.sh/@scure/btc-signer@1.3.2';
+  const $=id=>document.getElementById(id);
+  const T={'native-segwit':{p:84,x:'wpkh'},'taproot':{p:86,x:'tr'},'legacy':{p:44,x:'pkh'}};
+  const b64=b=>Uint8Array.from(atob(b),c=>c.charCodeAt(0)); const hx=u=>[...u].map(b=>b.toString(16).padStart(2,'0')).join('');
+
+  $('gen').onclick=()=>{
+    const t=T[$('type').value], mn=bip39.generateMnemonic(wordlist,256);
+    const root=HDKey.fromMasterSeed(bip39.mnemonicToSeedSync(mn));
+    const fp=root.fingerprint.toString(16).padStart(8,'0'), acct=root.derive(`m/${t.p}'/0'/0'`);
+    const pk=acct.deriveChild(0).deriveChild(0).publicKey;
+    const addr=t.x==='wpkh'?btc.p2wpkh(pk,btc.NETWORK).address:t.x==='tr'?btc.p2tr(pk.subarray(1),undefined,btc.NETWORK).address:btc.p2pkh(pk,btc.NETWORK).address;
+    $('gout').innerHTML=`<p class="warn">🔐 PRIVATE — write down, never share:</p><pre>${mn}</pre>
+      <p class="muted">first address: <code>${addr}</code></p>
+      <p class="muted">watch-only descriptor (register on your node):</p><pre>${t.x}([${fp}/${t.p}'/0'/0']${acct.publicExtendedKey}/0/*)</pre>`;
+  };
+  $('sign').onclick=()=>{
+    try{
+      const t=T[$('stype').value], mn=$('smn').value.trim(), psbt=$('spsbt').value.trim();
+      if(!mn||!psbt) return $('sout').innerHTML='<span class="warn">need phrase and PSBT</span>';
+      const acct=HDKey.fromMasterSeed(bip39.mnemonicToSeedSync(mn)).derive(`m/${t.p}'/0'/0'`);
+      const tx=btc.Transaction.fromPSBT(b64(psbt)); let n=0;
+      for(const br of [0,1])for(let i=0;i<=50;i++){const c=acct.deriveChild(br).deriveChild(i);if(c.privateKey){try{n+=tx.sign(c.privateKey);}catch(e){}}}
+      if(!n) throw new Error('no inputs matched — wrong phrase/type or empty PSBT');
+      tx.finalize();
+      $('sout').innerHTML=`<p class="ok">Signed ${n} input(s). Broadcastable hex:</p><pre>${hx(tx.extract())}</pre>`;
+    }catch(e){ $('sout').innerHTML=`<span class="warn">${e.message}</span>`; }
+  };
+  // AIR-GAP: to remove the CDN dependency, download the four @scure modules and
+  // change the imports above to local relative paths, then open via file://.
+</script>
+</body>
+</html>

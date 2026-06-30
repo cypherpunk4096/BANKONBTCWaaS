@@ -1,0 +1,127 @@
+<!doctype html>
+<!-- BANKON ALGO WaaS — non-custodial. In-browser keygen + signing (algosdk) is client-facing
+     crypto: GPL-3.0-or-later. UI/markup MIT. Twin of bankon-waas (Bitcoin). -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BANKON ALGO — Wallet as a Service</title>
+<style>
+  :root { color-scheme: dark; --algo:#000; --algoaccent:#2bd6c4; --btc:#F7931A; --bankon:#1C66C9; --cash:#0AC18E; }
+  /* Proportional scaling: root font tracks the window; everything is rem/% so it all scales fluidly. */
+  html { font-size: clamp(13px, calc(0.55vw + 0.75vh), 28px); }
+  body { font-family: system-ui, sans-serif; line-height:1.5; width:94vw; max-width:1500px; margin:1rem auto;
+         padding:0 1rem; box-sizing:border-box; background:#0b0f14; color:#e6edf3; }
+  h1 { font-size:1.5rem; color:#fff; background:linear-gradient(90deg,#000,#143b37); border-left:4px solid var(--algoaccent);
+       font-weight:700; padding:.5rem .85rem; border-radius:8px; } h1 small { color:#9fe9df; font-weight:400; font-size:.8rem; }
+  fieldset { border:1px solid #28323d; border-radius:10px; margin:1rem 0; }
+  legend { color:var(--algoaccent); font-weight:600; padding:0 .4rem; }
+  label { display:block; margin:.4rem 0 .2rem; color:#8b97a3; }
+  input, button, textarea { font:inherit; padding:.5rem .7rem; border-radius:8px; border:1px solid #28323d; background:#121922; color:#e6edf3; }
+  button { background:var(--algoaccent); border-color:var(--algoaccent); color:#04201c; font-weight:700; cursor:pointer; }
+  button:hover { background:#3ee9d6; } button.secondary { background:#121922; color:#e6edf3; font-weight:400; }
+  code, pre { font-family:ui-monospace,monospace; background:#04080b; padding:.15rem .35rem; border-radius:5px; word-break:break-all; white-space:pre-wrap; }
+  .warn { color:#e3b341; } .ok { color:var(--cash); } .err { color:#f85149; } .muted { color:#8b97a3; font-size:.85rem; }
+  .private { border-color:#9e6a03; background:#1c1710; }
+  .row { display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; }
+  .pill { display:inline-block; background:var(--algoaccent); color:#04201c; font-weight:700; font-size:.72rem; padding:.1rem .5rem; border-radius:5px; }
+</style>
+</head>
+<body>
+  <h1>BANKON <span style="color:var(--algoaccent)">ALGO</span> <small>Wallet&nbsp;as&nbsp;a&nbsp;Service · non-custodial · twin of BANKON BTC</small></h1>
+  <p class="muted">Your 25-word recovery phrase and key are generated <b>here, in your browser</b> (algosdk). BANKON never receives them — only your <b>public address</b> (watch-only) and already-<b>signed</b> transactions reach the node. Tandem with BANKON BTC; this twin talks to your Algorand node.</p>
+  <p class="muted" id="health">checking Algorand node…</p>
+
+  <fieldset>
+    <legend>1 · Create a wallet (client-side keygen)</legend>
+    <button id="gen">Generate Algorand wallet</button>
+    <div id="genout" class="hidden" style="margin-top:.6rem"></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>2 · Track an address (watch-only)</legend>
+    <div class="row"><input id="waddr" placeholder="ALGO address (58 chars) — yours or any" style="flex:1;min-width:18rem"/>
+      <input id="wlabel" placeholder="label (optional)" style="width:10rem"/><button id="wadd">Track</button></div>
+    <div id="balout" style="margin-top:.5rem"></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>3 · Send (build → sign locally → broadcast)</legend>
+    <label>from address (must be one you hold the phrase for)</label><input id="sfrom" placeholder="ALGO address" style="width:100%"/>
+    <label>to address</label><input id="sto" placeholder="recipient ALGO address" style="width:100%"/>
+    <label>amount (ALGO)</label><input id="samt" placeholder="0.5" style="width:100%"/>
+    <label>25-word recovery phrase <span class="warn">(used only in your browser to sign; never sent)</span></label>
+    <textarea id="smn" rows="2" style="width:100%" placeholder="paste your 25 words to sign this send"></textarea>
+    <button id="ssend" style="margin-top:.5rem">Sign locally &amp; broadcast</button>
+    <div id="sendout" style="margin-top:.5rem"></div>
+  </fieldset>
+
+  <div id="oracle"></div>
+  <script>window.BANKON_ORACLE={name:'₳ ALGO.oracle', word:'round', accent:'#2bd6c4', chain:'algorand', file:'bankon-algo-oracle', poll:4000};</script>
+  <script src="oracle.js"></script>
+
+  <p class="muted">Ports: this ALGO WaaS runs on <b>:4444</b> (twin of BANKON BTC WaaS :8088). Non-custodial invariant identical — the server rejects any request containing a phrase/secret key.</p>
+
+<script type="module">
+import algosdk from 'https://esm.sh/algosdk@2.9.0';
+const $ = s => document.getElementById(s);
+const api = (p, opt) => fetch(p, opt).then(r => r.json());
+
+(async () => { try { const h = await api('/api/health');
+  $('health').innerHTML = h.state === 'running'
+    ? `<span class="ok">● Algorand node up</span> · ${h.node} · round ${h.round}${h.catchupTime ? ' · catching up' : ''}`
+    : `<span class="err">● node ${h.state}</span> · ${h.node} · ${h.error || ''}`;
+} catch (e) { $('health').innerHTML = '<span class="err">node check failed</span>'; } })();
+
+$('gen').onclick = () => {
+  const acct = algosdk.generateAccount();
+  const mn = algosdk.secretKeyToMnemonic(acct.sk);   // 25 words — stays in this browser
+  $('genout').classList.remove('hidden');
+  $('genout').innerHTML = `<div class="private" style="border:1px solid #9e6a03;border-radius:8px;padding:.6rem">
+    <span class="pill">ADDRESS (public, safe)</span><pre>${acct.addr}</pre>
+    <span class="warn">⚠ RECOVERY PHRASE — write it down, never share. It is NOT sent to BANKON.</span><pre>${mn}</pre>
+    <button id="trackgen" class="secondary">Track this address (watch-only)</button></div>`;
+  $('sfrom').value = acct.addr;
+  $('trackgen').onclick = () => track(acct.addr, 'generated');
+};
+
+async function track(address, label) {
+  $('balout').innerHTML = 'tracking…';
+  const r = await api('/api/wallet', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ address, label }) });
+  if (!r.ok) { $('balout').innerHTML = `<span class="err">${r.error}</span>`; return; }
+  showBalance(address);
+}
+async function showBalance(address) {
+  try { const b = await api(`/api/wallet/${address}/balance`);
+    $('balout').innerHTML = b.ok
+      ? `<span class="ok">✓ tracked</span> <code>${address}</code><br>balance: <b>${b.algo} ALGO</b> (${b.microAlgos} µ) · round ${b.round} · ${b.assets} assets`
+      : `<span class="err">${b.error}</span>`;
+  } catch (e) { $('balout').innerHTML = `<span class="err">${e.message}</span>`; }
+}
+$('wadd').onclick = () => { const a = $('waddr').value.trim(); if (a) track(a, $('wlabel').value.trim() || null); };
+
+$('ssend').onclick = async () => {
+  const from = $('sfrom').value.trim(), to = $('sto').value.trim();
+  const algo = parseFloat($('samt').value), mn = $('smn').value.trim();
+  const out = $('sendout');
+  if (!from || !to || !(algo > 0) || !mn) { out.innerHTML = '<span class="err">need from, to, amount, and your 25-word phrase</span>'; return; }
+  try {
+    out.innerHTML = 'building + signing locally…';
+    const acct = algosdk.mnemonicToSecretKey(mn);                 // phrase → key, IN BROWSER ONLY
+    if (acct.addr !== from) { out.innerHTML = '<span class="err">phrase does not match the "from" address</span>'; return; }
+    const p = (await api('/api/params')).params;                  // suggested params from the node (public)
+    const sp = { flatFee: true, fee: Math.max(1000, p['min-fee'] || 1000),
+      firstRound: p['last-round'], lastRound: p['last-round'] + 1000,
+      genesisID: p['genesis-id'], genesisHash: p['genesis-hash'] };
+    const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+      from, to, amount: Math.round(algo * 1e6), suggestedParams: sp });
+    const signed = txn.signTxn(acct.sk);                          // sign locally
+    const stxBase64 = btoa(String.fromCharCode(...signed));
+    const r = await api('/api/broadcast', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ stxBase64 }) });
+    out.innerHTML = r.ok ? `<span class="ok">✓ broadcast</span> txId: <code>${r.txId}</code>` : `<span class="err">${r.error}</span>`;
+    $('smn').value = '';                                          // clear the phrase from the field
+  } catch (e) { out.innerHTML = `<span class="err">${e.message}</span>`; }
+};
+</script>
+</body>
+</html>
