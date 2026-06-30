@@ -57,8 +57,9 @@ config-writes return HTTP 403. A node selector switches between **full :8332** a
 ```bash
 bankon qt        # or: ~/bankon-tools/bankon-qt.sh
 ```
-Native PySide6 app (Overview / Node / Network / Network Map / Geo Map / Mempool / Blocks / Indexes /
-BTC.oracle / RPC Console). The **Network Map** is a live QGraphicsScene topology with animated
+Native PySide6 app (Overview / Node / Network / Network Map / Mempool / Blocks / Indexes /
+BTC.oracle / RPC Console — plus an optional **Geo Map**, toggled from the toolbar, **off by default**
+since it needs the GeoIP `.mmdb` files). The **Network Map** is a live QGraphicsScene topology with animated
 traffic, click-to-diagnose peers, and Promote/Boot actions; peer-table columns are **drag-resizable
 with visible divider grips** (the widths persist across refreshes). The **RPC Console** carries the
 same **rageRPC** controller. RPCs run off the UI thread so it never freezes on the IBD lock. The

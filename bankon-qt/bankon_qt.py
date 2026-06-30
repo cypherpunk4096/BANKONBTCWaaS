@@ -1658,10 +1658,11 @@ class Main(QtWidgets.QMainWindow):
         self.blk = BlocksTab()
         self.idx = IndexesTab()
         self.map = NetworkMapTab()
-        self.geo = GeoMapTab()
+        self.geo = None          # Geo Map is OPTIONAL (toolbar toggle, default OFF) — built lazily so
+                                 # its GeoIP lookups + globe spin-timer cost nothing unless enabled.
         self.oracle = OracleTab()
         self.con = ConsoleTab()
-        for w, name in [(self.ov,"Overview"),(self.node,"Node"),(self.net,"Network"),(self.map,"Net Map"),(self.geo,"Geo Map"),
+        for w, name in [(self.ov,"Overview"),(self.node,"Node"),(self.net,"Network"),(self.map,"Net Map"),
                         (self.mp,"Mempool"),(self.blk,"Blocks"),(self.oracle,"BTC.oracle"),(self.idx,"Indexes"),(self.con,"RPC Console")]:
             self.tabs.addTab(w, name)
         self.tabs.currentChanged.connect(self.do_refresh)
@@ -1673,6 +1674,9 @@ class Main(QtWidgets.QMainWindow):
         for label, ms in [("off",0),("10s",10000),("30s",30000),("1 min",60000),("5 min",300000)]:
             self.rate.addItem(label, ms)
         self.rate.setCurrentText("1 min"); self.rate.currentIndexChanged.connect(self.apply_rate); bar.addWidget(self.rate)
+        self.geo_chk = QtWidgets.QCheckBox(" 🌍 Geo Map")          # optional GeoIP map tab — default OFF
+        self.geo_chk.setToolTip("Show the Geo Map tab (needs geoip/*.mmdb). Off by default.")
+        self.geo_chk.toggled.connect(self._toggle_geo); bar.addWidget(self.geo_chk)
         self.status_lbl = QtWidgets.QLabel("  ● checking…"); bar.addWidget(self.status_lbl)
         self.core_lbl = QtWidgets.QLabel(" ● CORE"); bar.addWidget(self.core_lbl)
         self.core_lbl.setToolTip("Bitcoin Core monitor — orange ON · red OFF · green ring = connecting/feeding")
@@ -1705,6 +1709,18 @@ class Main(QtWidgets.QMainWindow):
         self.zmq.start()
         self.apply_rate(); self.poll_health(); self.do_refresh()
     def current(self): return self.tabs.currentWidget()
+    def _toggle_geo(self, on):
+        # Build the Geo Map on enable (insert right after Net Map); destroy on disable so its
+        # globe spin-timer + GeoIP work fully stop — "default off = nothing running".
+        if on:
+            if self.geo is None: self.geo = GeoMapTab()
+            i = self.tabs.indexOf(self.map) + 1
+            self.tabs.insertTab(i, self.geo, "🌍 Geo Map")
+            self.tabs.setCurrentWidget(self.geo)                  # currentChanged → refresh
+        elif self.geo is not None:
+            i = self.tabs.indexOf(self.geo)
+            if i != -1: self.tabs.removeTab(i)
+            self.geo.deleteLater(); self.geo = None
     def on_zmq_block(self, block_hash, seq):
         # push-driven refresh — a new block connected; update the active tab + stamp.
         self.zmq_lbl.setText(f"  ⚡ zmq ● block {block_hash[:10]}…"); self.zmq_lbl.setStyleSheet("color:#16C784")

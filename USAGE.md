@@ -77,8 +77,10 @@ QT_OPENGL=software python3 bankon-qt/bankon_qt.py
 ```
 Tabs: Overview · **Node** (status + Start/Stop + live boot log) · **Network** (peer table with
 drag-resizable columns + right-click ★Promote/⏏Boot) · **Network Map** (live topology — animated
-traffic, click-to-diagnose, Promote/Boot) · **Geo Map** · Mempool · Blocks · Indexes · **BTC.oracle** ·
-**RPC Console** (with the **rageRPC** controller). Toolbar has a **refresh-rate** combo (1-min
+traffic, click-to-diagnose, Promote/Boot) · Mempool · Blocks · Indexes · **BTC.oracle** ·
+**RPC Console** (with the **rageRPC** controller). An optional **🌍 Geo Map** tab is toggled from the
+toolbar — **off by default** (it needs the GeoIP `.mmdb` files; see [geoip/README.md](geoip/README.md)).
+Toolbar has a **refresh-rate** combo (1-min
 default) and a live node-status label. RPCs run off the UI thread so it never freezes during IBD.
 Requires a `DISPLAY` (it's a desktop GUI). Close the window to exit (clean shutdown — all timers,
 ZMQ, and workers stopped deterministically).
