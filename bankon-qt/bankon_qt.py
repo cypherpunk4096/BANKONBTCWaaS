@@ -9,7 +9,7 @@ so tabs keep showing data while the node is lock-bound during IBD.
 
 Launch via bankon-qt.sh (installs PySide6, forces software rendering for HD 3000).
 """
-import json, math, os, socket, subprocess, sys, time, urllib.request, webbrowser
+import json, math, os, re, socket, subprocess, sys, time, urllib.request, webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -30,7 +30,8 @@ WAAS_URL = os.environ.get("BANKON_WAAS_URL", "http://127.0.0.1:8088")
 
 # GeoIP + map geometry + node-native network view live in the service layer.
 from services.geoip_service import geolocate, asn as asn_lookup, WORLD, HAVE_GEOIP, HAVE_ASN
-from services.geodesy import great_circle_points
+from services.geodesy import (great_circle_points, azimuthal_equidistant, nearest_city,
+                              densify_latlon, azimuthal_equidistant_hp, format_hp)
 from services.network_view import known_nodes, network_asof
 _geo = HAVE_GEOIP   # back-compat flag used by the Geo Map tab
 
@@ -1015,6 +1016,126 @@ class GlobeWidget(QtWidgets.QWidget):
         qp.end()
 
 
+class AdvancedGeoWidget(QtWidgets.QWidget):
+    """🔬 Advanced geoearth: NASA actual imagery + scientific WGS84 shape/size, with
+    strictly OPT-IN external integrations (Google Earth, SpaceNet/satellite). Nothing
+    here contacts the network by default and NO wallet data ever leaves the app —
+    external features are off until the participant explicitly enables them."""
+    ASSET = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "earth_bm.jpg")
+
+    def __init__(self, node_latlon_fn=None):
+        super().__init__()
+        self._node_latlon = node_latlon_fn or (lambda: None)
+        lay = QtWidgets.QVBoxLayout(self)
+        priv = QtWidgets.QLabel("🔒 Privacy: no external service is contacted by default; "
+                                "no wallet data is ever sent. Google Earth & SpaceNet are opt-in.")
+        priv.setStyleSheet("color:#16C784;font-weight:600"); priv.setWordWrap(True)
+        lay.addWidget(priv)
+        tabs = QtWidgets.QTabWidget(); lay.addWidget(tabs, 1)
+        tabs.addTab(self._actual_tab(), "🌍 Actual (NASA)")
+        tabs.addTab(self._scientific_tab(), "🔬 Scientific (WGS84)")
+        tabs.addTab(self._satellite_tab(), "🛰 Satellite / SpaceNet")
+
+    # ── Actual: bundled NASA Blue Marble (public domain, local — no ping) ──
+    def _actual_tab(self):
+        w = QtWidgets.QWidget(); v = QtWidgets.QVBoxLayout(w)
+        img = QtWidgets.QLabel(); img.setAlignment(QtCore.Qt.AlignCenter)
+        pm = QtGui.QPixmap(self.ASSET)
+        if not pm.isNull():
+            img.setPixmap(pm.scaled(720, 360, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+        else:
+            img.setText("NASA Blue Marble imagery not found in assets/")
+        v.addWidget(img, 1)
+        v.addWidget(QtWidgets.QLabel("NASA Blue Marble — public domain, bundled locally (equirectangular). No network access."))
+        v.addWidget(self._google_earth_row())
+        return w
+
+    # ── Scientific: WGS84 size & shape, high precision ──
+    def _scientific_tab(self):
+        import math as _m
+        a = 6378137.0; f = 1.0 / 298.257223563; b = a * (1 - f); e2 = 2 * f - f * f
+        R1 = (2 * a + b) / 3.0
+        eq_circ = 2 * _m.pi * a
+        # Authalic-ish surface area and ellipsoid volume
+        vol = 4.0 / 3.0 * _m.pi * a * a * b
+        try:
+            import mpmath as mp; mp.mp.dps = 24
+            e = mp.sqrt(mp.mpf(str(e2)))
+            area = 2 * mp.pi * mp.mpf(str(a))**2 * (1 + (1 - e2) / e * mp.atanh(e))
+            area_s = mp.nstr(area, 20)
+        except Exception:
+            area = 4 * _m.pi * ((a**1.6 * 2 + b**1.6) / 3) ** (1 / 1.6); area_s = f"{area:.6e}"
+        rows = [
+            ("Datum", "WGS84 (EPSG:4326 / NGA TR8350.2)"),
+            ("Semi-major axis a", f"{a:.6f} m"),
+            ("Semi-minor axis b", f"{b:.9f} m"),
+            ("Flattening f", f"1 / {1/f:.9f}"),
+            ("First eccentricity² e²", f"{e2:.18f}"),
+            ("Mean radius R1=(2a+b)/3", f"{R1:.9f} m"),
+            ("Equatorial circumference", f"{eq_circ:.6f} m"),
+            ("Surface area", f"{area_s} m²"),
+            ("Volume", f"{vol:.6e} m³"),
+            ("Shape", "oblate spheroid (equatorial bulge; not a perfect sphere, not flat)"),
+        ]
+        w = QtWidgets.QWidget(); grid = QtWidgets.QGridLayout(w)
+        for i, (k, val) in enumerate(rows):
+            kl = QtWidgets.QLabel(k + ":"); kl.setStyleSheet("color:#8aa0b4")
+            vl = QtWidgets.QLabel(val); vl.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+            vl.setStyleSheet("font-family:monospace")
+            grid.addWidget(kl, i, 0); grid.addWidget(vl, i, 1)
+        note = QtWidgets.QLabel("Projection precision: rendering is float64 (~15–16 sig digits, "
+                                "visually exact); point measurement is available to 18 decimals (mpmath).")
+        note.setWordWrap(True); note.setStyleSheet("color:#6a808f")
+        grid.addWidget(note, len(rows), 0, 1, 2)
+        grid.addWidget(self._google_earth_row(), len(rows) + 1, 0, 1, 2)
+        return w
+
+    # ── Satellite / SpaceNet: placeholder, opt-in only, never pings ──
+    def _satellite_tab(self):
+        w = QtWidgets.QWidget(); v = QtWidgets.QVBoxLayout(w)
+        self.sat_optin = QtWidgets.QCheckBox("Join as participant to enable satellite / SpaceNet mapping")
+        self.sat_optin.setToolTip("Off by default. No SpaceNet/satellite endpoint is contacted unless you opt in.")
+        self.sat_optin.toggled.connect(self._on_sat_optin)
+        v.addWidget(self.sat_optin)
+        self.sat_body = QtWidgets.QLabel(
+            "🛰 Satellite / SpaceNet mapping — placeholder.\n\n"
+            "Not connected. This tab makes NO network request by default; SpaceNet is a "
+            "participant opt-in. Enable the checkbox above to activate (integration TBD).")
+        self.sat_body.setWordWrap(True); self.sat_body.setStyleSheet("color:#8aa0b4")
+        v.addWidget(self.sat_body, 1)
+        return w
+
+    def _on_sat_optin(self, on):
+        self.sat_body.setText(
+            "🛰 Satellite / SpaceNet — participant mode ENABLED (opt-in).\n\n"
+            "Placeholder: a satellite/SpaceNet tile source would attach here. Still no data "
+            "is sent automatically; any request would be an explicit action."
+            if on else
+            "🛰 Satellite / SpaceNet mapping — placeholder.\n\nNot connected. No network request "
+            "is made by default; SpaceNet is a participant opt-in.")
+
+    # ── Google Earth: opt-in, location-only, no gmail stored, no wallet data ──
+    def _google_earth_row(self):
+        box = QtWidgets.QWidget(); h = QtWidgets.QHBoxLayout(box); h.setContentsMargins(0, 6, 0, 0)
+        self.ge_optin = QtWidgets.QCheckBox("Enable Google Earth (opt-in)")
+        self.ge_optin.setToolTip("Off by default. When on, opens a map LOCATION only — no wallet, "
+                                 "account, or gmail is sent or stored.")
+        self.ge_btn = QtWidgets.QPushButton("Open node location in Google Earth")
+        self.ge_btn.setEnabled(False)
+        self.ge_optin.toggled.connect(self.ge_btn.setEnabled)
+        self.ge_btn.clicked.connect(self._open_google_earth)
+        h.addWidget(self.ge_optin); h.addWidget(self.ge_btn); h.addStretch(1)
+        return box
+
+    def _open_google_earth(self):
+        if not self.ge_optin.isChecked():
+            return
+        ll = self._node_latlon() or (0.0, 0.0)   # approx node location only; never wallet data
+        lat, lon = ll
+        url = f"https://earth.google.com/web/@{lat:.6f},{lon:.6f},1000a,10000000d"
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl(url))
+
+
 class GeoMapTab(QtWidgets.QWidget):
     """Geo map (EPSG:4326 plate carrée). The WHOLE known network from this node's addrman
     (getnodeaddresses — Bitnodes-style, self-sourced, no external API) as a density layer,
@@ -1040,19 +1161,45 @@ class GeoMapTab(QtWidgets.QWidget):
         self.allnodes.toggled.connect(lambda _: self.refresh()); top.addWidget(self.allnodes)
         self.toggle = QtWidgets.QPushButton("🗺 Flat map"); self.toggle.setToolTip("Switch spinning globe / flat map")
         self.toggle.clicked.connect(self._toggle); top.addWidget(self.toggle)
+        # Flat-map projection: plate carrée (EPSG:4326) or the accurate flat-earth
+        # azimuthal-equidistant disc (exact distance/azimuth from the North Pole).
+        self.projbox = QtWidgets.QComboBox()
+        self.projbox.addItems(["Plate Carrée", "flatearth (azimuthal equidistant)"])
+        self.projbox.setToolTip("Flat-map projection · flatearth = North-Pole azimuthal-equidistant (accurate 2D)")
+        self.projbox.currentIndexChanged.connect(self._on_proj); top.addWidget(self.projbox)
+        self.projmode = "plate"
+        self.advbtn = QtWidgets.QPushButton("🔬 Advanced")
+        self.advbtn.setToolTip("NASA actual · scientific WGS84 · satellite/SpaceNet (all opt-in, no default network)")
+        self.advbtn.clicked.connect(self._show_advanced); top.addWidget(self.advbtn)
         v.addLayout(top)
         self.scene = QtWidgets.QGraphicsScene(); self.view = QtWidgets.QGraphicsView(self.scene)
         self.view.setRenderHint(QtGui.QPainter.Antialiasing)
         self.view.setStyleSheet("background:#05080d;border:2px solid #00BFFF;border-radius:8px")
-        self.stack = QtWidgets.QStackedWidget(); self.stack.addWidget(self.globe); self.stack.addWidget(self.view)
+        self.advanced = AdvancedGeoWidget(self._my_latlon)
+        self.stack = QtWidgets.QStackedWidget(); self.stack.addWidget(self.globe); self.stack.addWidget(self.view); self.stack.addWidget(self.advanced)
         v.addWidget(self.stack, 1)
         self.legend = QtWidgets.QLabel(""); self.legend.setStyleSheet("color:#d6e3ef"); self.legend.setWordWrap(True); v.addWidget(self.legend)
         self._peers, self._ni, self._net, self._act = [], {}, [], []
         self._bg = None; self._bg_n = -1     # cached background pixmap + the node count it was built for
     def _toggle(self):
-        i = 1 - self.stack.currentIndex(); self.stack.setCurrentIndex(i)
+        # Globe (0) ⇄ Flat (1); from Advanced (2) go back to Globe.
+        i = 1 if self.stack.currentIndex() == 0 else 0
+        self.stack.setCurrentIndex(i)
         self.toggle.setText("🗺 Flat map" if i == 0 else "🌐 Globe")
-    def proj(self, lon, lat): return ((lon + 180) / 360 * self.W, (90 - lat) / 180 * self.H)
+    def _show_advanced(self):
+        self.stack.setCurrentIndex(2)
+    def _on_proj(self, i):
+        self.projmode = "flatearth" if i == 1 else "plate"
+        self._bg = None                        # projection changed → rebuild background
+        self.stack.setCurrentIndex(1)          # show the flat map so the change is visible
+        self.toggle.setText("🌐 Globe")
+        self._redraw()
+    # Flat-map point projection → scene (x, y). Dispatches on the selected mode.
+    _AE_R = 350.0
+    def proj(self, lon, lat):
+        if self.projmode == "flatearth":
+            return azimuthal_equidistant(lat, lon, self.W / 2, self.H / 2, self._AE_R)
+        return ((lon + 180) / 360 * self.W, (90 - lat) / 180 * self.H)
     def refresh(self):
         spawn("getpeerinfo", self._on_peers, timeout=10)
         spawn("getnetworkinfo", self._on_ni, timeout=8)
@@ -1077,12 +1224,26 @@ class GeoMapTab(QtWidgets.QWidget):
         qp = QtGui.QPainter(pm); qp.setRenderHint(QtGui.QPainter.Antialiasing)
         qp.setPen(QtGui.QPen(QtGui.QColor("#16324a"))); qp.setBrush(QtGui.QBrush(QtGui.QColor("#0c2236")))
         for poly in WORLD:
-            qp.drawPolygon(QtGui.QPolygonF([QtCore.QPointF(*self.proj(lo, la)) for lo, la in poly]))
+            # Flat-earth (AE): great-circle-densify edges so continents curve correctly.
+            ring = densify_latlon(poly) if self.projmode == "flatearth" else poly
+            qp.drawPolygon(QtGui.QPolygonF([QtCore.QPointF(*self.proj(lo, la)) for lo, la in ring]))
         qp.setPen(QtGui.QPen(QtGui.QColor("#0e2a3d")))
-        for lo in range(-150, 181, 30):
-            x, _ = self.proj(lo, 0); qp.drawLine(int(x), 0, int(x), self.H)
-        for la in range(-60, 91, 30):
-            _, y = self.proj(0, la); qp.drawLine(0, int(y), self.W, int(y))
+        if self.projmode == "flatearth":
+            cx, cy = self.W / 2, self.H / 2
+            for la in range(-60, 91, 30):                     # concentric parallels
+                rho = self._AE_R * (90 - la) / 180.0
+                qp.drawEllipse(QtCore.QPointF(cx, cy), rho, rho)
+            for lo in range(-180, 180, 30):                    # radial meridians
+                x, y = self.proj(lo, -90)
+                qp.drawLine(int(cx), int(cy), int(x), int(y))
+            qp.setPen(QtGui.QPen(QtGui.QColor("#16324a")))     # equator + boundary
+            qp.drawEllipse(QtCore.QPointF(cx, cy), self._AE_R / 2, self._AE_R / 2)
+            qp.drawEllipse(QtCore.QPointF(cx, cy), self._AE_R, self._AE_R)
+        else:
+            for lo in range(-150, 181, 30):
+                x, _ = self.proj(lo, 0); qp.drawLine(int(x), 0, int(x), self.H)
+            for la in range(-60, 91, 30):
+                _, y = self.proj(0, la); qp.drawLine(0, int(y), self.W, int(y))
         qp.setPen(QtCore.Qt.NoPen); qp.setBrush(QtGui.QBrush(QtGui.QColor(90, 160, 190, 70)))  # dim density
         for nd in self._net:
             x, y = self.proj(nd["lon"], nd["lat"]); qp.drawEllipse(QtCore.QPointF(x, y), 1.7, 1.7)
@@ -1113,7 +1274,8 @@ class GeoMapTab(QtWidgets.QWidget):
                     px = x
                 self.scene.addPath(path, arc_pen)
             mk = self.scene.addEllipse(mx - 6, my_y - 6, 12, 12, QtGui.QPen(QtGui.QColor("#F7931A"), 2), QtGui.QBrush(QtGui.QColor("#1a1200")))
-            mk.setToolTip("bankon: this node")
+            _nc = nearest_city(my[0], my[1])
+            mk.setToolTip(f"bankon: this node · nearest city: {_nc[0]}, {_nc[1]} (~{_nc[2]:.0f} km)")
         # connected peers on top, coloured by traffic/direction, ASN in tooltip
         cc, asncc, located, gpeers = Counter(), Counter(), 0, []
         for p in self._peers:
@@ -1130,7 +1292,8 @@ class GeoMapTab(QtWidgets.QWidget):
             gpeers.append((g["lat"], g["lon"], col, max(4.0, r)))
             self.scene.addEllipse(x - r - 3, y - r - 3, 2 * (r + 3), 2 * (r + 3), QtGui.QPen(QtCore.Qt.NoPen), QtGui.QBrush(QtGui.QColor(col.red(), col.green(), col.blue(), 60)))
             d = self.scene.addEllipse(x - r, y - r, 2 * r, 2 * r, QtGui.QPen(QtGui.QColor("#eef3f8"), 1), QtGui.QBrush(col))
-            d.setToolTip(f"{p.get('addr')}  ·  {flag(g['iso'])} {g['country']}  ·  AS{an.get('asn','?')} {an.get('org','')}  ·  {(traf/1048576):.1f} MiB  ·  {'in' if inbound else 'out'}")
+            _pc = nearest_city(g["lat"], g["lon"])
+            d.setToolTip(f"{p.get('addr')}  ·  {flag(g['iso'])} {g['country']}  ·  near {_pc[0]} (~{_pc[2]:.0f} km)  ·  AS{an.get('asn','?')} {an.get('org','')}  ·  {(traf/1048576):.1f} MiB  ·  {'in' if inbound else 'out'}")
         # Log-based connection ACTIVITY — geolocate recent connect/fail events when the peer RPC is
         # choked, so the geo map / globe isn't empty during IBD. connected=green · failed=red · inbound=blue.
         act_plotted = 0
@@ -1259,6 +1422,100 @@ class Collapsible(QtWidgets.QWidget):
             self._on_expand(self.al, lbl)
 
 
+class BlockSciencePanel(QtWidgets.QFrame):
+    """🔬 Scientific analysis of a SINGLE block — defaults to the CURRENT RUNNING TIP and follows it
+    as new blocks arrive; any height on demand. A visual workflow rendered from actual node
+    measurements only (getblockhash → getblockheader + getblockstats, no third party):
+        ① identity → ② proof-of-work → ③ structure → ④ economics
+    DeFi meets sci-fi, and BANKON.oracle is accuracy: every figure below is measured, none estimated."""
+    def __init__(self):
+        super().__init__(); self.setObjectName("scienceframe")
+        v = QtWidgets.QVBoxLayout(self)
+        top = QtWidgets.QHBoxLayout()
+        tt = QtWidgets.QLabel("🔬 Block science — visual workflow from the actual block")
+        tt.setStyleSheet("color:#00BFFF;font-weight:800"); top.addWidget(tt, 1)
+        self.follow = QtWidgets.QCheckBox("follow tip"); self.follow.setChecked(True)
+        self.follow.setToolTip("Re-analyze automatically as each new block arrives (the current running block)")
+        top.addWidget(self.follow)
+        self.hgt = QtWidgets.QLineEdit(); self.hgt.setPlaceholderText("height (blank = tip)")
+        self.hgt.setMaximumWidth(130); self.hgt.returnPressed.connect(self.analyze); top.addWidget(self.hgt)
+        go = QtWidgets.QPushButton("Analyze"); go.clicked.connect(self.analyze); top.addWidget(go)
+        v.addLayout(top)
+        self.head = QtWidgets.QLabel("① identity:  waiting for a block…")
+        self.head.setStyleSheet("color:#F7931A;font-family:monospace;font-size:11px")
+        self.head.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse); self.head.setWordWrap(True)
+        v.addWidget(self.head)
+        grid = QtWidgets.QGridLayout(); grid.setHorizontalSpacing(18); self.q = {}
+        for col, (key, title) in enumerate([("pow", "② proof-of-work"), ("struct", "③ structure"), ("econ", "④ economics")]):
+            lab = QtWidgets.QLabel(f"<b>{title}</b>"); lab.setStyleSheet("color:#00BFFF"); grid.addWidget(lab, 0, col)
+            body = QtWidgets.QLabel("…"); body.setStyleSheet("font-family:monospace;font-size:11px;color:#c9d4e0")
+            body.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse); body.setWordWrap(True)
+            body.setAlignment(QtCore.Qt.AlignTop); grid.addWidget(body, 1, col); self.q[key] = body
+        grid.setRowStretch(1, 1)
+        v.addLayout(grid, 1)
+        self.fullbar = QtWidgets.QProgressBar(); self.fullbar.setMaximum(4_000_000)
+        self.fullbar.setFormat("block fullness — %v / 4,000,000 WU (%p%)"); v.addWidget(self.fullbar)
+        self.feebar = QtWidgets.QLabel("fee percentiles: —")
+        self.feebar.setStyleSheet("font-family:monospace;font-size:11px;color:#8aa0b4"); v.addWidget(self.feebar)
+        self._analyzing = None; self._hdr = None; self._st = None; self._last_tip = None
+    def maybe_tip(self, h):
+        # follow-tip: re-analyze only when a NEW tip arrives and no manual height is pinned
+        if self.follow.isChecked() and h and h != self._last_tip and not self.hgt.text().strip():
+            self._go(h)
+    def refresh(self): self.analyze()
+    def analyze(self):
+        txt = self.hgt.text().strip()
+        if txt.isdigit(): self._go(int(txt))
+        else: spawn("getblockchaininfo", lambda c, s: self._go((c or {}).get("blocks")), timeout=8)
+    def _go(self, h):
+        if h is None: return
+        if h == self._analyzing and (self._hdr is None or self._st is None): return   # fetch in flight
+        self._analyzing = h; self._last_tip = h; self._hdr = None; self._st = None
+        spawn("getblockstats", self._on_stats, params=[h], timeout=25)
+        spawn("getblockhash", self._on_hash, params=[h], timeout=10)
+    def _on_hash(self, hsh, stale): spawn("getblockheader", self._on_hdr, params=[hsh], timeout=10)
+    def _on_hdr(self, hdr, stale): self._hdr = hdr or {}; self._render()
+    def _on_stats(self, st, stale): self._st = st or {}; self._render()
+    def _render(self):
+        if self._hdr is None or self._st is None: return          # render once BOTH measurements landed
+        H, S = self._hdr, self._st
+        t = H.get("time"); age = human_dt(_now() - t) if t else "—"
+        tm = datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC") if t else "—"
+        self.head.setText(f"① identity:  #{S.get('height', self._analyzing):,}  ·  {tm}  ·  age {age}\n"
+                          f"   {H.get('hash', '—')}")
+        d = H.get("difficulty") or 0
+        hashes = d * 4294967296                                   # expected hashes = difficulty × 2³²
+        self.q["pow"].setText(
+            f"difficulty {d:.3e}\n"
+            f"exp. hashes {hashes:.2e}\n"
+            f"bits {H.get('bits','—')}\n"
+            f"nonce {H.get('nonce','—')}\n"
+            f"version 0x{H.get('version',0):08x}\n"
+            f"merkle {str(H.get('merkleroot',''))[:16]}…\n"
+            f"confirmations {H.get('confirmations','—')}")
+        w = S.get("total_weight", 0); sw = S.get("swtotal_weight", 0)
+        self.q["struct"].setText(
+            f"txs {S.get('txs',0):,}\n"
+            f"size {S.get('total_size',0)/1000:,.1f} kB\n"
+            f"weight {w:,} WU\n"
+            f"vsize {w/4:,.0f} vB\n"
+            f"segwit share {100*sw/w if w else 0:.1f}%\n"
+            f"inputs {S.get('ins',0):,} · outputs {S.get('outs',0):,}\n"
+            f"UTXO Δ {S.get('utxo_increase',0):+,}")
+        sub = S.get("subsidy", 0) / 1e8; fees = S.get("totalfee", 0) / 1e8
+        self.q["econ"].setText(
+            f"subsidy {sub:g} BTC\n"
+            f"fees {fees:.8f} BTC\n"
+            f"reward {sub+fees:.8f} BTC\n"
+            f"avg feerate {S.get('avgfeerate',0)} sat/vB\n"
+            f"avg fee {S.get('avgfee',0):,} sat\n"
+            f"total out {S.get('total_out',0)/1e8:,.2f} BTC")
+        self.fullbar.setValue(min(4_000_000, int(w)))
+        pct = S.get("feerate_percentiles") or []
+        if len(pct) == 5:
+            self.feebar.setText("fee percentiles (sat/vB):  p10 %s · p25 %s · p50 %s · p75 %s · p90 %s" % tuple(pct))
+
+
 class OracleTab(QtWidgets.QWidget):
     """BTC.oracle — the clock kept on a Bitcoin block. Bitcoin-orange framed, with an electric-blue
     mesh graphical area (block-interval sparkline + headline) beside the statistical readout, plus a
@@ -1276,7 +1533,17 @@ class OracleTab(QtWidgets.QWidget):
             "protocol target", "basis used", "recommended poll", "genesis", "time since last update"])
         box.setMaximumWidth(440); mid.addWidget(box, 2)                    # statistical area
         v.addLayout(mid, 1)
-        outer.addWidget(frame)
+        outer.addWidget(frame, 1)
+        # QUADRANTS: with the frame's mesh|stats split above, the two panels below complete a
+        # 2×2 oracle — Q1 mesh · Q2 statistics · Q3 🔬 block science (current running block,
+        # visual workflow) · Q4 measurement history + log. Splitter = user-adjustable quadrant line.
+        self.science = BlockSciencePanel()
+        qsplit = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        qsplit.addWidget(self.science)
+        histcol = QtWidgets.QWidget(); outer_hist = QtWidgets.QVBoxLayout(histcol)
+        outer_hist.setContentsMargins(0, 0, 0, 0)
+        page = outer                # the tab's real page layout (quadrant frame goes here at the end)
+        outer = outer_hist          # re-point: the history/log widgets below land in quadrant Q4
         # Block-measurement history — accordion + a logging-verbosity control for scientific monitoring.
         hrow = QtWidgets.QHBoxLayout()
         hh = QtWidgets.QLabel("📜 Block measurement history — expand a block for scientific analysis")
@@ -1305,6 +1572,8 @@ class OracleTab(QtWidgets.QWidget):
         self.mlog = QtWidgets.QPlainTextEdit(); self.mlog.setReadOnly(True); self.mlog.setMaximumHeight(130)
         self.mlog.setStyleSheet("font-family:monospace;font-size:11px;background:#05080d;color:#c9d4e0"); outer.addWidget(self.mlog)
         clr.clicked.connect(self.mlog.clear)
+        qsplit.addWidget(histcol); qsplit.setSizes([460, 500])
+        page.addWidget(qsplit, 2)   # complete the 2×2: Q3 science | Q4 history now under Q1|Q2
         self._hist_heights = set(); self._measurements = []
         self._logdir = Path.home() / "bankon-tools" / "oracle-logs"   # default: auto-persist as JSONL
         try: self._logdir.mkdir(parents=True, exist_ok=True)
@@ -1321,9 +1590,11 @@ class OracleTab(QtWidgets.QWidget):
         spawn_fn(lambda: fetch_json("/api/oracle").get("oracle", {}), self._fill)
         spawn_fn(synctip, self._fill_sync)
         spawn_fn(lambda: fetch_json("/api/recentblocks?n=60").get("blocks", []), self._fill_blocks)
+        self.science.refresh()                                     # Q3: re-measure the running block
     def _fill_blocks(self, rb):
         blocks = [b for b in (rb or []) if b.get("time") and b.get("height") is not None]
         srt = sorted(blocks, key=lambda b: b["height"])
+        if srt: self.science.maybe_tip(srt[-1]["height"])          # follow-tip → new block = new analysis
         series = []
         for i in range(1, len(srt)):
             dt = (srt[i]["time"] - srt[i - 1]["time"]) / 60.0             # interval, minutes
@@ -1521,6 +1792,39 @@ class NetworkTab(QtWidgets.QWidget):
         o = QtWidgets.QPushButton("1-try"); o.setToolTip("Try once, don't keep"); o.clicked.connect(lambda: self._addnode("onetry")); row.addWidget(o)
         rm = QtWidgets.QPushButton("✕"); rm.setObjectName("danger"); rm.setToolTip("Remove added node"); rm.clicked.connect(lambda: self._addnode("remove")); row.addWidget(rm)
         v.addLayout(row)
+        # Peer-scaling row — power-of-2 targets (1·2·4·8·16·32) + ⚡ enterprise tiers (64·128·256)
+        # with auto-grow: continuous increase toward the target by dialing the fastest known peers.
+        # HONESTY: outbound-only Core tops out ~10 automatic + 8 addnode slots (≈18); enterprise
+        # tiers additionally need inbound reachability (:8333 open) and -maxconnections sized up.
+        r2 = QtWidgets.QHBoxLayout()
+        r2.addWidget(QtWidgets.QLabel("peer target"))
+        self.tgt = QtWidgets.QComboBox()
+        for n in (1, 2, 4, 8, 16, 32): self.tgt.addItem(str(n), n)
+        for n in (64, 128, 256): self.tgt.addItem(f"{n} ⚡ enterprise", n)
+        cur = int(os.environ.get("BANKON_PEER_TARGET", "12"))
+        ix = self.tgt.findData(cur)
+        if ix < 0: self.tgt.insertItem(0, f"{cur} (current)", cur); ix = 0
+        self.tgt.setCurrentIndex(ix)
+        self.tgt.setToolTip("Desired peer-connection FLOOR, powers of 2. 8 = standard · 16/32 = strong ·\n"
+                            "64+ = enterprise (needs inbound :8333 + -maxconnections in bitcoin.conf)")
+        self.tgt.currentIndexChanged.connect(self._set_target); r2.addWidget(self.tgt)
+        self.autogrow = QtWidgets.QCheckBox("auto-grow (continuous)")
+        self.autogrow.setToolTip("Enterprise mode: every refresh below target dials the fastest known peers\n"
+                                 "(Console /api/node/connect-fast) until the target is met — throttled to 1/min")
+        r2.addWidget(self.autogrow)
+        g = QtWidgets.QPushButton("⚡ Grow now"); g.setToolTip("Dial fast peers toward the target immediately")
+        g.clicked.connect(self._grow); r2.addWidget(g)
+        r2.addStretch(); v.addLayout(r2)
+        # ₿ network intelligence strip — self-sourced Bitcoin facts: OUR addrman census (total nodes
+        # this node has actually heard of — bitnodes-style, no third party) + difficulty / hashrate /
+        # subsidy / halving countdown derived from getmininginfo.
+        self.btcinfo = QtWidgets.QLabel("₿ network:  measuring…")
+        self.btcinfo.setStyleSheet("color:#00BFFF;font-family:monospace;font-size:11px")
+        self.btcinfo.setToolTip("Self-sourced from OUR node only. 'nodes in our addrman' = every address this node\n"
+                                "has heard of (the reachable network is a subset — ~24k nodes as of mid-2026).")
+        self.btcinfo.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        v.addWidget(self.btcinfo)
+        self._btc = {}; self._census_ts = 0.0; self._lastgrow = 0.0
         self.status = QtWidgets.QLabel("Pick a seed (or type an ip:port) and Add to grow connections.")
         self.status.setStyleSheet("color:#8aa0b4"); v.addWidget(self.status)
         self.local_lbl = QtWidgets.QLabel("our node: —")
@@ -1554,6 +1858,51 @@ class NetworkTab(QtWidgets.QWidget):
         spawn("getpeerinfo", self._fill, timeout=10)
         spawn("getnetworkinfo", self._setni, timeout=8)                       # our local node address + conn count
         spawn_fn(lambda: fetch_json("/api/netactivity?n=50"), self._setact)   # log-based connection activity
+        spawn("getmininginfo", self._btcstats, timeout=10)                    # difficulty/hashrate/halving strip
+        if time.time() - self._census_ts > 180:    # addrman census is heavy (all addresses) — 3-min cadence
+            self._census_ts = time.time()
+            spawn_fn(self._census, self._census_done)
+    # ---- ₿ network strip: addrman census + chain economics (all self-sourced) ----
+    @staticmethod
+    def _census():
+        addrs = rpc("getnodeaddresses", [0], timeout=30) or []    # 0 = ALL addresses our node knows
+        tally = {}
+        for a in addrs:
+            net = a.get("network", "?"); tally[net] = tally.get(net, 0) + 1
+        return {"total": len(addrs), "tally": tally}
+    def _census_done(self, d):
+        self._btc.update(d or {}); self._render_btc()
+    def _btcstats(self, m, stale):
+        m = m or {}
+        self._btc.update(difficulty=m.get("difficulty"), hashps=m.get("networkhashps"), blocks=m.get("blocks"))
+        self._render_btc()
+    def _render_btc(self):
+        b = self._btc; parts = []
+        if b.get("total"):
+            det = " · ".join(f"{v:,} {k}" for k, v in sorted(b["tally"].items(), key=lambda kv: -kv[1]))
+            parts.append(f"{b['total']:,} nodes in our addrman ({det})")
+        if b.get("difficulty"):
+            era = (b.get("blocks") or 0) // 210000
+            left = (era + 1) * 210000 - (b.get("blocks") or 0)
+            parts += [f"difficulty {b['difficulty']/1e12:.1f}T", f"~{(b.get('hashps') or 0)/1e18:.0f} EH/s",
+                      f"subsidy {50/2**era:g} BTC",
+                      f"halving in {left:,} blk (~{left*10/60/24/365.25:.1f} yr)"]
+        if parts: self.btcinfo.setText("₿ network:  " + "   ·   ".join(parts))
+    # ---- peer-target tiers + growth ----
+    def _set_target(self):
+        n = int(self.tgt.currentData())
+        os.environ["BANKON_PEER_TARGET"] = str(n)                 # _render_conns reads this floor
+        hint = "" if n <= 18 else f"   ⚡ enterprise: needs inbound :8333 reachable + -maxconnections ≥ {n+10}"
+        self.status.setText(f"peer target set to {n}{hint}")
+        self.refresh()
+    def _grow(self):
+        tgt = int(self.tgt.currentData()); n = len(getattr(self, "_peers", None) or [])
+        want = max(4, min(48, tgt - n if tgt > n else 8))         # console clamps to 48/dispatch
+        self._lastgrow = time.time()
+        self.status.setText(f"⚡ dialing {want} fast peers toward target {tgt}…")
+        spawn_fn(lambda: post_json("/api/node/connect-fast", {"count": want}, timeout=15),
+                 lambda d: self.status.setText("⚡ " + str((d or {}).get("note") or (d or {}).get("error") or "dispatched")),
+                 lambda e: self.status.setText(f"⚡ grow failed: {e}"))
     def _render_conns(self, n, out, inb, stale):
         """Single place that renders the 'connections: N (out · in)' headline, so every source agrees."""
         tgt = int(os.environ.get("BANKON_PEER_TARGET", "12"))
@@ -1601,6 +1950,11 @@ class NetworkTab(QtWidgets.QWidget):
     def _fill(self, peers, stale):
         peers = peers or []
         self._peers = peers                          # kept for the right-click context menu (full dicts)
+        # auto-grow: continuous increase toward the target — dial fast peers whenever we're under,
+        # throttled to one dispatch per minute so a slow-to-fill target can't spam addnode.
+        tgt = int(os.environ.get("BANKON_PEER_TARGET", "12"))
+        if self.autogrow.isChecked() and peers and len(peers) < tgt and time.time() - self._lastgrow > 60:
+            self._grow()
         # The count headline is owned by _setni (getnetworkinfo) so it matches the Overview tab exactly.
         # Only fall back to the peer-list length if getnetworkinfo hasn't delivered a count this cycle.
         if not getattr(self, "_have_ni_conns", False):
@@ -1701,8 +2055,10 @@ class ControlTab(QtWidgets.QWidget):
         # -- Localhost service probes --
         right = QtWidgets.QVBoxLayout()
         right.addWidget(QtWidgets.QLabel("<b>🔌 Localhost services</b> — socket probes from 127.0.0.1"))
-        self.t = QtWidgets.QTableWidget(); self.t.setColumnCount(4)
-        self.t.setHorizontalHeaderLabels(["service", "port", "state", "latency"])
+        # BANKON table formula: ODD column counts (1·3·5·7·9·11·13) — port folds into the service
+        # name so this reads as 3 columns. Rationale in docs/design.md → 'The odd-column formula'.
+        self.t = QtWidgets.QTableWidget(); self.t.setColumnCount(3)
+        self.t.setHorizontalHeaderLabels(["service", "state", "latency"])
         hh = self.t.horizontalHeader(); hh.setStretchLastSection(True); hh.setMinimumSectionSize(56)
         self.t.verticalHeader().setVisible(False); self.t.verticalHeader().setDefaultSectionSize(24)
         self.t.setShowGrid(False); self.t.setAlternatingRowColors(True)
@@ -1748,10 +2104,10 @@ class ControlTab(QtWidgets.QWidget):
         spawn_fn(work, self._probed)
     def _probed(self, rows):
         for r, (name, port, up, ms) in enumerate(rows or []):
-            cells = [name, str(port), "● UP" if up else "○ DOWN", f"{ms:.1f} ms" if up else "—"]
+            cells = [f"{name}  :{port}", "● UP" if up else "○ DOWN", f"{ms:.1f} ms" if up else "—"]
             for c, val in enumerate(cells):
                 it = QtWidgets.QTableWidgetItem(val)
-                if c == 2: it.setForeground(QtGui.QColor("#16C784" if up else "#f85149"))
+                if c == 1: it.setForeground(QtGui.QColor("#16C784" if up else "#f85149"))
                 self.t.setItem(r, c, it)
         self.t.resizeColumnsToContents()
     # ---- thermal & host card (called by Main._sys so there's exactly one /api/system poller) ----
@@ -1837,6 +2193,102 @@ class ControlTab(QtWidgets.QWidget):
         spawn_fn(work, done, fail)
 
 
+class NetLogTab(QtWidgets.QWidget):
+    """📡 Network Activity Log — every connect / inbound / disconnect / fail event
+    from the BANKON BTC WaaS node (via /api/netactivity), streamed to a live log."""
+    def __init__(self):
+        super().__init__(); v = QtWidgets.QVBoxLayout(self)
+        top = QtWidgets.QHBoxLayout()
+        self.info = QtWidgets.QLabel("Network activity — all peer connect / inbound / disconnect / fail events")
+        self.info.setStyleSheet("color:#16C784;font-weight:600"); top.addWidget(self.info, 1)
+        self.live = QtWidgets.QCheckBox("live"); self.live.setChecked(True); top.addWidget(self.live)
+        clr = QtWidgets.QPushButton("clear"); clr.clicked.connect(lambda: (self.log.clear(), self._seen.clear())); top.addWidget(clr)
+        v.addLayout(top)
+        self.log = QtWidgets.QPlainTextEdit(); self.log.setReadOnly(True); self.log.setMaximumBlockCount(8000)
+        self.log.setStyleSheet("font-family:monospace;background:#05080d;color:#d6e3ef;border:1px solid #0e3d57;border-radius:6px")
+        v.addWidget(self.log, 1)
+        self._seen = set()
+        self._t = QtCore.QTimer(self); self._t.timeout.connect(self.refresh); self._t.start(3000)
+    def refresh(self):
+        if self.live.isChecked():
+            spawn_fn(lambda: fetch_json("/api/netactivity?n=200"), self._on)
+    def _on(self, d):
+        evs = (d or {}).get("events", [])
+        for e in sorted(evs, key=lambda x: x.get("time") or x.get("ts") or 0):
+            key = (e.get("time") or e.get("ts"), e.get("addr"), e.get("kind"))
+            if key in self._seen:
+                continue
+            self._seen.add(key)
+            t = e.get("time") or e.get("ts")
+            ts = datetime.fromtimestamp(t).strftime("%H:%M:%S") if isinstance(t, (int, float)) else str(t or "")
+            kind = e.get("kind", "?")
+            detail = e.get("detail") or e.get("reason") or ""
+            self.log.appendPlainText(f"{ts}  {kind:<10}  {e.get('addr',''):<28}  {detail}")
+        self.info.setText(f"Network activity — {len(self._seen)} events logged (BANKON BTC WaaS)")
+
+
+class IceTab(QtWidgets.QWidget):
+    """🧊 ICE — the wall between the network and the wallet. CPU temperature plus the
+    radio (RF) kill switch. AIRGAP severs every RF path (Bluetooth/Wi-Fi/WWAN/NFC).
+    Radio changes need root → via pkexec; the full ICE controller opens separately."""
+    ICE_APP = os.path.expanduser("~/ICE/ice.py")
+    RADIOS = [("bluetooth", "Bluetooth"), ("wifi", "Wi-Fi"), ("wwan", "Cellular"), ("nfc", "NFC")]
+    def __init__(self):
+        super().__init__(); v = QtWidgets.QVBoxLayout(self)
+        h = QtWidgets.QLabel("🧊 ICE — the wall between the network and the wallet")
+        h.setStyleSheet("font-weight:700;font-size:15px;color:#00BFFF"); v.addWidget(h)
+        self.temp = QtWidgets.QLabel("CPU: — °C"); self.temp.setStyleSheet("font-size:22px;font-weight:700"); v.addWidget(self.temp)
+        rl = QtWidgets.QHBoxLayout()
+        ag = QtWidgets.QPushButton("🛑 AIRGAP (cut all radios)"); ag.clicked.connect(lambda: self._rfk("block")); rl.addWidget(ag)
+        rs = QtWidgets.QPushButton("📡 Restore radios"); rs.clicked.connect(lambda: self._rfk("unblock")); rl.addWidget(rs)
+        rl.addStretch(1); v.addLayout(rl)
+        self.rlabel = QtWidgets.QLabel("radios — …"); self.rlabel.setStyleSheet("font-family:monospace"); v.addWidget(self.rlabel)
+        launch = QtWidgets.QPushButton("Open full ICE controller (scaling · auto-cool · persistence · radios)")
+        launch.clicked.connect(self._launch); v.addWidget(launch)
+        note = QtWidgets.QLabel("ICE gates CPU heat and the machine's radios. AIRGAP severs every RF path between "
+                                "the network and the wallet. No wallet data is involved.")
+        note.setWordWrap(True); note.setStyleSheet("color:#8aa0b4"); v.addWidget(note); v.addStretch(1)
+        self._t = QtCore.QTimer(self); self._t.timeout.connect(self.refresh); self._t.start(2000)
+    def _cpu_temp(self):
+        import glob as _g
+        best = None
+        for p in _g.glob("/sys/class/thermal/thermal_zone*/temp"):
+            try:
+                val = int(open(p).read().strip()) / 1000.0
+            except Exception:
+                continue
+            if 0 < val < 150 and (best is None or val > best):
+                best = val
+        return best
+    def refresh(self):
+        t = self._cpu_temp()
+        if t is not None:
+            col = "#f85149" if t >= 85 else "#f0a020" if t >= 70 else "#16C784"
+            self.temp.setText(f"CPU: {t:.0f} °C"); self.temp.setStyleSheet(f"font-size:22px;font-weight:700;color:{col}")
+        states = []
+        for kind, label in self.RADIOS:
+            try:
+                o = subprocess.run(["rfkill", "list", kind], capture_output=True, text=True).stdout
+            except Exception:
+                o = ""
+            if not o.strip():
+                continue
+            states.append(f"{label}: {'on' if 'Soft blocked: yes' not in o else 'OFF'}")
+        self.rlabel.setText("radios — " + ("   ·   ".join(states) if states else "none present"))
+    def _rfk(self, action):
+        try:
+            subprocess.Popen(["pkexec", "rfkill", action, "all"])
+        except Exception as e:
+            self.rlabel.setText(f"rfkill failed: {e}")
+        QtCore.QTimer.singleShot(1200, self.refresh)
+    def _launch(self):
+        import shutil as _sh
+        if not os.path.exists(self.ICE_APP):
+            self.rlabel.setText("full ICE app not found at ~/ICE/ice.py"); return
+        term = _sh.which("x-terminal-emulator") or _sh.which("gnome-terminal") or _sh.which("xterm")
+        subprocess.Popen([term, "-e", self.ICE_APP] if term else [self.ICE_APP])
+
+
 class Main(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__(); self.setWindowTitle("BANKON BITCOIN Wallet as a Service"); self.resize(940, 680)
@@ -1866,9 +2318,11 @@ class Main(QtWidgets.QMainWindow):
         self.oracle = OracleTab()
         self.con = ConsoleTab()
         self.ctl = ControlTab()          # localhost / local-machine client control center
+        self.netlog = NetLogTab()        # live network activity log (BANKON BTC WaaS)
+        self.ice = IceTab()              # 🧊 ICE — network↔wallet wall (CPU + radios)
         for w, name in [(self.ov,"Overview"),(self.node,"Node"),(self.net,"Network"),(self.map,"Net Map"),
-                        (self.mp,"Mempool"),(self.blk,"Blocks"),(self.oracle,"BTC.oracle"),(self.idx,"Indexes"),
-                        (self.ctl,"🖥 Control"),(self.con,"RPC Console")]:
+                        (self.netlog,"📡 Net Log"),(self.mp,"Mempool"),(self.blk,"Blocks"),(self.oracle,"BTC.oracle"),
+                        (self.idx,"Indexes"),(self.ctl,"🖥 Control"),(self.ice,"🧊 ICE"),(self.con,"RPC Console")]:
             self.tabs.addTab(w, name)
         self.tabs.currentChanged.connect(self.do_refresh)
 
@@ -1882,6 +2336,10 @@ class Main(QtWidgets.QMainWindow):
         self.geo_chk = QtWidgets.QCheckBox(" 🌍 Geo Map")          # optional GeoIP map tab — default OFF
         self.geo_chk.setToolTip("Show the Geo Map tab (needs geoip/*.mmdb). Off by default.")
         self.geo_chk.toggled.connect(self._toggle_geo); bar.addWidget(self.geo_chk)
+        self.inv_chk = QtWidgets.QCheckBox(" ◐ invert")           # polarity inversion — whole window
+        self.inv_chk.setToolTip("Polarity inversion ('reverse video'): invert the entire window's theme.\n"
+                                "Computed from the dark palette — see docs/design.md → Polarity inversion.")
+        self.inv_chk.toggled.connect(self._toggle_invert); bar.addWidget(self.inv_chk)
         self.status_lbl = QtWidgets.QLabel("  ● checking…"); bar.addWidget(self.status_lbl)
         self.core_lbl = QtWidgets.QLabel(" ● CORE"); bar.addWidget(self.core_lbl)
         self.core_lbl.setToolTip("Bitcoin Core monitor — orange ON · red OFF · green ring = connecting/feeding")
@@ -1918,6 +2376,12 @@ class Main(QtWidgets.QMainWindow):
         self.zmq.start()
         self.apply_rate(); self.poll_health(); self.do_refresh()
     def current(self): return self.tabs.currentWidget()
+    def _toggle_invert(self, on):
+        # Whole-window polarity flip in one call — the app stylesheet is the single styling root,
+        # so swapping it inverts every tab at once (that's why this is cheap and total).
+        global QSS_INVERTED
+        if on and QSS_INVERTED is None: QSS_INVERTED = invert_qss(QSS)
+        QtWidgets.QApplication.instance().setStyleSheet(QSS_INVERTED if on else QSS)
     def _toggle_geo(self, on):
         # Build the Geo Map on enable (insert right after Net Map); destroy on disable so its
         # globe spin-timer + GeoIP work fully stop — "default off = nothing running".
@@ -2037,6 +2501,8 @@ QSS = """
   }
   /* BTC.oracle — enhanced Bitcoin-orange outline */
   QFrame#oracleframe { border:2px solid #F7931A; border-radius:12px; background:#06090e; }
+  /* 🔬 Block science quadrant — electric-blue outline (the oracle's accuracy panel) */
+  QFrame#scienceframe { border:2px solid #00BFFF; border-radius:12px; background:#06090e; }
   QLabel#oracletitle { color:#F7931A; font-size:16px; font-weight:800; letter-spacing:1px; padding:6px;
     border-bottom:1px solid #5a3a0a; }
   /* rageRPC controller */
@@ -2074,6 +2540,19 @@ QSS = """
   QSplitter::handle { background:#0e3d57; border-radius:3px; } QSplitter::handle:hover { background:#00BFFF; }
   QHeaderView::section:hover { color:#7DF9FF; border-right:2px solid #00BFFF; }   /* grip lights up = drag here to resize */
 """
+
+def invert_qss(qss):
+    """POLARITY INVERSION ('reverse video') — derive the light theme by inverting every #RRGGBB in
+    the stylesheet. One palette, zero maintenance: the dark QSS is the single source of truth and
+    the inverse is computed, never hand-edited. Semantic per-widget colors (severity green/orange/
+    red, sync gradient) are applied at runtime outside this sheet and deliberately KEEP their
+    meaning under inversion. Full write-up: docs/design.md → 'Polarity inversion'."""
+    def inv(m):
+        h = m.group(1)
+        return "#%02x%02x%02x" % tuple(255 - int(h[i:i+2], 16) for i in (0, 2, 4))
+    return re.sub(r"#([0-9a-fA-F]{6})\b", inv, qss)
+
+QSS_INVERTED = None   # computed lazily on first toggle (startup stays instant)
 
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv); app.setStyle("Fusion"); app.setStyleSheet(QSS)
