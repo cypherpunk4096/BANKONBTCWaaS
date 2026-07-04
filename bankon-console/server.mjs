@@ -314,6 +314,18 @@ app.post('/api/node/stop', (req, res) => {
     res.json({ ok: true, stopping: true, message: (out || '').trim() });
   });
 });
+// AIRGAP switch — setnetworkactive on/off. Takes the machine's Bitcoin network dark so the WaaS
+// can generate wallet keys with zero P2P traffic, then re-enables. Write RPC → guarded. No user
+// input is interpolated: `on` is coerced to a strict boolean before it reaches bitcoin-cli.
+app.post('/api/node/netactive', async (req, res) => {
+  if (!NODE_CONTROL) return res.status(403).json({ ok: false, error: 'node control disabled' });
+  const on = req.body?.on === true;                        // strict: anything else means OFF was asked
+  if (typeof req.body?.on !== 'boolean') return res.status(400).json({ ok: false, error: 'need {on: true|false}' });
+  try {
+    const state = await rpc('full', 'setnetworkactive', [on], null, 8000);   // returns the new state
+    res.json({ ok: true, networkactive: typeof state === 'boolean' ? state : on, requested: on });
+  } catch (e) { res.json({ ok: false, error: String(e.message || e) }); }
+});
 // Add / force / drop a peer (the "node chooser"). addnode is a write RPC → guarded like start/stop.
 app.post('/api/node/addnode', async (req, res) => {
   if (!NODE_CONTROL) return res.status(403).json({ ok: false, error: 'node control disabled' });

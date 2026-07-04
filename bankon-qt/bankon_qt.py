@@ -9,7 +9,7 @@ so tabs keep showing data while the node is lock-bound during IBD.
 
 Launch via bankon-qt.sh (installs PySide6, forces software rendering for HD 3000).
 """
-import json, math, os, subprocess, sys, urllib.request, webbrowser
+import json, math, os, socket, subprocess, sys, time, urllib.request, webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -1550,9 +1550,17 @@ class NetworkTab(QtWidgets.QWidget):
         self.act.setShowGrid(False); self.act.setAlternatingRowColors(True)
         self.act.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers); v.addWidget(self.act, 1)
     def refresh(self):
+        self._have_ni_conns = False        # getnetworkinfo owns the count each cycle; peerinfo is fallback
         spawn("getpeerinfo", self._fill, timeout=10)
-        spawn("getnetworkinfo", self._setni, timeout=8)                       # our local node address
+        spawn("getnetworkinfo", self._setni, timeout=8)                       # our local node address + conn count
         spawn_fn(lambda: fetch_json("/api/netactivity?n=50"), self._setact)   # log-based connection activity
+    def _render_conns(self, n, out, inb, stale):
+        """Single place that renders the 'connections: N (out · in)' headline, so every source agrees."""
+        tgt = int(os.environ.get("BANKON_PEER_TARGET", "12"))
+        # The target is a FLOOR (minimum desired for healthy sync), not a cap — exceeding it is good.
+        meet = "✓ above target" if n >= tgt else "building toward target…"
+        self.conns.setText(f"connections: {n} ({out} out · {inb} in)   ·   target ≥ {tgt}  {meet}" + ("   (cached)" if stale else ""))
+        self.conns.setStyleSheet("color:%s;font-weight:700" % ("#16C784" if n >= tgt else "#F7931A" if n >= 3 else "#f85149"))
     def _setni(self, ni, stale):
         ni = ni or {}
         la = ni.get("localaddresses") or []
@@ -1562,6 +1570,18 @@ class NetworkTab(QtWidgets.QWidget):
             self.local_lbl.setText(f"our node:  {addrs}   ·   {sub}   ·   protocol {ni.get('protocolversion','?')}")
         else:
             self.local_lbl.setText(f"our node:  (no public address advertised — likely behind NAT)   ·   {sub or '—'}")
+        # AUTHORITATIVE connection count — the SAME getnetworkinfo.connections the Overview tab reads
+        # (bankon_qt.py:143), so the two tabs can never disagree (the old 18-vs-37 split came from this
+        # tab counting len(getpeerinfo) off a differently-timed cache). getnetworkinfo is the cheap,
+        # reliably-warmed RPC, so this stays live even while getpeerinfo is choked during IBD.
+        c = ni.get("connections")
+        if c is not None:
+            self._have_ni_conns = True
+            out = ni.get("connections_out")
+            inb = ni.get("connections_in")
+            if out is None: out = (c - inb) if inb is not None else c
+            if inb is None: inb = c - out
+            self._render_conns(c, out, inb, stale)
     def _setact(self, d):
         d = d or {}; ev = d.get("events", []); ty = d.get("tally", {}); local = d.get("local", [])
         s = (f"connection activity — ✓ {ty.get('connected',0)} connected · ✗ {ty.get('failed',0)} failed · "
@@ -1581,18 +1601,17 @@ class NetworkTab(QtWidgets.QWidget):
     def _fill(self, peers, stale):
         peers = peers or []
         self._peers = peers                          # kept for the right-click context menu (full dicts)
-        # Honesty: an empty + stale result means the node's RPC is busy (IBD/breaker open) and we
-        # couldn't read peers — NOT that there are zero. Don't show a misleading "0".
-        if stale and not peers:
-            self.conns.setText("connections: — (node RPC busy — can't read peers during heavy IBD)")
-            self.conns.setStyleSheet("color:#F7931A;font-weight:700")
-            return
-        n = len(peers); tgt = int(os.environ.get("BANKON_PEER_TARGET", "12"))
-        inb = sum(1 for p in peers if p.get("inbound")); out = n - inb
-        # The target is a FLOOR (minimum desired for healthy sync), not a cap — exceeding it is good.
-        meet = "✓ above target" if n >= tgt else "building toward target…"
-        self.conns.setText(f"connections: {n} ({out} out · {inb} in)   ·   target ≥ {tgt}  {meet}" + ("   (cached)" if stale else ""))
-        self.conns.setStyleSheet("color:%s;font-weight:700" % ("#16C784" if n >= tgt else "#F7931A" if n >= 3 else "#f85149"))
+        # The count headline is owned by _setni (getnetworkinfo) so it matches the Overview tab exactly.
+        # Only fall back to the peer-list length if getnetworkinfo hasn't delivered a count this cycle.
+        if not getattr(self, "_have_ni_conns", False):
+            # Honesty: an empty + stale result means the node's RPC is busy (IBD/breaker open) and we
+            # couldn't read peers — NOT that there are zero. Don't show a misleading "0".
+            if stale and not peers:
+                self.conns.setText("connections: — (node RPC busy — can't read peers during heavy IBD)")
+                self.conns.setStyleSheet("color:#F7931A;font-weight:700")
+            else:
+                n = len(peers); inb = sum(1 for p in peers if p.get("inbound"))
+                self._render_conns(n, n - inb, inb, stale)
         rows = peer_rows(peers)
         self.t.setSortingEnabled(False); self.t.setRowCount(len(rows))
         for r, (rw, p) in enumerate(zip(rows, peers)):
@@ -1634,6 +1653,190 @@ class NetworkTab(QtWidgets.QWidget):
             self.status.setText(f"✗ {(d or {}).get('error', 'failed')}")
 
 
+class ControlTab(QtWidgets.QWidget):
+    """Localhost / local-machine CLIENT CONTROL CENTER — the client is the admin of the client,
+    via the modular toolkit (Console endpoints, direct bitcoin-cli fallback). Three panels:
+      🌡 Thermal & host   — live temp / CPU / mem / disk with the SAME severity calibration as the
+                            toolbar chip, plus the thermal-protection threshold (two-way synced).
+      🔌 Localhost checks — raw socket probes of every BANKON port from 127.0.0.1's OWN perspective.
+                            Deliberately not routed through the Console: a diagnostics panel must
+                            not depend on one of the things it diagnoses.
+      ⚙ Admin            — node ▶/■ + the AIRGAP switch (setnetworkactive) so the WaaS can generate
+                            wallet keys with the machine's Bitcoin network dark, then re-enable.
+    """
+    # Every localhost service in the toolkit: (name, port). Console/WaaS ports come from their URLs
+    # so env overrides (BANKON_CONSOLE_URL / BANKON_WAAS_URL) stay honoured.
+    @staticmethod
+    def _port_of(url, default):
+        try: return int(url.rsplit(":", 1)[1].split("/")[0])
+        except Exception: return default
+    def __init__(self):
+        super().__init__(); v = QtWidgets.QVBoxLayout(self)
+        self.SERVICES = [
+            ("Bitcoin Core RPC (full)",  8332),
+            ("Bitcoin P2P",              8333),
+            ("Pruned node RPC",          8342),
+            ("BANKON Console",           self._port_of(CONSOLE_URL, 8090)),
+            ("BANKON WaaS",              self._port_of(WAAS_URL, 8088)),
+            ("ZMQ blocks",               28332),
+            ("ZMQ rawtx",                28333),
+            ("ZMQ sequence",             28335),
+        ]
+        head = QtWidgets.QLabel("<b>🖥 Local Control Center</b> — this machine administers itself: "
+                                "thermal · host · localhost service diagnostics · airgap")
+        head.setStyleSheet("color:#00BFFF"); v.addWidget(head)
+
+        row = QtWidgets.QHBoxLayout()
+        # -- Thermal & host card (fed by Main's 5s /api/system poll — no second poller) --
+        left = QtWidgets.QVBoxLayout()
+        left.addWidget(QtWidgets.QLabel("<b>🌡 Thermal & host</b>"))
+        box, self.f = cardgrid(["temperature", "sensor", "protection", "CPU", "load", "memory", "datadir disk"])
+        left.addWidget(box)
+        tr = QtWidgets.QHBoxLayout(); tr.addWidget(QtWidgets.QLabel("auto-pause pruned node at"))
+        self.pausetemp = QtWidgets.QSpinBox(); self.pausetemp.setRange(80, 110); self.pausetemp.setValue(99); self.pausetemp.setSuffix("°C")
+        self.pausetemp.setToolTip("Thermal protection threshold — two-way synced with the toolbar spinner")
+        tr.addWidget(self.pausetemp); tr.addStretch(); left.addLayout(tr)
+        left.addStretch(); row.addLayout(left, 1)
+
+        # -- Localhost service probes --
+        right = QtWidgets.QVBoxLayout()
+        right.addWidget(QtWidgets.QLabel("<b>🔌 Localhost services</b> — socket probes from 127.0.0.1"))
+        self.t = QtWidgets.QTableWidget(); self.t.setColumnCount(4)
+        self.t.setHorizontalHeaderLabels(["service", "port", "state", "latency"])
+        hh = self.t.horizontalHeader(); hh.setStretchLastSection(True); hh.setMinimumSectionSize(56)
+        self.t.verticalHeader().setVisible(False); self.t.verticalHeader().setDefaultSectionSize(24)
+        self.t.setShowGrid(False); self.t.setAlternatingRowColors(True)
+        self.t.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.t.setRowCount(len(self.SERVICES))
+        right.addWidget(self.t, 1); row.addLayout(right, 2)
+        v.addLayout(row, 1)
+
+        # -- Admin: node control + AIRGAP switch --
+        v.addWidget(QtWidgets.QLabel("<b>⚙ Admin</b> — node control · airgap for WaaS wallet generation"))
+        ar = QtWidgets.QHBoxLayout()
+        st = QtWidgets.QPushButton("▶ Start node"); st.clicked.connect(self._start); ar.addWidget(st)
+        sp = QtWidgets.QPushButton("■ Stop node"); sp.setObjectName("danger"); sp.clicked.connect(self._stop); ar.addWidget(sp)
+        ar.addSpacing(24)
+        self.airgap = QtWidgets.QPushButton("…"); self.airgap.setEnabled(False)   # armed once state is known
+        self.airgap.setToolTip("setnetworkactive — take the Bitcoin network dark, generate wallet keys in the "
+                               "WaaS with zero P2P traffic, then switch back ON")
+        self.airgap.clicked.connect(self._toggle_net); ar.addWidget(self.airgap)
+        waas = QtWidgets.QPushButton("Open WaaS"); waas.clicked.connect(lambda: webbrowser.open(WAAS_URL)); ar.addWidget(waas)
+        ar.addStretch(); v.addLayout(ar)
+        self.status = QtWidgets.QLabel("network state: checking…"); self.status.setStyleSheet("color:#8aa0b4")
+        v.addWidget(self.status)
+        self._netactive = None
+        # visible-only re-probe cadence (10s) — same pattern as OverviewTab's sync ticker
+        self._probet = QtCore.QTimer(self); self._probet.timeout.connect(self._tick); self._probet.start(10000)
+    def _tick(self):
+        if self.isVisible(): self._probe()
+    def refresh(self):
+        self._probe()
+        spawn("getnetworkinfo", self._net_state, timeout=8)
+        spawn_fn(lambda: fetch_json("/api/filesystem"), self._fs)
+    # ---- localhost probes (worker thread; UI only touched via the queued signal) ----
+    def _probe(self):
+        services = list(self.SERVICES)
+        def work():
+            out = []
+            for name, port in services:
+                s = socket.socket(); s.settimeout(1.5); t0 = time.perf_counter()
+                try: up = s.connect_ex(("127.0.0.1", port)) == 0
+                finally: s.close()
+                out.append((name, port, up, (time.perf_counter() - t0) * 1000))
+            return out
+        spawn_fn(work, self._probed)
+    def _probed(self, rows):
+        for r, (name, port, up, ms) in enumerate(rows or []):
+            cells = [name, str(port), "● UP" if up else "○ DOWN", f"{ms:.1f} ms" if up else "—"]
+            for c, val in enumerate(cells):
+                it = QtWidgets.QTableWidgetItem(val)
+                if c == 2: it.setForeground(QtGui.QColor("#16C784" if up else "#f85149"))
+                self.t.setItem(r, c, it)
+        self.t.resizeColumnsToContents()
+    # ---- thermal & host card (called by Main._sys so there's exactly one /api/system poller) ----
+    def update_sys(self, d, paused):
+        t = d.get("tempC")
+        col = "#16C784"; sev = ""
+        if t is not None:
+            if t >= 99:   col, sev = "#ff2b2b", "  ⚠ DANGEROUS"
+            elif t >= 96: col, sev = "#FF5E3A", "  concern"
+            elif t >= 85: col, sev = "#F7931A", "  HOT"
+            self.f["temperature"].setText(f"{t}°C{sev}")
+            self.f["temperature"].setStyleSheet(f"color:{col};font-weight:700")
+        self.f["sensor"].setText(d.get("tempLabel") or "—")
+        self.f["protection"].setText(("⏸ PAUSED — cooling (re-arms 3°C below threshold)" if paused
+                                      else f"✓ armed @ {self.pausetemp.value()}°C"))
+        self.f["protection"].setStyleSheet("color:%s;font-weight:700" % ("#F7931A" if paused else "#16C784"))
+        if d.get("cpuPct") is not None: self.f["CPU"].setText(f"{d['cpuPct']}% of {d.get('cores','?')} cores")
+        if d.get("load1")  is not None: self.f["load"].setText(str(d["load1"]))
+        if d.get("memUsedPct") is not None: self.f["memory"].setText(f"{d['memUsedPct']}% of {d.get('memTotalGB','?')} GB")
+    def _fs(self, d):
+        df = (d or {}).get("df") or {}
+        if df:
+            used = df.get("used", 0) / 1073741824; size = df.get("size", 0) / 1073741824
+            self.f["datadir disk"].setText(f"{used:,.0f} / {size:,.0f} GB ({df.get('pcent','?')}) on {df.get('source','?')}")
+    # ---- admin: node ▶/■ (Console first, direct fallback — client stays admin if Console is down) ----
+    def _start(self):
+        def work():
+            try: return post_json("/api/node/start", {}, timeout=8)
+            except Exception:
+                subprocess.Popen([str(Path(BTC_BIN)/"bitcoind"), f"-datadir={DATADIR}", "-daemon"],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+                return {"ok": True, "note": "launched directly (Console down)"}
+        spawn_fn(work, lambda d: self.status.setText((d or {}).get("note") or (d or {}).get("error") or "starting…"))
+    def _stop(self):
+        if QtWidgets.QMessageBox.question(self, "Stop", "Stop Bitcoin Core?") != QtWidgets.QMessageBox.Yes: return
+        def work():
+            try: return post_json("/api/node/stop", {}, timeout=15)
+            except Exception:
+                r = subprocess.run([str(Path(BTC_BIN)/"bitcoin-cli"), f"-datadir={DATADIR}", "stop"],
+                                   capture_output=True, text=True, timeout=15)
+                return {"ok": r.returncode == 0, "message": r.stdout.strip() or r.stderr.strip()}
+        spawn_fn(work, lambda d: self.status.setText((d or {}).get("message") or "stopping…"))
+    # ---- AIRGAP switch ----
+    def _net_state(self, ni, stale):
+        self._netactive = bool((ni or {}).get("networkactive", True))
+        self._render_net(stale)
+    def _render_net(self, stale=False):
+        on = self._netactive
+        self.airgap.setEnabled(True)
+        if on:
+            self.airgap.setText("🔒 Go AIRGAP (network OFF)"); self.airgap.setObjectName("danger")
+            self.status.setText("network state: 🌐 ACTIVE — P2P live" + ("   (cached)" if stale else ""))
+            self.status.setStyleSheet("color:#16C784;font-weight:600")
+        else:
+            self.airgap.setText("🔓 Re-enable network (go LIVE)"); self.airgap.setObjectName("")
+            self.status.setText("network state: 🔒 AIRGAPPED — Bitcoin P2P dark; safe to generate wallet keys in the WaaS")
+            self.status.setStyleSheet("color:#F7931A;font-weight:700")
+        self.airgap.style().unpolish(self.airgap); self.airgap.style().polish(self.airgap)   # re-apply QSS after objectName change
+    def _toggle_net(self):
+        want = not self._netactive
+        if not want:      # going dark is a state change worth confirming, like Stop
+            if QtWidgets.QMessageBox.question(
+                self, "Airgap", "Take the Bitcoin network DARK (setnetworkactive false)?\n"
+                "All P2P connections drop until you re-enable.") != QtWidgets.QMessageBox.Yes:
+                return
+        self.airgap.setEnabled(False); self.status.setText("switching network state…")
+        def work():
+            try:
+                d = post_json("/api/node/netactive", {"on": want}, timeout=10)
+                if not (d or {}).get("ok"): raise RuntimeError((d or {}).get("error", "console refused"))
+                return d
+            except Exception:
+                # Console down/refusing → direct bitcoin-cli with the node cookie. Fixed argv, no shell.
+                r = subprocess.run([str(Path(BTC_BIN)/"bitcoin-cli"), f"-datadir={DATADIR}",
+                                    "setnetworkactive", "true" if want else "false"],
+                                   capture_output=True, text=True, timeout=10)
+                if r.returncode != 0: raise RuntimeError(r.stderr.strip() or "setnetworkactive failed")
+                return {"ok": True, "networkactive": want}
+        def done(d):
+            self._netactive = bool((d or {}).get("networkactive", want)); self._render_net()
+        def fail(e):
+            self.airgap.setEnabled(True); self.status.setText(f"✗ {e}"); self.status.setStyleSheet("color:#f85149")
+        spawn_fn(work, done, fail)
+
+
 class Main(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__(); self.setWindowTitle("BANKON BITCOIN Wallet as a Service"); self.resize(940, 680)
@@ -1662,8 +1865,10 @@ class Main(QtWidgets.QMainWindow):
                                  # its GeoIP lookups + globe spin-timer cost nothing unless enabled.
         self.oracle = OracleTab()
         self.con = ConsoleTab()
+        self.ctl = ControlTab()          # localhost / local-machine client control center
         for w, name in [(self.ov,"Overview"),(self.node,"Node"),(self.net,"Network"),(self.map,"Net Map"),
-                        (self.mp,"Mempool"),(self.blk,"Blocks"),(self.oracle,"BTC.oracle"),(self.idx,"Indexes"),(self.con,"RPC Console")]:
+                        (self.mp,"Mempool"),(self.blk,"Blocks"),(self.oracle,"BTC.oracle"),(self.idx,"Indexes"),
+                        (self.ctl,"🖥 Control"),(self.con,"RPC Console")]:
             self.tabs.addTab(w, name)
         self.tabs.currentChanged.connect(self.do_refresh)
 
@@ -1696,6 +1901,10 @@ class Main(QtWidgets.QMainWindow):
         self.pausetemp = QtWidgets.QSpinBox(); self.pausetemp.setRange(80, 110); self.pausetemp.setValue(99); self.pausetemp.setSuffix("°C")
         self.pausetemp.setToolTip("Thermal protection: auto-pause the pruned node at/above this temperature")
         bar.addWidget(self.pausetemp); self._thermal_paused = False
+        # Two-way sync toolbar ↔ Control tab threshold (valueChanged doesn't fire on same-value
+        # set, so this can't loop). ONE protection engine (_sys below); two views of its dial.
+        self.pausetemp.valueChanged.connect(self.ctl.pausetemp.setValue)
+        self.ctl.pausetemp.valueChanged.connect(self.pausetemp.setValue)
 
         self.timer = QtCore.QTimer(); self.timer.timeout.connect(self.do_refresh)
         self.health = QtCore.QTimer(); self.health.timeout.connect(self.poll_health); self.health.start(12000)  # gentle
@@ -1803,6 +2012,7 @@ class Main(QtWidgets.QMainWindow):
             self._thermal_paused = True; self._pause_pruned(t, thr)
         elif t is not None and t < thr - 3:
             self._thermal_paused = False                  # hysteresis: re-arm once it cools 3°C
+        self.ctl.update_sys(d, self._thermal_paused)      # feed the Control tab (single poller)
     def _pause_pruned(self, t, thr):
         dd = os.environ.get("BANKON_PRUNED_DATADIR", str(Path.home() / ".bitcoin-pruned"))
         cli = str(Path(BTC_BIN) / "bitcoin-cli")
