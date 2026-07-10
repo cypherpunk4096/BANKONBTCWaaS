@@ -84,6 +84,7 @@ The full loop is verified end-to-end (incl. multisig) by the regtest suite — s
 | [Wallets](docs/wallets.md) | types, BTC Standard, create→sign→send, multisig |
 | [API](docs/api.md) | WaaS + Console HTTP reference |
 | [Console](docs/console.md) | the diagnostics dashboard |
+| [SECURITY.md](SECURITY.md) | **threat model, trust boundaries, disclosure policy** |
 | [Security](docs/security.md) | guarantees, auth, backups, offline client |
 | [Operations](docs/operations.md) | launcher, systemd, monitoring, pruning |
 | [Testing](docs/testing.md) | the regtest + signing test suites |

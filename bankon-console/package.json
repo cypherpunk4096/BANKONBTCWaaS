@@ -4,6 +4,12 @@
   "private": true,
   "type": "module",
   "description": "BANKON Console — read-only tabbed diagnostics dashboard over Bitcoin Core",
-  "scripts": { "start": "node server.mjs" },
-  "dependencies": { "express": "^4.19.2" }
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "pg": "^8.22.0",
+    "pg-copy-streams": "^7.0.0"
+  }
 }

@@ -6,12 +6,16 @@
 # WaaS API + diagnostics Console with one command. It can also one-click
 # install Bitcoin Core itself if it isn't present.
 #
-#   bankon up            detect running Core → start WaaS + Console (the common path)
+#   bankon up            detect (or start) Core → start WaaS + Console (the common path)
+#   bankon waas          WaaS ONLY — wallet service standalone, decoupled from diagnostics
+#   bankon console       diagnostics Console ONLY, decoupled from the WaaS
+#   bankon offline       the fully air-gapped signer (no network; @scure vendored locally)
 #   bankon status        node + module status
 #   bankon stop          stop BANKON services (leaves the node running)
 #   bankon doctor        environment checks
 #   bankon install-core  one-click download+verify+install Bitcoin Core v31
 #   bankon qt            launch the Qt diagnostics UI
+#   bankon datadir       locate .bitcoin datadirs (search local drives; largest wins)
 #   bankon optimize      auto-tune the node conf (dbcache/par/rpc) to this hardware  [full|pruned]
 #   bankon algo          BANKON ALGO WaaS (Algorand twin) on :4444  [up|stop|status]
 #   bankon eth           BANKON.ETH WaaS (EVM twin) on :4448  [up|stop|status]
@@ -35,6 +39,75 @@ node_running(){ bitcoin-cli getblockcount >/dev/null 2>&1 || \
     --data-binary '{"jsonrpc":"1.0","method":"uptime","params":[]}' http://127.0.0.1:8332/ 2>/dev/null | grep -q result; }
 svc_up(){ curl -s -o /dev/null --max-time 3 "http://127.0.0.1:$1/"; }
 
+# --- datadir discovery -------------------------------------------------------
+# A real Core datadir contains blocks/ (or at least bitcoin.conf). Chain size is
+# ranked by counting blocks/blk*.dat files (~128 MB each) — metadata-only, fast
+# even on a USB drive, unlike du over 800 GB.
+is_datadir(){ [ -d "$1/blocks" ] || [ -f "$1/bitcoin.conf" ]; }
+datadir_score(){ find "$1/blocks" -maxdepth 1 -name 'blk*.dat' 2>/dev/null | wc -l; }
+
+find_datadirs(){ # list every .bitcoin datadir on local + removable drives
+  find /media /mnt /run/media "$HOME" -maxdepth 6 -type d -name '.bitcoin' 2>/dev/null \
+    | while IFS= read -r c; do is_datadir "$c" && echo "$c"; done
+}
+
+find_datadir(){ # echo the datadir to use: ~/.bitcoin if valid, else the LARGEST .bitcoin found by search
+  local d; d="$(readlink -f "$HOME/.bitcoin" 2>/dev/null)"
+  [ -n "$d" ] && [ -d "$d" ] && is_datadir "$d" && { echo "$d"; return 0; }
+  local best="" best_score=-1 c score
+  while IFS= read -r c; do
+    score="$(datadir_score "$c")"
+    [ "$score" -gt "$best_score" ] && { best="$c"; best_score=$score; }
+  done < <(find_datadirs)
+  [ -n "$best" ] && { echo "$best"; return 0; }
+  return 1
+}
+
+point_home_at(){ # repair ~/.bitcoin → $1, but never clobber a real directory
+  local target="$1"
+  [ "$(readlink -f "$HOME/.bitcoin" 2>/dev/null)" = "$target" ] && return 0
+  if [ -L "$HOME/.bitcoin" ] || [ ! -e "$HOME/.bitcoin" ]; then
+    ln -sfn "$target" "$HOME/.bitcoin" && ok "~/.bitcoin → $target"
+  else
+    warn "~/.bitcoin is a real directory (not a symlink) — not touching it."
+    warn "found a larger datadir at: $target — merge or relink manually"
+    return 1
+  fi
+}
+# ------------------------------------------------------------------------------
+
+start_core(){ # bring up local bitcoind if installed but not running (attach-first: no-op when already up)
+  node_running && { ok "Bitcoin Core detected on RPC :8332"; return 0; }
+  command -v bitcoind >/dev/null || { warn "Bitcoin Core not reachable on :8332 and bitcoind not installed."
+    echo "   • install it:  bankon install-core"; return 1; }
+  # datadir may live on an external drive (~/.bitcoin is a symlink) — if the known
+  # address is gone, search local drives for .bitcoin and adopt the largest one
+  local datadir
+  if ! datadir="$(find_datadir)"; then
+    err "no .bitcoin datadir found on this machine — is the external drive mounted?"
+    echo "   • searched /media /mnt /run/media \$HOME  (or: bankon install-core)"; return 1
+  fi
+  if [ "$(readlink -f "$HOME/.bitcoin" 2>/dev/null)" != "$datadir" ]; then
+    warn "datadir located by search: $datadir ($(datadir_score "$datadir") block files)"
+    point_home_at "$datadir" || return 1
+  fi
+  warn "Bitcoin Core not running — starting bitcoind…"
+  # retry: the datadir flock can linger a few seconds after a previous bitcoind exits
+  local out="" try
+  for try in 1 2 3; do
+    out="$(bitcoind 2>&1)" && break
+    [ "$try" = 3 ] && { err "bitcoind failed to launch: ${out:-see ~/.bitcoin/debug.log}"; return 1; }
+    sleep 5
+  done
+  # RPC can take a while after an unclean shutdown (LevelDB recovery) — wait up to 90s
+  local i; for i in $(seq 1 45); do
+    node_running && { ok "Bitcoin Core up on RPC :8332"; return 0; }
+    sleep 2
+  done
+  warn "bitcoind launched but RPC not up yet (still loading block index) — check: tail -f ~/.bitcoin/debug.log"
+  return 0
+}
+
 start_svc(){ # name dir port
   local name="$1" dir="$2" port="$3"
   if svc_up "$port"; then ok "$name already up on :$port"; return; fi
@@ -47,8 +120,7 @@ cmd="${1:-up}"
 case "$cmd" in
   up)
     echo "$(c '1;36' 'BANKON') — modular extension for Bitcoin Core"
-    if node_running; then ok "Bitcoin Core detected on RPC :8332"
-    else warn "Bitcoin Core not reachable on :8332."; echo "   • start it:  bitcoind   (or)  bankon install-core"; fi
+    start_core
     # auto-tune the node conf to this hardware (writes conf only; applies on the node's next restart)
     "$HERE/bankon-nodes.sh" optimize full >/dev/null 2>&1 \
       && ok "node conf optimized for $(nproc) cores / $(free -m 2>/dev/null|awk 'NR==2{print $2}')MB (dbcache·par·rpc — effective next node restart)"
@@ -56,6 +128,36 @@ case "$cmd" in
     start_svc console "$CONSOLE_DIR" "$CONSOLE_PORT"
     echo; ok "WaaS (create wallets): $(c '4;36' http://127.0.0.1:$WAAS_PORT)"
     ok "Console (diagnostics):  $(c '4;36' http://127.0.0.1:$CONSOLE_PORT)"
+    ;;
+  waas)   # WaaS ONLY — the wallet service, decoupled from diagnostics (airgap-friendly standalone)
+    case "${2:-up}" in
+      up|"") echo "$(c '1;36' 'BANKON WaaS') — wallet service (standalone; no diagnostics)"
+             start_core
+             start_svc waas "$WAAS_DIR" "$WAAS_PORT"
+             echo; ok "WaaS (create wallets): $(c '4;36' http://127.0.0.1:$WAAS_PORT)"
+             ok "Offline signer (air-gapped): $(c '4;36' http://127.0.0.1:$WAAS_PORT/offline-client.html)" ;;
+      stop)  pkill -f "bankon-waas/server.mjs" 2>/dev/null && ok "WaaS stopped" || warn "WaaS not running" ;;
+      status) svc_up "$WAAS_PORT" && ok "WaaS: up on :$WAAS_PORT" || warn "WaaS: down" ;;
+      *) echo "usage: bankon waas [up|stop|status]"; exit 1 ;;
+    esac ;;
+  console)  # diagnostics Console ONLY — decoupled from the WaaS
+    case "${2:-up}" in
+      up|"") start_svc console "$CONSOLE_DIR" "$CONSOLE_PORT"
+             ok "Console (diagnostics): $(c '4;36' http://127.0.0.1:$CONSOLE_PORT)" ;;
+      stop)  pkill -f "bankon-console/server.mjs" 2>/dev/null && ok "Console stopped" || warn "Console not running" ;;
+      status) svc_up "$CONSOLE_PORT" && ok "Console: up on :$CONSOLE_PORT" || warn "Console: down" ;;
+      *) echo "usage: bankon console [up|stop|status]"; exit 1 ;;
+    esac ;;
+  offline)  # print/open the fully-offline signer — @scure libs vendored locally, zero network
+    OC="$WAAS_DIR/public/offline-client.html"
+    [ -f "$OC" ] || { err "offline client not found at $OC"; exit 1; }
+    ok "Air-gapped signer (no network; @scure vendored in public/vendor/):"
+    echo "   file: $OC"
+    if svc_up "$WAAS_PORT"; then ok "served now: $(c '4;36' http://127.0.0.1:$WAAS_PORT/offline-client.html)"
+    else echo "   serve it standalone:  cd $WAAS_DIR/public && python3 -m http.server 8088"
+         echo "   then open:            http://127.0.0.1:8088/offline-client.html"; fi
+    echo "   AIR-GAP: copy $WAAS_DIR/public/ (incl. vendor/) to the offline machine and serve it there."
+    command -v xdg-open >/dev/null && [ -n "${DISPLAY:-}" ] && xdg-open "http://127.0.0.1:$WAAS_PORT/offline-client.html" >/dev/null 2>&1 || true
     ;;
   stop)
     pkill -f "bankon-waas/server.mjs" 2>/dev/null && ok "WaaS stopped" || warn "WaaS not running"
@@ -82,6 +184,8 @@ case "$cmd" in
     command -v npm >/dev/null && ok "npm: $(npm -v)" || err "npm missing"
     node_running && ok "RPC reachable on :8332" || warn "RPC not reachable — start Bitcoin Core"
     [ -f "$HOME/.bitcoin/.cookie" ] && ok "cookie auth present" || warn "no ~/.bitcoin/.cookie"
+    if dd="$(find_datadir)"; then ok "datadir: $dd ($(datadir_score "$dd") block files)"
+    else err "no .bitcoin datadir found (searched /media /mnt /run/media \$HOME)"; fi
     ;;
   install-core)
     if command -v bitcoind >/dev/null && bitcoind --version 2>/dev/null | grep -q "$BTC_VER"; then
@@ -110,7 +214,25 @@ EOF
     echo "Next: start it →  bitcoind   then  bankon up"
     rm -rf "$tmp"
     ;;
-  qt)  exec "$HERE/bankon-qt.sh" ;;
+  datadir)  # locate .bitcoin datadirs; largest wins when ~/.bitcoin is unknown/broken
+    cur="$(readlink -f "$HOME/.bitcoin" 2>/dev/null)"
+    if [ -n "$cur" ] && [ -d "$cur" ] && is_datadir "$cur"; then
+      ok "active datadir: ~/.bitcoin → $cur ($(datadir_score "$cur") block files)"
+    else
+      warn "~/.bitcoin does not resolve to a datadir — searching local drives…"
+    fi
+    found=0
+    while IFS= read -r d; do
+      found=1
+      [ "$d" = "$cur" ] && continue
+      echo "  · candidate: $d ($(datadir_score "$d") block files)"
+    done < <(find_datadirs)
+    [ "$found" = 0 ] && err "no .bitcoin datadir found under /media /mnt /run/media \$HOME"
+    if [ -z "$cur" ] || [ ! -d "$cur" ] || ! is_datadir "$cur"; then
+      best="$(find_datadir)" && { warn "largest: $best"; point_home_at "$best"; }
+    fi
+    ;;
+  qt)  start_core; exec "$HERE/bankon-qt.sh" ;;
   optimize)  exec "$HERE/bankon-nodes.sh" optimize "${2:-full}" ;;   # auto-tune the node conf to this hardware
   algo)  # BANKON ALGO WaaS — Algorand twin, in tandem on :4444 (algod recognized from ~/.algorand)
     ALGO_DIR="$HERE/bankon-algo"; ALGO_PORT="${BANKON_ALGO_PORT:-4444}"

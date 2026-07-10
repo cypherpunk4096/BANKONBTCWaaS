@@ -18,6 +18,8 @@ const app = express();
 app.set('trust proxy', true);
 app.use(express.json({ limit: '64kb' }));
 app.use(express.static(join(__dir, 'public')));
+// Serve the repo docs (read-only) so the in-UI FAQ can link to the detailed guides.
+app.use('/docs', express.static(join(__dir, '..', 'docs'), { extensions: ['md'] }));
 app.use(rateLimit());                 // generous; backstops abuse
 app.use('/api', apiAuth());           // off unless BANKON_API_TOKEN is set
 
@@ -136,6 +138,34 @@ app.get('/api/wallet/:name/balance', async (req, res) => {
 app.get('/api/wallet/:name/receive', async (req, res) => {
   try { ok(res, { address: await rpc('getnewaddress', [''], req.params.name) }); }
   catch (e) { fail(res, e); }
+});
+
+// BIP21 payment request — a shareable "bitcoin:" URI carrying amount / label / message. Bitcoin
+// Core does NOT produce this (it only hands you a bare address); formatting a payment request is a
+// wallet-layer job. A fresh receive address is used unless ?address= is supplied — and with an
+// explicit address this needs no node, so it works standalone / air-gapped.
+function bip21(address, { amount, label, message } = {}) {
+  if (!address || typeof address !== 'string') throw new Error('address required');
+  const p = new URLSearchParams();
+  if (amount != null && amount !== '') {
+    const a = Number(amount);
+    if (!Number.isFinite(a) || a < 0) throw new Error('amount must be a non-negative number of BTC');
+    p.set('amount', a.toFixed(8).replace(/\.?0+$/, ''));   // BTC, trailing zeros trimmed
+  }
+  if (label) p.set('label', String(label).slice(0, 200));
+  if (message) p.set('message', String(message).slice(0, 500));
+  const qs = p.toString().replace(/\+/g, '%20');           // BIP21 prefers %20 over +
+  return `bitcoin:${address}${qs ? '?' + qs : ''}`;
+}
+app.get('/api/wallet/:name/payment-request', async (req, res) => {
+  try {
+    const { amount, label, message } = req.query;
+    let address = req.query.address;
+    if (!address) address = await rpc('getnewaddress', [label ? String(label) : ''], req.params.name);
+    const uri = bip21(address, { amount, label, message });
+    ok(res, { address, uri, bip21: uri,
+      request: { amount: amount ?? null, label: label ?? null, message: message ?? null } });
+  } catch (e) { fail(res, e); }
 });
 
 app.get('/api/wallet/:name/history', async (req, res) => {

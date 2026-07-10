@@ -19,11 +19,12 @@ node on the standard port: ● running · block N (green) / booting / validating
 |-----|-------|
 | Overview | sync progress, height, peers, mempool, disk, difficulty, uptime |
 | **Node** | status (running/booting/busy/down), **Start/Stop** Bitcoin Core, live `debug.log` bootup/sync stream |
-| Blocks | latest blocks + lookup by height/hash (+ block stats at Detailed) |
+| Blocks | latest blocks (height · hash · time · **tx count**) + lookup by height/hash, double-click for full `getblock` detail (+ block stats at Detailed) |
 | Mempool | size/memory + fee-rate histogram + fee estimate |
 | **Network** | **live topology map** + node chooser + peer table + peers-by-version + net totals (see below) |
-| Indexes | txindex quality (synced / lag / PASS-DEGRADED) + the "crunching" indexer activity |
-| **BTC.oracle** | the clock kept on a Bitcoin block — avg block time, mesh canvas, auto-measured new-block log (JSON/JSONL/CSV) |
+| Indexes | per-index quality (synced / lag / ETA) + **on-disk size** + what each enables (hover) + the "crunching" activity + **Export UTXO snapshot** (assumeUTXO, for other nodes) — see [indexer.md](indexer.md) |
+| **Net Log** | enriched connection activity table — peer id, role (outbound-full-relay / block-relay-only / manual / inbound / feeler), BIP324 transport (v1/v2), protocol version, client (subver), network class, address, disconnect/fail reason; live summary bar + kind filter |
+| **BTC.oracle** | the clock kept on a Bitcoin block — avg block time, **block-interval timeline** (1-min minor / 5-min major gridlines, 10-min target, average measured to the second), **avg peer ping** + **network usage** cards, auto-measured new-block log with **working Quiet/Normal/Verbose/Scientific** verbosity (JSON/JSONL/CSV export) |
 | Wallets | loaded wallets, watch-only flags |
 | Create Wallet | BTC STANDARD hero → links to the WaaS |
 | Reference | every read-only RPC (44, 6 categories), runnable inline with examples |

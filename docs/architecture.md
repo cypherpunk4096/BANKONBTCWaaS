@@ -25,7 +25,7 @@ request body containing `mnemonic|xprv|seed|privkey|wif|passphrase`.
 | Component | Tech | Port | Role |
 |-----------|------|------|------|
 | WaaS API + UI | Express + vanilla ESM + `@scure/*` | 8088 | keygen (browser), watch-only register, PSBT build, broadcast, registry, fees |
-| Console | Express + vanilla ESM | 8090 | read-only diagnostics; whitelisted RPC proxy |
+| Console | Express + vanilla ESM | 8090 | read-only diagnostics; whitelisted RPC proxy + gated node control ([server.md](server.md)) |
 | Qt UI | PySide6 | — | native desktop diagnostics (software-rendered) |
 | Full node | Bitcoin Core v31 | RPC 8332 / P2P 8333 | archival (txindex) — explorer/lookup |
 | Pruned node | Bitcoin Core v31 | RPC 8342 / P2P 8334 | lean WaaS backend (planned; see operations.md) |

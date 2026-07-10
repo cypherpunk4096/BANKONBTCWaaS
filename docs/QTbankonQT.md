@@ -152,4 +152,37 @@ expansion are the forward path, gated on a GPU-capable host and the proprietary 
 
 ---
 
-*See also: [QT roadmap](roadmap.md) · [the four design guides](qt/) · [Console](console.md) · [Architecture](architecture.md) · [NAV](NAV.md).*
+## 10. Latest updates (2026-07)
+
+Tab-by-tab, the current shipped behaviour:
+
+- **Net Log** — rewritten from a plain text stream into a **detail table** (backed by
+  `GET /api/nethealth`-style enrichment in `/api/netactivity`): time · event (colour-coded) ·
+  peer id · role (outbound-full-relay / block-relay-only / manual / inbound / feeler) ·
+  transport (v1 grey / **v2 encrypted green**) · **client** (subver, e.g. `Satoshi:31.0.0`) ·
+  peer height · network class (ipv4/ipv6/tor/i2p/cjdns) · address · **note** (fail/disconnect
+  reason, column auto-hides when empty). A live **summary bar** (tallies, transport/network mix,
+  local addresses) and a **kind filter** sit above it. Currently-connected peers are shown as
+  fully-populated rows from `getpeerinfo`; a session address cache backfills disconnect lines.
+- **Blocks** — the **txs** column is populated (per-block `nTx`, enriched server-side); columns
+  hug their content with the **hash column** absorbing slack (full hash retained for the detail
+  dialog); tx counts right-aligned.
+- **BTC.oracle** — the mesh graph is now a **calibrated block-interval timeline**: whole-minute
+  gridlines (faint 1-min minor, labelled 5-min major), the **10-minute protocol target** highlighted,
+  y-axis anchored on the actual average (15-min baseline) so ~10-min intervals fill the height, and
+  the **average measured to the second** (`avg 9m 43s`). Three new stat cards — **avg peer ping**
+  (avg/min ms across peers), **network ↓/↑ rate**, **network total ↓/↑** — from `/api/nethealth`.
+  The **Quiet / Normal / Verbose / Scientific** verbosity now actually drives the measurement log
+  (Quiet = id · Normal = +txs/interval · Verbose = +mined-time/hash · Scientific = +tx/s and async
+  `getblockstats` economics), the log **seeds recent blocks on open** (no more waiting for a new
+  block), and changing level re-logs the latest block immediately.
+- **Indexes** — added an **on-disk size** column (background `du`), per-index **tooltips** describing
+  what each enables, **total index disk** in the header, and an **Export UTXO snapshot** control
+  (`dumptxoutset latest` → `POST /api/index/export-utxo`) with an explicit note that the raw indexes
+  are node-local and non-portable — a UTXO snapshot is the shareable artifact (`loadtxoutset`).
+- **Window sizing** — the main window sizes to **92 % of the screen it opens on** (centred, clamped
+  to the display), so it is usable on any monitor without manual resizing.
+
+---
+
+*See also: [Console server reference](server.md) · [QT roadmap](roadmap.md) · [the four design guides](qt/) · [Console](console.md) · [Architecture](architecture.md) · [NAV](NAV.md).*

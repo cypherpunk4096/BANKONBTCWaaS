@@ -5,7 +5,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>BANKON — Wallet as a Service</title>
+<title>₿ANKON WaaS ₿ANKON ₿TC — Wallet as a Service</title>
 <style>
   :root { color-scheme: dark;
     --btc:#F7931A; --poly:#8247E5; --eth:#627EEA; --cash:#0AC18E; --cardano:#0033AD; --solana:#9945FF;
@@ -15,7 +15,7 @@
   html { font-size: clamp(13px, calc(0.55vw + 0.75vh), 28px); }
   body { font-family: system-ui, sans-serif; line-height:1.5; width: 94vw; max-width: 1500px;
          margin: 1rem auto; padding: 0 1rem; box-sizing:border-box; background:#0e1116; color:#e6edf3; }
-  h1 { font-size: 1.5rem; color:var(--btc); background:var(--bankon); font-weight:700; padding:.5rem .85rem; border-radius:8px; } h1 small { color:#dce7f5; font-weight: 400; font-size: .8rem; }
+  h1 { font-size: 1.5rem; color:var(--btc); background:var(--bankon); font-weight:700; padding:.5rem .85rem; border-radius:12px; } h1 small { color:#dce7f5; font-weight: 400; font-size: .8rem; }
   fieldset { border:1px solid #30363d; border-radius:10px; margin:1rem 0; }
   label { display:block; margin:.4rem 0 .2rem; color:#7d8590; }
   select, button { font:inherit; padding:.5rem .7rem; border-radius:8px; border:1px solid #30363d; background:#161b22; color:#e6edf3; }
@@ -52,7 +52,7 @@
 </style>
 </head>
 <body>
-  <h1>BANKON <small>Wallet&nbsp;as&nbsp;a&nbsp;Service · non-custodial</small></h1>
+  <h1>₿ANKON WaaS ₿ANKON ₿TC <small>Wallet&nbsp;as&nbsp;a&nbsp;Service · non-custodial</small></h1>
   <p class="muted">Your keys and passphrase are generated <b>here, in your browser</b>. BANKON never receives them — only a public watch-only descriptor is sent so the node can show balances and prepare unsigned transactions.</p>
 
   <fieldset>
@@ -157,12 +157,78 @@
     <div id="wlist" class="muted">— not loaded —</div>
   </fieldset>
 
+  <fieldset>
+    <legend>❓ FAQ <span class="muted">— tap a question; each answer links to the full guide</span></legend>
+
+    <details name="faq">
+      <summary>Is BANKON custodial? Where do my keys live?</summary>
+      <p class="muted">No. Your keys are minted <b>here in your browser</b> and never reach the server —
+        BANKON even rejects any request containing a secret. The node only holds a <b>watch-only</b>
+        descriptor and builds <b>unsigned</b> transactions; you sign locally.
+        <a href="/docs/security.md" target="_blank" rel="noopener">Security guarantees ↗</a> ·
+        <a href="/docs/architecture.md" target="_blank" rel="noopener">Non-custodial data flow ↗</a></p>
+    </details>
+
+    <details name="faq">
+      <summary>New here — what is BANKON BTC WaaS?</summary>
+      <p class="muted">A non-custodial Wallet-as-a-Service that attaches to your own Bitcoin Core node —
+        it watches and drafts, it never holds your keys.
+        <a href="/docs/introduction.md" target="_blank" rel="noopener">Introduction ↗</a> ·
+        <a href="/docs/getting-started.md" target="_blank" rel="noopener">Getting started ↗</a></p>
+    </details>
+
+    <details name="faq">
+      <summary>Which wallet type should I choose?</summary>
+      <p class="muted">Native SegWit (bc1q…) is the default and cheapest; Taproot (bc1p…) is newest;
+        Legacy (1…) is maximally compatible. Multisig is supported too.
+        <a href="/docs/wallets.md" target="_blank" rel="noopener">Wallet types &amp; the create→sign→send loop ↗</a></p>
+    </details>
+
+    <details name="faq">
+      <summary>Do I need Bitcoin Core running?</summary>
+      <p class="muted">To register a wallet, see balances, build a send, or broadcast — yes.
+        To <b>generate</b> or <b>sign</b> a wallet — no; those are client-side and work air-gapped.
+        <a href="/docs/airgapped-waas.md" target="_blank" rel="noopener">Standalone &amp; air-gapped WaaS ↗</a></p>
+    </details>
+
+    <details name="faq">
+      <summary>Can I sign offline / air-gapped?</summary>
+      <p class="muted">Yes. The <a href="/offline-client.html" target="_blank" rel="noopener">offline signer</a>
+        makes zero network calls (the crypto libraries are vendored locally). Recommended for real
+        funds: an online watch-only host plus an offline signer.
+        <a href="/docs/airgapped-waas.md" target="_blank" rel="noopener">Air-gap guide ↗</a></p>
+    </details>
+
+    <details name="faq">
+      <summary>How do I receive a payment (with an amount)?</summary>
+      <p class="muted">BANKON builds a shareable <code>bitcoin:</code> payment request (amount, label,
+        message) — something Bitcoin Core doesn't provide.
+        <a href="/docs/waas-beyond-core.md" target="_blank" rel="noopener">WaaS beyond Bitcoin Core ↗</a> ·
+        <a href="/docs/api.md" target="_blank" rel="noopener">API reference ↗</a></p>
+    </details>
+
+    <details name="faq">
+      <summary>Where are the diagnostics / node dashboard?</summary>
+      <p class="muted">The read-only Console runs separately at
+        <a href="http://127.0.0.1:8090" target="_blank" rel="noopener">:8090</a> (or the native Qt app).
+        <a href="/docs/console.md" target="_blank" rel="noopener">Console ↗</a> ·
+        <a href="/docs/server.md" target="_blank" rel="noopener">Server reference ↗</a></p>
+    </details>
+
+    <details name="faq">
+      <summary>Full documentation?</summary>
+      <p class="muted"><a href="/docs/NAV.md" target="_blank" rel="noopener">Documentation index (NAV) ↗</a> ·
+        <a href="https://github.com/cypherpunk2048" target="_blank" rel="noopener">BTC Standard ↗</a></p>
+    </details>
+  </fieldset>
+
 <script type="module">
-  // Same audited libs as keygen.mjs — keys are minted client-side.
-  import * as bip39 from 'https://esm.sh/@scure/bip39@1.3.0';
-  import { wordlist } from 'https://esm.sh/@scure/bip39@1.3.0/wordlists/english';
-  import { HDKey } from 'https://esm.sh/@scure/bip32@1.4.0';
-  import * as btc from 'https://esm.sh/@scure/btc-signer@1.3.2';
+  // Same audited libs as keygen.mjs — keys are minted client-side. Vendored locally in
+  // ./vendor/ (no CDN), so keygen works even with the network removed.
+  import * as bip39 from './vendor/bip39.js';
+  import { wordlist } from './vendor/bip39-wordlist-english.js';
+  import { HDKey } from './vendor/bip32.js';
+  import * as btc from './vendor/btc-signer.js';
 
   const TYPES = {
     'native-segwit': { purpose:84, prefix:'wpkh' },

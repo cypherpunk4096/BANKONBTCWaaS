@@ -11,6 +11,9 @@ __pycache__/
 oracle-logs/
 bankon-console/fast-nodes.json
 bankon-console/favourite-nodes.json
+bankon-console/fastpref.json
+bankon-console/node-census.json
+exports/
 
 # ── per-deployment wallet registry (watch-only metadata, still local) ──
 **/registry.json

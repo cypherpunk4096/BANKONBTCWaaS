@@ -84,6 +84,16 @@ def spawn_fn(fn, on_done=None, on_fail=None):
     w.finished.connect(_fin); w.start(); return w
 
 
+def anim_on(w):
+    """True only when animating `w` can actually be seen. THERMAL: every animation tick must gate
+    on this — under software rendering (HD 3000) a hidden/minimized 20-25 fps repaint is pure CPU
+    heat. isVisible() alone is not enough: Qt keeps it True while the window is minimized."""
+    try:
+        return w.isVisible() and not (w.window().windowState() & QtCore.Qt.WindowMinimized)
+    except Exception:
+        return w.isVisible()
+
+
 CANDLE = "#16C784"
 def sync_color(p):
     # <51% dark; 51%→99% dark green → lighter; ≥99% candle green (held to 100%)
@@ -101,16 +111,64 @@ def cardgrid(fields):
     return w, labels
 
 
+class Pow2SpinBox(QtWidgets.QSpinBox):
+    """Accepts ANY value, but the ▲/▼ arrows jump between powers of two (8 → 16 → 32 …).
+    Type 12 if you want 12; stepping up snaps to 16, down snaps to 8."""
+    def stepBy(self, steps):
+        v = max(1, self.value())
+        if steps > 0:
+            nv = 1 << v.bit_length()                     # smallest power of two strictly greater than v
+        else:
+            p = 1 << (v.bit_length() - 1)                # largest power of two ≤ v
+            nv = (p >> 1) if p == v else p               # strictly less than v
+        self.setValue(max(self.minimum(), min(self.maximum(), max(1, nv))))
+
+
 class OverviewTab(QtWidgets.QWidget):
     def __init__(self):
         super().__init__(); v = QtWidgets.QVBoxLayout(self)
         self.bar = QtWidgets.QProgressBar(); self.bar.setMaximum(100000)
         v.addWidget(QtWidgets.QLabel("<b>Sync</b>")); v.addWidget(self.bar)
-        box, self.f = cardgrid(["chain", "height", "headers", "verify %", "peers", "mempool txs", "size on disk", "IBD"])
-        v.addWidget(box); v.addStretch()
+        box, self.f = cardgrid(["chain", "height", "headers", "verify %", "peers", "mempool txs",
+                                "size on disk", "IBD", "CPU %", "memory %", "load / temp"])
+        v.addWidget(box)
+        # --- Datadir diagnostic: the disk BANKON is attached to (works even when the node is down) ---
+        fs = QtWidgets.QFrame(); fs.setStyleSheet("QFrame{border:1px solid #0e3d57;border-radius:6px}")
+        fl = QtWidgets.QVBoxLayout(fs)
+        hh = QtWidgets.QHBoxLayout()
+        fh = QtWidgets.QLabel("💾 Datadir — the disk BANKON is attached to"); fh.setStyleSheet("color:#F7931A;font-weight:700;border:0")
+        hh.addWidget(fh, 1)
+        self.fsopen = QtWidgets.QPushButton("Open folder"); self.fsopen.setObjectName("secondary")
+        self.fsopen.setToolTip("Open the datadir in the file manager"); self.fsopen.clicked.connect(self._open_datadir); hh.addWidget(self.fsopen)
+        fl.addLayout(hh)
+        self.fspath = QtWidgets.QLabel("path: …"); self.fspath.setStyleSheet("color:#8aa0b4;font-family:monospace;font-size:10px;border:0")
+        self.fspath.setWordWrap(True); self.fspath.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse); fl.addWidget(self.fspath)
+        self.fsbar = QtWidgets.QProgressBar(); self.fsbar.setMaximum(1000); self.fsbar.setFormat("disk …"); fl.addWidget(self.fsbar)
+        self.fscomp = QtWidgets.QLabel("measuring…"); self.fscomp.setStyleSheet("color:#c9d4e0;font-family:monospace;font-size:11px;border:0")
+        self.fscomp.setWordWrap(True); fl.addWidget(self.fscomp)
+        # the ACTUAL files at the datadir path
+        self.fsfiles = QtWidgets.QTreeWidget(); self.fsfiles.setColumnCount(3)
+        self.fsfiles.setHeaderLabels(["file / dir", "size", "modified"]); self.fsfiles.setMaximumHeight(180)
+        self.fsfiles.setRootIsDecorated(False); self.fsfiles.setAlternatingRowColors(True)
+        self.fsfiles.setStyleSheet("QTreeWidget{border:1px solid #14405c;border-radius:4px;background:#05080d;"
+                                   "color:#d6e3ef;font-family:monospace;font-size:11px}")
+        self.fsfiles.itemDoubleClicked.connect(self._reveal_file); fl.addWidget(self.fsfiles)
+        self._datadir_real = None
+        v.addWidget(fs)
+        # footer: dock the GTK launcher + copyright
+        foot = QtWidgets.QHBoxLayout()
+        self.launchbtn = QtWidgets.QPushButton("⧉ Launcher")
+        self.launchbtn.setToolTip("Open the BANKON launcher (start/stop Core + BANKON, live logs, ICE)")
+        self.launchbtn.clicked.connect(self._open_launcher); foot.addWidget(self.launchbtn)
+        foot.addStretch(1)
+        cpr = QtWidgets.QLabel("© 2026 BANKON — all rights preserved")
+        cpr.setStyleSheet("color:#5a6b7b;font-size:10px"); foot.addWidget(cpr)
+        v.addLayout(foot); v.addStretch()
         # near-realtime sync: /api/synctip is a cheap debug.log tail (no node RPC), so poll it
         # every 3s while this tab is visible — the % ticks up as the node validates blocks.
         self._synctimer = QtCore.QTimer(self); self._synctimer.timeout.connect(self._tick_sync); self._synctimer.start(3000)
+        self._fstimer = QtCore.QTimer(self); self._fstimer.timeout.connect(self._tick_fs); self._fstimer.start(10000)
+        QtCore.QTimer.singleShot(500, self._tick_fs)
     def _tick_sync(self):
         if self.isVisible():
             spawn_fn(synctip, self._sync)
@@ -143,6 +201,77 @@ class OverviewTab(QtWidgets.QWidget):
         self.f["IBD"].setText("● FULL NODE" if synced else "IBD (syncing)")
     def _n(self, n, stale): self.f["peers"].setText(str(n.get("connections", "—")))
     def _m(self, m, stale): self.f["mempool txs"].setText(f"{m.get('size',0):,}")
+    # ---- datadir diagnostic (external disk BANKON is attached to; works with node down) ----
+    def _tick_fs(self):
+        if self.isVisible():
+            spawn_fn(lambda: fetch_json("/api/filesystem?files=1"), self._fill_fs)
+            spawn_fn(lambda: fetch_json("/api/system"), self._fill_sys)
+    def _fill_sys(self, d):
+        if not d or not d.get("ok"): return
+        cpu = d.get("cpuPct")
+        self.f["CPU %"].setText(f"{cpu:.0f}%" if cpu is not None else "—")
+        mem = d.get("memUsedPct")
+        self.f["memory %"].setText(f"{mem:.0f}%  of {d.get('memTotalGB','?')} GB" if mem is not None else "—")
+        load, temp = d.get("load1"), d.get("tempC")
+        self.f["load / temp"].setText((f"{load:.2f}" if load is not None else "—")
+                                      + (f"  ·  {temp:.0f}°C" if temp is not None else ""))
+    @staticmethod
+    def _gib(n): return f"{n/1073741824:.1f} GiB" if n else "—"
+    def _fill_fs(self, d):
+        if not d or not d.get("ok"): return
+        self._datadir_real = d.get("realPath") or d.get("datadir")
+        self.fspath.setText("path:  " + (self._datadir_real or "—"))
+        df = d.get("df") or {}
+        if df.get("size"):
+            used, size, avail = df.get("used", 0), df.get("size", 1), df.get("avail", 0)
+            try: pct = int(str(df.get("pcent", "0")).rstrip("%"))
+            except Exception: pct = int(used / size * 100)
+            self.fsbar.setValue(min(1000, pct * 10))
+            full = avail < 2 * 1073741824            # < 2 GiB free → the node can't write (real "full")
+            low = avail < 20 * 1073741824
+            col = "#f85149" if full else ("#F7931A" if low else "#16C784")
+            self.fsbar.setStyleSheet("QProgressBar{border:1px solid #0e3d57;border-radius:5px;text-align:center;background:#070d14;color:#eef3f8}"
+                                     "QProgressBar::chunk{background:%s;border-radius:4px}" % col)
+            self.fsbar.setFormat(f"disk {df.get('pcent','?')} · {self._gib(avail)} free of {self._gib(size)}"
+                                 + ("  ⚠ FULL — Bitcoin Core can't write" if full else (" — low" if low else "")))
+        c = d.get("components") or {}
+        self.fscomp.setText(f"blocks {self._gib(c.get('blocks'))}  ·  indexes {self._gib(c.get('indexes'))}  ·  "
+                            f"chainstate {self._gib(c.get('chainstate'))}  ·  total on device {self._gib(c.get('total'))}")
+        files = d.get("files")
+        if files is not None:
+            self.fsfiles.clear()
+            for fi in files:
+                sz = self._gib(fi.get("bytes")) if (fi.get("bytes") or 0) >= 1073741824 else \
+                     (f"{fi['bytes']/1048576:.0f} MiB" if fi.get("bytes") else ("dir" if fi.get("isDir") else "—"))
+                when = datetime.fromtimestamp(fi["mtime"], timezone.utc).strftime("%Y-%m-%d %H:%M") if fi.get("mtime") else ""
+                it = QtWidgets.QTreeWidgetItem([("📁 " if fi.get("isDir") else "📄 ") + fi["name"], sz, when])
+                if fi.get("isDir"): it.setForeground(0, QtGui.QColor("#00BFFF"))
+                self.fsfiles.addTopLevelItem(it)
+            self.fsfiles.resizeColumnToContents(0)
+    def _open_datadir(self):
+        p = self._datadir_real
+        if not p: return
+        import shutil as _sh
+        opener = _sh.which("xdg-open") or _sh.which("nautilus") or _sh.which("nemo") or _sh.which("thunar")
+        if opener: subprocess.Popen([opener, p], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    def _reveal_file(self, item, col):
+        if not self._datadir_real: return
+        # the name originates from an HTTP response — sanitise so a compromised service can't make
+        # us open an arbitrary path (basename strips ../ and absolute prefixes; dot-names rejected;
+        # NOTE: no realpath containment here — datadir components like chainstate are symlinks out
+        # of the datadir by design)
+        name = os.path.basename(item.text(0).split(" ", 1)[-1])
+        if name in ("", ".", ".."): return
+        target = os.path.join(self._datadir_real, name)
+        import shutil as _sh
+        opener = _sh.which("xdg-open")
+        if opener: subprocess.Popen([opener, target],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    def _open_launcher(self):
+        launcher = os.path.expanduser("~/bankon-tools/bankon-launcher.py")
+        if os.path.exists(launcher):
+            subprocess.Popen(["python3", launcher], start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 class NodeTab(QtWidgets.QWidget):
@@ -277,8 +406,14 @@ class BlocksTab(QtWidgets.QWidget):
         self.count.valueChanged.connect(lambda _: self.refresh()); top.addWidget(self.count)
         v.addLayout(top)
         self.t = QtWidgets.QTableWidget(); self.t.setColumnCount(4); self.t.setHorizontalHeaderLabels(["height", "hash", "time UTC", "txs"])
-        hh = self.t.horizontalHeader(); hh.setSectionResizeMode(QtWidgets.QHeaderView.Interactive); hh.setStretchLastSection(True)
-        hh.setSectionsMovable(True); hh.setMinimumSectionSize(70)
+        hh = self.t.horizontalHeader(); hh.setStretchLastSection(False)
+        hh.setSectionsMovable(True); hh.setMinimumSectionSize(60)
+        # height / time / txs hug their content; hash absorbs the leftover width (so txs isn't a wide empty column)
+        hh.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+        hh.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeToContents)
+        self.t.setTextElideMode(QtCore.Qt.ElideRight)
         self.t.verticalHeader().setVisible(False); self.t.verticalHeader().setDefaultSectionSize(28)
         self.t.setShowGrid(False); self.t.setAlternatingRowColors(True); self.t.setSortingEnabled(True)
         self.t.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
@@ -304,12 +439,13 @@ class BlocksTab(QtWidgets.QWidget):
         for r, b in enumerate(rb):
             t = b.get("time"); tm = datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%d %H:%M:%S") if t else "—"
             h = b.get('hash', ''); nt = b.get('nTx')
-            cells = [f"{b.get('height',0):,}", (h[:18] + "…" if h else "—"), tm, (f"{nt:,}" if isinstance(nt, int) else "—")]
+            cells = [f"{b.get('height',0):,}", (h or "—"), tm, (f"{nt:,}" if isinstance(nt, int) else "—")]
             for c, val in enumerate(cells):
                 it = QtWidgets.QTableWidgetItem(val)
                 if c == 0: it.setData(QtCore.Qt.UserRole, h)        # stash full hash for the detail view
+                if c == 3: it.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)   # numbers right-aligned
                 self.t.setItem(r, c, it)
-        self.t.resizeColumnsToContents(); self.t.setSortingEnabled(True)
+        self.t.setSortingEnabled(True)   # column widths handled by header resize modes
         self.lbl.setText(f"Latest blocks ({len(rb)}) — double-click a block for full detail" if rb
                          else "Latest blocks — accumulating (node validating; tip above is live)")
     def _oracle(self, oc):
@@ -351,8 +487,8 @@ class IndexesTab(QtWidgets.QWidget):
         self.bar = QtWidgets.QProgressBar(); self.bar.setMaximum(100000); v.addWidget(self.bar)
         self.crunch = QtWidgets.QLabel("⚙ idle"); v.addWidget(self.crunch)
         self.crunch.setStyleSheet("color:#00BFFF;font-weight:800;font-family:monospace;font-size:13px")
-        self.t = QtWidgets.QTableWidget(); self.t.setColumnCount(7)
-        self.t.setHorizontalHeaderLabels(["index", "height", "behind", "% indexed", "rate (blk/min)", "ETA", "status"])
+        self.t = QtWidgets.QTableWidget(); self.t.setColumnCount(8)
+        self.t.setHorizontalHeaderLabels(["index", "height", "behind", "% indexed", "rate (blk/min)", "ETA", "size on disk", "status"])
         hh = self.t.horizontalHeader(); hh.setSectionResizeMode(QtWidgets.QHeaderView.Interactive); hh.setStretchLastSection(True)
         hh.setMinimumSectionSize(70); self.t.verticalHeader().setVisible(False)
         self.t.verticalHeader().setDefaultSectionSize(28); self.t.setShowGrid(False)
@@ -362,8 +498,75 @@ class IndexesTab(QtWidgets.QWidget):
         self.detail = QtWidgets.QLabel("sync: —"); self.detail.setStyleSheet("color:#c9d4e0;font-family:monospace;font-size:12px")
         self.detail.setWordWrap(True); v.addWidget(self.detail)
         self.note = QtWidgets.QLabel("Indexes build in the background during IBD and catch up to the chain tip.")
-        self.note.setStyleSheet("color:#8B949E"); self.note.setWordWrap(True); v.addWidget(self.note); v.addStretch()
-        self._tip = 0; self._idx = {}
+        self.note.setStyleSheet("color:#8B949E"); self.note.setWordWrap(True); v.addWidget(self.note)
+        # --- txindex deep-dive: look up ANY transaction by txid (what txindex is FOR) ---
+        dd = QtWidgets.QFrame(); dd.setStyleSheet("QFrame{border:1px solid #F7931A;border-radius:6px}")
+        ddl = QtWidgets.QVBoxLayout(dd)
+        ddh = QtWidgets.QHBoxLayout()
+        ddt = QtWidgets.QLabel("🔍 txindex lookup — deep-dive any transaction by txid")
+        ddt.setStyleSheet("color:#F7931A;font-weight:700;border:0"); ddh.addWidget(ddt, 1)
+        self.txin = QtWidgets.QLineEdit(); self.txin.setPlaceholderText("paste a txid (64 hex chars)…")
+        self.txin.setStyleSheet("border:1px solid #2e4a63;border-radius:4px;padding:3px;font-family:monospace")
+        self.txin.returnPressed.connect(self._deep_dive); ddh.addWidget(self.txin, 2)
+        self.txbtn = QtWidgets.QPushButton("Deep dive"); self.txbtn.clicked.connect(self._deep_dive); ddh.addWidget(self.txbtn)
+        ddl.addLayout(ddh)
+        # up/down count + recent-transaction history (last N, up to 100), newest first, click to dive
+        hrow = QtWidgets.QHBoxLayout()
+        self.txhint = QtWidgets.QLabel("Latest transactions (newest first) — click one to deep-dive:")
+        self.txhint.setStyleSheet("color:#8B949E;border:0"); self.txhint.setWordWrap(True); hrow.addWidget(self.txhint, 1)
+        hrow.addWidget(QtWidgets.QLabel("show"))
+        self.txcount = QtWidgets.QSpinBox(); self.txcount.setRange(1, 100); self.txcount.setValue(20)
+        self.txcount.setToolTip("How many recent transactions to list (1–100)")
+        self.txcount.valueChanged.connect(lambda _: self._load_recent(force=True)); hrow.addWidget(self.txcount)
+        ddl.addLayout(hrow)
+        self.txhist = QtWidgets.QListWidget(); self.txhist.setMaximumHeight(150)
+        self.txhist.setStyleSheet("QListWidget{border:1px solid #2e4a63;border-radius:4px;background:#05080d;"
+                                  "color:#c9d4e0;font-family:monospace;font-size:11px}"
+                                  "QListWidget::item:hover{background:#14202e;color:#FFD37A}")
+        self.txhist.itemClicked.connect(self._hist_click); ddl.addWidget(self.txhist)
+        self._recent_tip = -1                                   # -1 = never loaded → first refresh populates it
+        v.addWidget(dd)
+        # --- Export: share index-derived data with other nodes ---
+        exp = QtWidgets.QFrame(); exp.setStyleSheet("QFrame{border:1px solid #2e4a63;border-radius:6px}")
+        el = QtWidgets.QVBoxLayout(exp)
+        exhdr = QtWidgets.QHBoxLayout()
+        eh = QtWidgets.QLabel("⬇ Export for other nodes"); eh.setStyleSheet("color:#F7931A;font-weight:700;border:0")
+        exhdr.addWidget(eh, 1)
+        self.exbtn = QtWidgets.QPushButton("Export UTXO snapshot")
+        self.exbtn.setToolTip("dumptxoutset (latest) → a portable UTXO snapshot another node loads with\n"
+                              "loadtxoutset for fast assumeUTXO sync. Writes ~5–11 GB; takes several minutes.")
+        self.exbtn.clicked.connect(self._export_utxo); exhdr.addWidget(self.exbtn)
+        el.addLayout(exhdr)
+        self.exnote = QtWidgets.QLabel(
+            "The raw indexes (txindex, etc.) are <b>node-local</b> — txindex maps each txid to a byte offset "
+            "in <i>this</i> node's block files, so it can't be loaded on another node. The portable, shareable "
+            "artifact is a <b>UTXO snapshot</b>: another node bootstraps from it with <tt>loadtxoutset</tt> "
+            "(assumeUTXO) and validates down to genesis in the background.")
+        self.exnote.setStyleSheet("color:#8B949E;border:0"); self.exnote.setWordWrap(True); el.addWidget(self.exnote)
+        self.exstatus = QtWidgets.QLabel(""); self.exstatus.setStyleSheet("color:#c9d4e0;font-family:monospace;font-size:11px;border:0")
+        self.exstatus.setWordWrap(True); self.exstatus.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        el.addWidget(self.exstatus)
+        v.addWidget(exp)
+        # --- RAGEbtc: export the whole chain → pgvectorscale (fire-and-poll) ---
+        cx = QtWidgets.QFrame(); cx.setStyleSheet("QFrame{border:1px solid #9945FF;border-radius:6px}")
+        cxl = QtWidgets.QVBoxLayout(cx)
+        cxh = QtWidgets.QHBoxLayout()
+        ch = QtWidgets.QLabel("⛓ Export chain → pgvectorscale (RAGEbtc)")
+        ch.setStyleSheet("color:#9945FF;font-weight:700;border:0"); cxh.addWidget(ch, 1)
+        self.chexbtn = QtWidgets.QPushButton("Start export"); self.chexbtn.clicked.connect(self._chain_start); cxh.addWidget(self.chexbtn)
+        self.chstopbtn = QtWidgets.QPushButton("Stop"); self.chstopbtn.setObjectName("secondary")
+        self.chstopbtn.clicked.connect(self._chain_stop); cxh.addWidget(self.chstopbtn)
+        cxl.addLayout(cxh)
+        self.chbar = QtWidgets.QProgressBar(); self.chbar.setMaximum(100000); self.chbar.setFormat("idle"); cxl.addWidget(self.chbar)
+        self.chstatus = QtWidgets.QLabel("Walks every block+tx via rageRPC into a searchable DB. Set DATABASE_URL "
+                                         "to write (unset = dry-run); resumable by height. See the RAGE skill.")
+        self.chstatus.setStyleSheet("color:#8B949E;border:0;font-family:monospace;font-size:11px")
+        self.chstatus.setWordWrap(True); self.chstatus.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        cxl.addWidget(self.chstatus)
+        v.addWidget(cx)
+        self._chtimer = QtCore.QTimer(self); self._chtimer.timeout.connect(self._chain_poll); self._chtimer.start(2500)
+        v.addStretch()
+        self._tip = 0; self._idx = {}; self._sizes = {}
         self._first_tip = 0; self._first_t = 0.0; self._last_tip = 0; self._last_tt = 0.0; self._rate = 0.0
         self._spin = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"; self._si = 0; self._last_tx = 0; self._crunch_text = "—"; self._was_idx = None
         # live like the blocks: tick every 3s while this tab is visible
@@ -386,14 +589,30 @@ class IndexesTab(QtWidgets.QWidget):
                 self._throbA.start(); self.crunch.setStyleSheet("color:#00BFFF;font-weight:800;font-family:monospace;font-size:13px")
             else:
                 self._throbA.stop(); self._throb.setBlurRadius(3); self.crunch.setStyleSheet("color:#5a6b7b;font-weight:600;font-family:monospace;font-size:13px")
-        if indexing:
+        h = getattr(self, "_idx_h", 0); dtx = getattr(self, "_idx_dtx", 0); cache = getattr(self, "_idx_cache", "—")
+        if not h:
+            self.crunch.setText("waiting for the node…"); return
+        if indexing:                                                  # a block was validated/indexed in the last 6s
             self._si = (self._si + 1) % len(self._spin)
-            self.crunch.setText(f"{self._spin[self._si]}  crunching  ·  {self._crunch_text}")
-        else:
-            self.crunch.setText(f"⏸  idle  ·  {self._crunch_text}")
+            self.crunch.setText(f"{self._spin[self._si]}  indexing block #{h:,}   ·   +{dtx:,} tx this block"
+                                f"   ·   {self._rate:.1f} blk/min   ·   UTXO cache {cache}")
+        else:                                                         # at the tip, between blocks — this is healthy
+            self.crunch.setText(f"✓  indexed to tip #{h:,}   ·   UTXO cache {cache}   ·   awaiting next block (~10 min)")
+    INDEX_META = {
+        "txindex": "Look up ANY transaction by txid (getrawtransaction) — required for BANKON wallet/tx lookups.",
+        "coinstatsindex": "Instant UTXO-set stats (gettxoutsetinfo): supply, UTXO count, muhash — no full scan.",
+        "basic block filter index": "BIP157/158 compact block filters — lets light clients sync privately.",
+    }
+    @staticmethod
+    def _fmt_size(n):
+        if not n: return "—"
+        for u in ("B", "KB", "MB", "GB", "TB"):
+            if n < 1024 or u == "TB": return f"{n:.1f} {u}"
+            n /= 1024.0
     def refresh(self):
-        spawn_fn(lambda: fetch_json("/api/indexinfo").get("indexes", {}), self._setidx)  # FRESH, realtime
+        spawn_fn(lambda: fetch_json("/api/indexinfo"), self._setidx)   # FRESH, realtime (indexes + disk sizes)
         spawn_fn(synctip, self._settip)                    # cheap live chain tip (debug.log)
+        self._load_recent()                                # refresh the recent-tx list when a new block lands
     def _settip(self, st):
         h = st.get("height")
         if h:
@@ -406,7 +625,7 @@ class IndexesTab(QtWidgets.QWidget):
             self._tip = h
             tx = st.get("tx"); dtx = (tx - self._last_tx) if (tx and self._last_tx and tx >= self._last_tx) else 0
             if tx: self._last_tx = tx
-            self._crunch_text = f"block #{h:,}  ·  +{dtx:,} txs  ·  cache {st.get('cache', '—')}"
+            self._idx_h = h; self._idx_dtx = dtx; self._idx_cache = st.get('cache', '—')
             sess = h - self._first_tip; ago = int(now - self._last_tt) if self._last_tt else 0
             self.activity.setText(f"activity:  ▲ {self._rate:.1f} blk/min  ·  +{sess:,} indexed since open  ·  last advance {ago}s ago")
             prog = st.get("progress"); bd = (st.get("blockDate") or "—").replace("T", " ").replace("Z", "")
@@ -414,7 +633,248 @@ class IndexesTab(QtWidgets.QWidget):
             head = f"tip {h:,}  ·  {prog*100:.4f}%  " if prog is not None else f"tip {h:,}  "
             self.detail.setText(head + f"·  block date {bd}  ·  tx {st.get('tx') or 0:,}  ·  UTXO cache {st.get('cache','—')}  ·  last UpdateTip {lt}")
         self._render()
-    def _setidx(self, idx): self._idx = idx or {}; self._render()
+    def _setidx(self, resp):
+        resp = resp or {}
+        self._idx = resp.get("indexes", {}) or {}
+        self._sizes = resp.get("sizes", {}) or {}
+        self._render()
+    # ---- recent-transaction history ----
+    def _load_recent(self, force=False):
+        if not self.isVisible():
+            return
+        # only refetch when a new block arrived (tip changed) or the user forced it (count change)
+        if not force and self._recent_tip == self._tip:
+            return
+        self._recent_tip = self._tip
+        n = self.txcount.value()
+        spawn_fn(lambda: self._fetch_recent(n), self._fill_recent)
+    @staticmethod
+    def _fetch_recent(n):
+        try:
+            txids, h = [], rpc("getbestblockhash", [], timeout=12)
+            while h and len(txids) < n:                        # walk back blocks until we have n txids
+                blk = rpc("getblock", [h, 1], timeout=15)
+                for t in reversed(blk.get("tx", [])):          # newest-in-block first
+                    txids.append(t)
+                    if len(txids) >= n:
+                        break
+                h = blk.get("previousblockhash")
+            return {"txids": txids[:n], "height": None}
+        except Exception as e:
+            return {"error": str(e)}
+    def _fill_recent(self, d):
+        if not d or d.get("error"):
+            self.txhint.setText(f"recent transactions unavailable ({(d or {}).get('error','?')})"); return
+        txids = d.get("txids", [])
+        self.txhist.clear()
+        for tx in txids:
+            self.txhist.addItem(tx)                             # bare txid — no numeric prefix
+        self.txhint.setText(f"Latest {len(txids)} transactions (newest first) — click one to deep-dive:")
+        # default the query field to the latest transaction
+        if txids and not (self.txin.text() or "").strip():
+            self.txin.setText(txids[0])
+    def _hist_click(self, item):
+        self.txin.setText(item.text().strip()); self._deep_dive()
+    # ---- txindex deep-dive ----
+    def _deep_dive(self):
+        txid = (self.txin.text() or "").strip().lower()
+        import re as _re
+        if not _re.fullmatch(r"[0-9a-f]{64}", txid):
+            self.txhint.setText("<span style='color:#f85149'>that doesn't look like a txid — need 64 hex characters</span>")
+            return
+        self.txbtn.setEnabled(False); self.txhint.setText("resolving via txindex…")
+        spawn_fn(lambda: self._fetch_tx(txid), self._show_tx)
+    @staticmethod
+    def _fetch_tx(txid):
+        try:
+            tx = rpc("getrawtransaction", [txid, True], timeout=20)
+        except Exception as e:
+            return {"error": str(e)}
+        vin = tx.get("vin", []); vout = tx.get("vout", [])
+        is_cb = any("coinbase" in i for i in vin)
+        out_sum = sum(o.get("value", 0) for o in vout)
+        in_values = [None] * len(vin)
+        in_sum, resolved = 0.0, (not is_cb and len(vin) <= 40)  # bounded: resolve prevouts for a real fee
+        if resolved:
+            for idx, i in enumerate(vin):
+                try:
+                    p = rpc("getrawtransaction", [i["txid"], True], timeout=15)
+                    val = p["vout"][i["vout"]].get("value", 0)
+                    in_values[idx] = val; in_sum += val
+                except Exception:
+                    resolved = False; break
+        fee = (in_sum - out_sum) if (resolved and not is_cb) else None
+        vsize = tx.get("vsize") or tx.get("size") or 0
+        feerate = (fee * 1e8 / vsize) if (fee is not None and vsize) else None
+        # block context (height + median time) — one cheap header call
+        height = mediantime = None
+        if tx.get("blockhash"):
+            try:
+                bh = rpc("getblockheader", [tx["blockhash"]], timeout=12)
+                height = bh.get("height"); mediantime = bh.get("mediantime")
+            except Exception:
+                pass
+        # derived scientific measures
+        rbf = any(i.get("sequence", 0xffffffff) < 0xfffffffe for i in vin if "coinbase" not in i)
+        segwit = any(i.get("txinwitness") for i in vin)
+        wcount = sum(len(i.get("txinwitness", [])) for i in vin)
+        return {"tx": tx, "coinbase": is_cb, "in_sum": in_sum if resolved else None,
+                "out_sum": out_sum, "fee": fee, "feerate": feerate, "in_values": in_values,
+                "height": height, "mediantime": mediantime, "rbf": rbf, "segwit": segwit, "wcount": wcount}
+    def _show_tx(self, d):
+        self.txbtn.setEnabled(True)
+        if not d or d.get("error"):
+            self.txhint.setText(f"<span style='color:#f85149'>lookup failed: {(d or {}).get('error','?')} "
+                                f"(is txindex synced?)</span>"); return
+        self.txhint.setText("Only a node with <b>txindex</b> can resolve an arbitrary txid — this is that payoff.")
+        tx = d["tx"]; vout = tx.get("vout", []); vin = tx.get("vin", []); inv = d.get("in_values", [])
+        dlg = QtWidgets.QDialog(self); dlg.setWindowTitle(f"tx {tx.get('txid','')[:16]}…"); dlg.resize(820, 660)
+        L = QtWidgets.QVBoxLayout(dlg)
+        # HIGHLIGHTS row
+        conf = tx.get("confirmations"); status = ("✓ %d conf" % conf) if conf else "⏳ mempool"
+        hi = [("outputs", f"{d['out_sum']:.8f} ₿"),
+              ("fee", "coinbase" if d["coinbase"] else (f"{d['fee']:.8f} ₿" if d["fee"] is not None else "—")),
+              ("fee rate", f"{d['feerate']:.1f} sat/vB" if d["feerate"] is not None else "—"),
+              ("vsize", f"{tx.get('vsize','?')} vB"), ("in/out", f"{len(vin)} → {len(vout)}"), ("status", status)]
+        hb = QtWidgets.QGridLayout()
+        for i, (k, val) in enumerate(hi):
+            kk = QtWidgets.QLabel(k); kk.setStyleSheet("color:#8aa0b4;font-size:10px")
+            vv = QtWidgets.QLabel(str(val)); vv.setStyleSheet("color:#F7931A;font-weight:800;font-family:monospace;font-size:13px")
+            hb.addWidget(kk, 0, i); hb.addWidget(vv, 1, i)
+        L.addLayout(hb)
+        # view toggle: Normal ↔ Scientific
+        trow = QtWidgets.QHBoxLayout()
+        trow.addWidget(QtWidgets.QLabel("view"))
+        mode = QtWidgets.QComboBox(); mode.addItems(["Normal", "Scientific"])
+        mode.setToolTip("Scientific reveals raw fields, per-input values, script types, witness/RBF/SegWit, and the raw hex")
+        trow.addWidget(mode); trow.addStretch(1); L.addLayout(trow)
+        # identity + block
+        ident = QtWidgets.QLabel(f"<b>txid</b> {tx.get('txid','')}<br><b>block</b> {tx.get('blockhash','—')}"
+                                 + (f" (height {d['height']:,})" if d.get("height") is not None else "")
+                                 + (f"  ·  <b>time</b> {datetime.fromtimestamp(tx['time'], timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC" if tx.get('time') else ""))
+        ident.setStyleSheet("font-family:monospace;font-size:11px;color:#d6e3ef"); ident.setWordWrap(True)
+        ident.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse); L.addWidget(ident)
+        # --- Scientific-only panel: raw tx fields + derived measures + raw hex ---
+        sci = QtWidgets.QWidget(); sl = QtWidgets.QVBoxLayout(sci); sl.setContentsMargins(0, 0, 0, 0)
+        def yn(b): return "yes" if b else "no"
+        mt = d.get("mediantime")
+        sci_fields = [("version", tx.get("version")), ("locktime", tx.get("locktime")),
+                      ("size", f"{tx.get('size','?')} B"), ("vsize", f"{tx.get('vsize','?')} vB"),
+                      ("weight", f"{tx.get('weight','?')} WU"),
+                      ("SegWit", yn(d.get("segwit"))), ("witness items", d.get("wcount")),
+                      ("RBF (BIP125)", yn(d.get("rbf"))),
+                      ("inputs value", f"{d['in_sum']:.8f} ₿" if d.get("in_sum") is not None else "— (unresolved)"),
+                      ("block median time", datetime.fromtimestamp(mt, timezone.utc).strftime('%Y-%m-%d %H:%M:%S') + " UTC" if mt else "—")]
+        sg = QtWidgets.QGridLayout()
+        for i, (k, val) in enumerate(sci_fields):
+            r, c = divmod(i, 5)
+            kk = QtWidgets.QLabel(k); kk.setStyleSheet("color:#00BFFF;font-size:10px")
+            vv = QtWidgets.QLabel(str(val)); vv.setStyleSheet("color:#d6e3ef;font-family:monospace;font-size:11px")
+            box = QtWidgets.QVBoxLayout(); box.setSpacing(0); box.addWidget(kk); box.addWidget(vv)
+            sg.addLayout(box, r, c)
+        sl.addLayout(sg)
+        if d["coinbase"] and vin:                                # decode the coinbase scriptSig to ASCII
+            cbhex = vin[0].get("coinbase", "")
+            try:
+                txt = bytes.fromhex(cbhex).decode("ascii", "replace")
+                txt = "".join(ch if 32 <= ord(ch) < 127 else "·" for ch in txt)
+            except Exception:
+                txt = cbhex
+            cb = QtWidgets.QLabel(f"⛏ coinbase message: <span style='color:#FFD37A'>{txt}</span>")
+            cb.setStyleSheet("font-family:monospace;font-size:11px"); cb.setWordWrap(True); sl.addWidget(cb)
+        rawlbl = QtWidgets.QLabel("raw transaction (hex):"); rawlbl.setStyleSheet("color:#8aa0b4;font-size:10px"); sl.addWidget(rawlbl)
+        raw = QtWidgets.QPlainTextEdit(); raw.setReadOnly(True); raw.setMaximumHeight(70); raw.setPlainText(tx.get("hex", ""))
+        raw.setStyleSheet("font-family:monospace;font-size:10px;background:#05080d;color:#c9d4e0;border:1px solid #14405c"); sl.addWidget(raw)
+        L.addWidget(sci)
+        # inputs + outputs tables (extra columns hidden in Normal)
+        split = QtWidgets.QHBoxLayout()
+        it = QtWidgets.QTableWidget(); it.setColumnCount(4)
+        it.setHorizontalHeaderLabels(["input (prev out)", "n", "value ₿", "seq"])
+        it.setRowCount(len(vin)); it.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers); it.verticalHeader().setVisible(False)
+        for r, i in enumerate(vin):
+            src = "⛏ coinbase (new coins)" if "coinbase" in i else f"{i.get('txid','')[:20]}…"
+            it.setItem(r, 0, QtWidgets.QTableWidgetItem(src)); it.setItem(r, 1, QtWidgets.QTableWidgetItem(str(i.get("vout", ""))))
+            iv = inv[r] if r < len(inv) else None
+            it.setItem(r, 2, QtWidgets.QTableWidgetItem(f"{iv:.8f}" if iv is not None else "—"))
+            seq = i.get("sequence"); it.setItem(r, 3, QtWidgets.QTableWidgetItem(hex(seq) if isinstance(seq, int) else "—"))
+        it.resizeColumnsToContents()
+        ot = QtWidgets.QTableWidget(); ot.setColumnCount(4); ot.setHorizontalHeaderLabels(["#", "address", "value ₿", "type"])
+        ot.setRowCount(len(vout)); ot.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers); ot.verticalHeader().setVisible(False)
+        for r, o in enumerate(vout):
+            spk = o.get("scriptPubKey", {}); addr = spk.get("address") or (spk.get("type", "") + " (no addr)")
+            ot.setItem(r, 0, QtWidgets.QTableWidgetItem(str(o.get("n", r))))
+            ot.setItem(r, 1, QtWidgets.QTableWidgetItem(addr))
+            vitem = QtWidgets.QTableWidgetItem(f"{o.get('value', 0):.8f}"); vitem.setForeground(QtGui.QColor("#16C784"))
+            ot.setItem(r, 2, vitem)
+            ot.setItem(r, 3, QtWidgets.QTableWidgetItem(spk.get("type", "")))
+        ot.resizeColumnsToContents()
+        for w, lab in [(it, f"Inputs ({len(vin)})"), (ot, f"Outputs ({len(vout)})")]:
+            col = QtWidgets.QVBoxLayout(); h = QtWidgets.QLabel(lab); h.setStyleSheet("color:#00BFFF;font-weight:700")
+            col.addWidget(h); col.addWidget(w); split.addLayout(col)
+        L.addLayout(split, 1)
+        cl = QtWidgets.QPushButton("Close"); cl.clicked.connect(dlg.accept); L.addWidget(cl)
+        # toggle behaviour: Scientific reveals the extra panel + input value/seq + output type columns
+        def apply_mode(m):
+            scientific = (m == "Scientific")
+            sci.setVisible(scientific)
+            it.setColumnHidden(2, not scientific); it.setColumnHidden(3, not scientific)
+            ot.setColumnHidden(3, not scientific)
+            it.resizeColumnsToContents(); ot.resizeColumnsToContents()
+        mode.currentTextChanged.connect(apply_mode); apply_mode("Normal")
+        dlg.exec()
+    # ---- RAGEbtc chain export ----
+    def _chain_start(self):
+        self.chexbtn.setEnabled(False); self.chstatus.setText("starting chain export…")
+        spawn_fn(lambda: post_json("/api/chain/export", {"resume": True}, timeout=15),
+                 lambda d: self.chstatus.setText("✗ " + str((d or {}).get("error")) if d and not d.get("ok")
+                                                 else "export running — resumable; watch progress below"),
+                 lambda e: self.chstatus.setText(f"✗ start failed: {e}"))
+        QtCore.QTimer.singleShot(1500, lambda: self.chexbtn.setEnabled(True))
+    def _chain_stop(self):
+        spawn_fn(lambda: post_json("/api/chain/export/stop", {}, timeout=10), lambda d: None)
+    def _chain_poll(self):
+        if not self.isVisible():
+            return
+        spawn_fn(lambda: fetch_json("/api/chain/export/status"), self._chain_fill)
+    def _chain_fill(self, d):
+        if not d or not d.get("ok"):
+            return
+        st = d.get("status", "idle"); pct = d.get("pct", 0)
+        self.chbar.setValue(int(pct * 1000))
+        mode = "dry-run" if d.get("dryRun") else ("→ " + (d.get("schema") or "db"))
+        self.chbar.setFormat(f"{st} · {pct:.2f}% ({mode})")
+        h, tip = d.get("height", -1), d.get("tip")
+        if st in ("running", "done", "paused", "error") and tip:
+            eta = d.get("etaSec")
+            eta_s = (f" · ETA {eta // 3600}h{(eta % 3600) // 60}m" if eta and eta > 60 else (f" · ETA {eta}s" if eta else ""))
+            err = f"  ✗ {d.get('lastError')}" if d.get("lastError") else ""
+            self.chstatus.setText(f"{st}: block {h:,}/{tip:,} · {d.get('blocksDone',0):,} blocks · "
+                                  f"{d.get('txDone',0):,} tx · {d.get('rateBlkS',0)} blk/s{eta_s}"
+                                  f"{'  (dry-run — set DATABASE_URL to persist)' if d.get('dryRun') else ''}{err}")
+    def _export_utxo(self):
+        d = QtWidgets.QMessageBox(self)
+        d.setIcon(QtWidgets.QMessageBox.Question); d.setWindowTitle("Export UTXO snapshot")
+        d.setText("Create a portable UTXO snapshot (assumeUTXO)?")
+        d.setInformativeText("Runs dumptxoutset \"latest\" → writes ~5–11 GB to ~/bankon-tools/exports/ and "
+                             "takes several minutes. Network stays active (no rollback). Another node can then "
+                             "loadtxoutset it to bootstrap fast.\n\nThe txindex itself is not portable and is not exported.")
+        d.setStandardButtons(QtWidgets.QMessageBox.Ok | QtWidgets.QMessageBox.Cancel)
+        if d.exec() != QtWidgets.QMessageBox.Ok: return
+        self.exbtn.setEnabled(False)
+        self.exstatus.setText("⏳ exporting UTXO snapshot… (several minutes; the node stays online)")
+        spawn_fn(lambda: post_json("/api/index/export-utxo", {}, timeout=2700), self._export_done)
+    def _export_done(self, d):
+        self.exbtn.setEnabled(True)
+        if not d or not d.get("ok"):
+            self.exstatus.setText(f"✗ export failed: {(d or {}).get('error', 'unknown')}"); return
+        r = d.get("result", {}) or {}; path = d.get("path", "")
+        h = r.get("base_height"); bh = r.get("base_hash", ""); uh = r.get("txoutset_hash", "")
+        coins = r.get("coins_written")
+        self.exstatus.setText(
+            f"✓ snapshot written in {d.get('elapsedSec','?')}s → {path}\n"
+            f"   base height {h:,}  ·  {coins:,} coins  ·  utxo hash {uh[:16]}…\n"
+            f"   use on another node:  bitcoin-cli loadtxoutset \"{path}\""
+            if h is not None else f"✓ exported → {path}")
     @staticmethod
     def _eta(behind, rate):
         if behind <= 0: return "—"
@@ -429,8 +889,12 @@ class IndexesTab(QtWidgets.QWidget):
             # so show the live validated tip as its frontier — advances in realtime via debug.log.
             if tip:
                 self.t.setRowCount(1)
-                cells = ["txindex", f"~{tip:,}", "0", "tracking", f"{self._rate:.1f}", "≈ tip", "indexing… (≈ tip)"]
-                for c, val in enumerate(cells): self.t.setItem(0, c, QtWidgets.QTableWidgetItem(val))
+                sz = self._fmt_size(self._sizes.get("txindex"))
+                cells = ["txindex", f"~{tip:,}", "0", "tracking", f"{self._rate:.1f}", "≈ tip", sz, "indexing… (≈ tip)"]
+                for c, val in enumerate(cells):
+                    it = QtWidgets.QTableWidgetItem(val)
+                    if c == 0: it.setToolTip(self.INDEX_META.get("txindex", ""))
+                    self.t.setItem(0, c, it)
                 self.t.resizeColumnsToContents()
                 self.bar.setValue(99000); self.bar.setFormat(f"txindex ≈ tip {tip:,} (live; exact height when RPC frees)")
                 self.lbl.setText(f"<b>Index quality</b> — live · txindex tracking validation (tip {tip:,}) · getindexinfo pending (RPC busy)")
@@ -447,17 +911,26 @@ class IndexesTab(QtWidgets.QWidget):
             cells = [name, f"{bh:,}", f"{behind:,}", f"{pct:.3f}%",
                      f"{self._rate:.1f}" if behind > 0 else "—",
                      "—" if synced else self._eta(behind, self._rate),
+                     self._fmt_size(self._sizes.get(name)),
                      "synced ✓" if synced else "indexing…"]
             for c, val in enumerate(cells):
                 it = QtWidgets.QTableWidgetItem(val)
-                if c == 6: it.setForeground(QtGui.QColor("#16C784" if synced else "#F7931A"))
+                if c == 0: it.setToolTip(self.INDEX_META.get(name, ""))
+                if c == 7: it.setForeground(QtGui.QColor("#16C784" if synced else "#F7931A"))
                 self.t.setItem(r, c, it)
         self.t.resizeColumnsToContents()
         self.bar.setValue(int(primary * 1000)); self.bar.setFormat(f"{primary:.3f}% — tip {tip:,}")
         allsync = all((idx[n] or {}).get("synced") for n in names)
         missing = [k for k in KNOWN if k not in names]
         miss = f"  ·  not enabled: {', '.join(missing)}" if missing else ""
-        self.lbl.setText(f"<b>Index quality</b> — live · {len(names)} index(es) · {'all synced' if allsync else 'building'} (tip {tip:,}){miss}")
+        total_sz = sum(v for v in self._sizes.values() if v)
+        szs = f"  ·  total index disk: {self._fmt_size(total_sz)}" if total_sz else ""
+        self.lbl.setText(f"<b>Index quality</b> — live · {len(names)} index(es) · "
+                         f"{'all synced' if allsync else 'building'} (tip {tip:,}){szs}{miss}")
+        # what each present index enables (hover the index name for the same)
+        desc = " · ".join(f"<b>{n}</b>: {self.INDEX_META[n].split(' — ')[0].split(':')[0]}"
+                          for n in names if n in self.INDEX_META)
+        if desc: self.note.setText(desc + "  ·  txindex is mutually exclusive with pruning (prune=N).")
 
 
 class ConsoleTab(QtWidgets.QWidget):
@@ -570,8 +1043,13 @@ class ConsoleTab(QtWidgets.QWidget):
         if m not in self.ALLOW: self.out.setPlainText(f"'{m}' not in read-only whitelist"); return
         try: params = json.loads(self.p.text()) if self.p.text().strip() else []
         except Exception: self.out.setPlainText("params must be valid JSON array"); return
-        try: self.out.setPlainText(json.dumps(rpc(m, params), indent=2))
-        except Exception as e: self.out.setPlainText("ERROR: " + str(e))
+        if not isinstance(params, list): self.out.setPlainText("params must be a JSON array"); return
+        # run OFF the UI thread — a slow node reply must never freeze the app (financial software:
+        # a frozen UI invites double-clicks and misreads; the whitelist above is the write-guard)
+        self.out.setPlainText("…")
+        spawn_fn(lambda: rpc(m, params),
+                 lambda v: self.out.setPlainText(json.dumps(v, indent=2)),
+                 lambda e: self.out.setPlainText("ERROR: " + str(e)))
 
 
 def _dur(s):
@@ -656,6 +1134,9 @@ class NetworkMapTab(QtWidgets.QWidget):
         top = QtWidgets.QHBoxLayout()
         self.info = QtWidgets.QLabel("Network map — your node (centre), connected peers, and the known-node cloud")
         self.info.setStyleSheet("color:#8aa0b4"); top.addWidget(self.info, 1)
+        self.speed = QtWidgets.QLabel(""); self.speed.setStyleSheet("font-family:monospace;font-weight:700")
+        self.speed.setToolTip("Live node throughput (getnettotals) — orange = data in, green = data out")
+        top.addWidget(self.speed)
         top.addWidget(QtWidgets.QLabel("max nodes"))
         self.maxnodes = QtWidgets.QSpinBox(); self.maxnodes.setRange(0, 50000); self.maxnodes.setSingleStep(500)
         self.maxnodes.setValue(5000); self.maxnodes.setToolTip("Max known nodes to fetch/draw (+/- or type)")
@@ -666,12 +1147,61 @@ class NetworkMapTab(QtWidgets.QWidget):
         self.view = QtWidgets.QGraphicsView(self.scene)
         self.view.setRenderHint(QtGui.QPainter.Antialiasing)
         self.view.setStyleSheet("background:#05080d;border:2px solid #00BFFF;border-radius:8px")
-        self.view.viewport().installEventFilter(self)        # click → select a peer node
+        self.view.setMinimumHeight(300)   # modest floor so the map stays usable on small screens
+        self.view.setTransformationAnchor(QtWidgets.QGraphicsView.AnchorUnderMouse)   # wheel zooms at cursor
+        self.view.setDragMode(QtWidgets.QGraphicsView.ScrollHandDrag)                 # drag pans when zoomed in
+        self.view.viewport().installEventFilter(self)        # click → select a peer node · wheel → zoom
+        self.view.installEventFilter(self)                   # view resize → re-pin the overlay zoom buttons
+        # zoom controls live INSIDE the map, pinned to its top-right corner
+        self._zbtns = []
+        for txt, tip, fn in [("+", "Zoom in", lambda: self._zoom(1.15)),
+                             ("−", "Zoom out", lambda: self._zoom(1 / 1.15)),
+                             ("⤢", "Fit whole map", self._fit)]:
+            b = QtWidgets.QPushButton(txt, self.view)
+            b.setFixedSize(34, 30); b.setToolTip(tip); b.clicked.connect(fn)
+            b.setStyleSheet("QPushButton{background:rgba(8,16,26,0.85);color:#00BFFF;border:1px solid #14405c;"
+                            "border-radius:6px;font-weight:800;font-size:15px;padding:0}"
+                            "QPushButton:hover{background:#14405c;color:#fff}")
+            b.raise_(); self._zbtns.append(b)
+        # DOWN-STATE onboarding overlay — when Core is off there are no nodes to map, so turn the empty
+        # map into a call-to-action: start Core + read the BANKON FAQ/docs. Shown over the view; hidden
+        # the moment peers/activity appear.
+        self.downpanel = QtWidgets.QFrame(self.view)
+        self.downpanel.setStyleSheet("QFrame{background:rgba(8,16,26,0.95);border:2px solid #F7931A;border-radius:12px}")
+        dp = QtWidgets.QVBoxLayout(self.downpanel); dp.setSpacing(8); dp.setContentsMargins(24, 18, 24, 18)
+        _h = QtWidgets.QLabel("₿  the wallet you can BANKON"); _h.setAlignment(QtCore.Qt.AlignCenter)
+        _h.setStyleSheet("color:#F7931A;font-weight:800;font-size:16px;border:0"); dp.addWidget(_h)
+        self.downmsg = QtWidgets.QLabel("Bitcoin Core is not running — BANKON attaches to your node.\n"
+                                        "Start Core to map the network.")
+        self.downmsg.setAlignment(QtCore.Qt.AlignCenter); self.downmsg.setWordWrap(True)
+        self.downmsg.setStyleSheet("color:#d6e3ef;border:0"); dp.addWidget(self.downmsg)
+        _sb = QtWidgets.QPushButton("▶  Start Bitcoin Core")
+        _sb.setStyleSheet("QPushButton{background:#17a24b;color:#eafff0;font-weight:800;border:2px solid #0b5d34;"
+                          "border-radius:8px;padding:8px}QPushButton:hover{background:#1fc75e}")
+        _sb.clicked.connect(self._start_core); dp.addWidget(_sb)
+        _lk = QtWidgets.QHBoxLayout()
+        for _txt, _key in [("❓ FAQ", "faq"), ("📖 Docs", "docs")]:
+            _b = QtWidgets.QPushButton(_txt); _b.setObjectName("secondary")
+            _b.clicked.connect(lambda _c, k=_key: self._open_doc(k)); _lk.addWidget(_b)
+        dp.addLayout(_lk)
+        _lk2 = QtWidgets.QHBoxLayout()
+        for _txt, _key in [("₿ BTC Standard ↗", "cypherpunk"), ("🎛 gnuGUI ↗", "gnugui")]:
+            _b = QtWidgets.QPushButton(_txt); _b.setObjectName("secondary")
+            _b.clicked.connect(lambda _c, k=_key: self._open_doc(k)); _lk2.addWidget(_b)
+        dp.addLayout(_lk2)
+        _rd = QtWidgets.QLabel("New here? Read the BANKON FAQ & docs while Core starts.")
+        _rd.setAlignment(QtCore.Qt.AlignCenter); _rd.setStyleSheet("color:#8aa0b4;font-size:10px;border:0"); dp.addWidget(_rd)
+        self.downpanel.hide(); self._core_off = False
         split.addWidget(self.view)
         split.addWidget(self._build_diag())
-        split.setStretchFactor(0, 1); split.setStretchFactor(1, 0); split.setSizes([680, 300])
+        # open at a 50/50 split between the map and the diagnostics panel
+        split.setStretchFactor(0, 1); split.setStretchFactor(1, 1); split.setSizes([500, 500])
         v.addWidget(split, 1)
         self._ni, self._known, self._peers, self._act, self._pstale = {}, [], [], [], False
+        self._user_zoom = False  # once the user zooms, redraws stop auto-fitting
+        self._prev = {}          # addr -> (bytesrecv, bytessent, t) last sample, for live B/s
+        self._rates = {}         # addr -> (in B/s, out B/s)
+        self._tot_prev = None; self._tot_rate = (0.0, 0.0)
         self._hits = []          # [(x, y, r, peer)] for click hit-testing (scene coords)
         self._links = []         # [(x, y, frac)] connected-peer endpoints for flow animation
         self._anim = []          # overlay scene-items (re-drawn each pulse tick)
@@ -705,10 +1235,52 @@ class NetworkMapTab(QtWidgets.QWidget):
         n = self.maxnodes.value()
         spawn_fn(lambda: known_nodes(max(1, n)) if n else [], self._setknown)
         spawn("getpeerinfo", self._setpeers, timeout=10)
+        spawn("getnettotals", self._settot)                                   # global in/out speed HUD
         spawn_fn(lambda: fetch_json("/api/netactivity?n=60"), self._setact)   # log-based fallback (works during the RPC choke)
+        spawn_fn(lambda: fetch_json("/api/coremon"),                          # is Core actually off? → onboarding overlay
+                 lambda d: self._set_down(bool(d) and d.get("state") == "off"))
+    # ---- zoom ----
+    def _zoom(self, f):
+        self._user_zoom = True; self.view.scale(f, f)
+    def _fit(self):
+        self._user_zoom = False; self._fitview()
+    def _fitview(self):
+        if self.scene.items():
+            self.view.fitInView(self.scene.itemsBoundingRect().adjusted(-60, -40, 60, 40), QtCore.Qt.KeepAspectRatio)
+    @staticmethod
+    def _fmt_rate(bps):
+        for unit, div in (("MB/s", 1e6), ("KB/s", 1e3)):
+            if bps >= div: return f"{bps / div:.1f} {unit}"
+        return f"{bps:.0f} B/s"
+    def _settot(self, d, stale):
+        if not d: return
+        import time
+        now = time.monotonic()
+        if self._tot_prev:
+            pr, ps, pt = self._tot_prev
+            dt = max(0.001, now - pt)
+            self._tot_rate = (max(0, d.get("totalbytesrecv", 0) - pr) / dt,
+                              max(0, d.get("totalbytessent", 0) - ps) / dt)
+        self._tot_prev = (d.get("totalbytesrecv", 0), d.get("totalbytessent", 0), now)
+        ri, ro = self._tot_rate
+        self.speed.setText(f"<span style='color:#F7931A'>⬇ in {self._fmt_rate(ri)}</span> · "
+                           f"<span style='color:#16C784'>⬆ out {self._fmt_rate(ro)}</span>")
     def _setni(self, ni, stale): self._ni = ni or {}; self._redraw()
     def _setknown(self, nodes): self._known = nodes or []; self._redraw()
     def _setpeers(self, peers, stale):
+        import time
+        now = time.monotonic()
+        for p in peers or []:                       # per-peer live B/s from deltas between polls
+            a = p.get("addr")
+            prev = self._prev.get(a)
+            if prev:
+                dt = max(0.001, now - prev[2])
+                self._rates[a] = (max(0, p.get("bytesrecv", 0) - prev[0]) / dt,
+                                  max(0, p.get("bytessent", 0) - prev[1]) / dt)
+            self._prev[a] = (p.get("bytesrecv", 0), p.get("bytessent", 0), now)
+        live = {p.get("addr") for p in peers or []}
+        self._rates = {a: r for a, r in self._rates.items() if a in live}
+        self._prev = {a: s for a, s in self._prev.items() if a in live}
         self._peers = peers or []; self._pstale = bool(stale)
         if self._sel:                                          # keep the open diagnostics panel live
             fresh = next((p for p in self._peers if p.get("addr") == self._sel.get("addr")), None)
@@ -717,7 +1289,15 @@ class NetworkMapTab(QtWidgets.QWidget):
         self._redraw()
     def _setact(self, d): self._act = (d or {}).get("events", []); self._redraw()
     # ---- click-to-select a peer node ----
+    def _place_zoom(self):
+        x = self.view.width() - 42
+        for i, b in enumerate(self._zbtns): b.move(x, 10 + i * 36)
     def eventFilter(self, obj, ev):
+        if obj is self.view and ev.type() == QtCore.QEvent.Resize:
+            self._place_zoom(); self._place_down()
+        if obj is self.view.viewport() and ev.type() == QtCore.QEvent.Wheel:
+            self._zoom(1.15 if ev.angleDelta().y() > 0 else 1 / 1.15)
+            return True                                     # consume: wheel = zoom, not scroll
         if obj is self.view.viewport() and ev.type() == QtCore.QEvent.MouseButtonPress:
             sp = self.view.mapToScene(ev.position().toPoint()) if hasattr(ev, "position") else self.view.mapToScene(ev.pos())
             best, bestd = None, 1e9
@@ -760,21 +1340,33 @@ class NetworkMapTab(QtWidgets.QWidget):
     def _pulse(self):
         # DYNAMIC overlay: traffic 'packets' flow centre→peer along each link, + a halo on the
         # selected node. Cheap — only the overlay is rebuilt each tick; the base scene is static.
+        if not anim_on(self):
+            return    # THERMAL: don't animate (60ms) when this tab is hidden/minimized — saves CPU on the HD 3000
         for it in self._anim:
             try: self.scene.removeItem(it)
             except Exception: pass
         self._anim = []
         if not self._links and not self._sel: return
-        self._phase = (self._phase + 0.05) % 1.0
+        self._phase += 0.05                                        # unbounded so per-link speeds stay smooth
         import math
-        for k, (x, y, frac) in enumerate(self._links):
-            if frac < 0.015: continue
-            col = self._traffic_color(frac)
-            for j in range(2):                                     # two packets per link, offset
-                t = (self._phase + j * 0.5 + k * 0.13) % 1.0
-                px, py = x * t, y * t; rad = 2.0 + 3.0 * frac
-                dot = self.scene.addEllipse(px - rad, py - rad, 2 * rad, 2 * rad, QtGui.QPen(QtCore.Qt.NoPen), QtGui.QBrush(col))
-                self._anim.append(dot)
+        ORANGE = QtGui.QColor("#F7931A"); GREEN = QtGui.QColor("#16C784")
+        # Packets = ACTUAL traffic measured between the last two peer polls (B/s deltas).
+        # A direction with zero live traffic shows no dots — the map only flows when data flows.
+        for k, (x, y, pin, pout) in enumerate(self._links):
+            if pin > 0:    # real incoming data — bitcoin orange, external peer → BANKON node
+                npk = 1 + int(round(2 * pin)); spd = 0.6 + 2.4 * pin; rad = 2.0 + 3.0 * pin
+                for j in range(npk):
+                    t = (self._phase * spd + j / npk + k * 0.13) % 1.0
+                    px, py = x * (1.0 - t), y * (1.0 - t)
+                    self._anim.append(self.scene.addEllipse(px - rad, py - rad, 2 * rad, 2 * rad,
+                                                            QtGui.QPen(QtCore.Qt.NoPen), QtGui.QBrush(ORANGE)))
+            if pout > 0:   # real outgoing data — candle green, BANKON node → external peer
+                npk = 1 + int(round(2 * pout)); spd = 0.6 + 2.4 * pout; rad = 2.0 + 3.0 * pout
+                for j in range(npk):
+                    t = (self._phase * spd + j / npk + k * 0.17) % 1.0
+                    px, py = x * t, y * t
+                    self._anim.append(self.scene.addEllipse(px - rad, py - rad, 2 * rad, 2 * rad,
+                                                            QtGui.QPen(QtCore.Qt.NoPen), QtGui.QBrush(GREEN)))
         if self._sel:                                              # pulsing selection halo
             sx = sy = None
             for (x, y, r, p) in self._hits:
@@ -783,6 +1375,33 @@ class NetworkMapTab(QtWidgets.QWidget):
                 hr = sr + 6 + 4 * math.sin(self._phase * 2 * math.pi)
                 ring = self.scene.addEllipse(sx - hr, sy - hr, 2 * hr, 2 * hr, QtGui.QPen(QtGui.QColor("#FFD37A"), 2.5))
                 self._anim.append(ring)
+    # ---- down-state onboarding (advertising moment when Core is off) ----
+    def _start_core(self):
+        self.downmsg.setText("starting Bitcoin Core…")
+        spawn_fn(lambda: post_json("/api/node/start", {}, timeout=12),
+                 lambda d: self.downmsg.setText("Bitcoin Core is starting — the map fills in as peers connect."
+                           if d and d.get("ok") else "start failed: " + str((d or {}).get("error", "?"))),
+                 lambda e: self.downmsg.setText(f"start failed: {e}"))
+    def _open_doc(self, which):
+        urls = {"faq": "http://127.0.0.1:8088/#faq",
+                "docs": "http://127.0.0.1:8088/docs/introduction.md",
+                "cypherpunk": "https://github.com/cypherpunk2048",
+                "gnugui": "https://github.com/gnugui"}
+        try: webbrowser.open(urls.get(which, urls["docs"]))
+        except Exception: pass
+    def _place_down(self):
+        if not self.downpanel.isVisible(): return
+        self.downpanel.adjustSize()
+        w, h = self.downpanel.width(), self.downpanel.height()
+        self.downpanel.move(max(0, (self.view.width() - w) // 2), max(0, (self.view.height() - h) // 2))
+    def _set_down(self, off):
+        self._core_off = off
+        if off and not self.downpanel.isVisible():
+            self.downmsg.setText("Bitcoin Core is not running — BANKON attaches to your node.\n"
+                                 "Start Core to map the network.")
+            self.downpanel.show(); self.downpanel.raise_(); self._place_down()
+        elif not off and self.downpanel.isVisible():
+            self.downpanel.hide()
     def _bankon_name(self):
         la = (self._ni or {}).get("localaddresses") or []
         if la:
@@ -815,13 +1434,25 @@ class NetworkMapTab(QtWidgets.QWidget):
         t = self.scene.addText(self._bankon_name()); t.setDefaultTextColor(QtGui.QColor("#F7931A"))
         t.setScale(0.95); t.setPos(-t.boundingRect().width() * 0.95 / 2, 32)
         maxt = max([(p.get('bytessent', 0) + p.get('bytesrecv', 0)) for p in peers] or [1]) or 1
+        maxr = max([p.get('bytesrecv', 0) for p in peers] or [1]) or 1
+        maxs = max([p.get('bytessent', 0) for p in peers] or [1]) or 1
+        maxri = max([r[0] for r in self._rates.values()] or [0]) or 1
+        maxro = max([r[1] for r in self._rates.values()] or [0]) or 1
         for i, p in enumerate(peers):
             ang = 2 * math.pi * i / n
             x, y = R * math.cos(ang), R * math.sin(ang)
             traf = p.get('bytessent', 0) + p.get('bytesrecv', 0); frac = traf / maxt
             col = self._traffic_color(frac)
             inbound = p.get('inbound')
-            self.scene.addLine(0, 0, x, y, QtGui.QPen(col, 1 + 6 * frac))
+            # directional lanes: IN data = bitcoin orange, OUT data = candle green (width ∝ share)
+            fin = p.get('bytesrecv', 0) / maxr; fout = p.get('bytessent', 0) / maxs
+            ox, oy = -math.sin(ang) * 2.2, math.cos(ang) * 2.2
+            self.scene.addLine(ox, oy, x + ox, y + oy, QtGui.QPen(QtGui.QColor(247, 147, 26, 190), 1 + 5 * fin))
+            self.scene.addLine(-ox, -oy, x - ox, y - oy, QtGui.QPen(QtGui.QColor(22, 199, 132, 190), 1 + 5 * fout))
+            # packets carry only ACTUAL live traffic: per-direction B/s measured between polls
+            ri, ro = self._rates.get(p.get("addr"), (0.0, 0.0))
+            pin = (ri / maxri) if ri > 0 else 0.0    # incoming from this external node right now
+            pout = (ro / maxro) if ro > 0 else 0.0   # outgoing from BANKON node right now
             r = 8 + 10 * frac
             selected = bool(self._sel) and p.get("addr") == self._sel.get("addr")
             promoted = bool(p.get("addnode"))
@@ -829,7 +1460,7 @@ class NetworkMapTab(QtWidgets.QWidget):
             elif inbound: pen = QtGui.QPen(QtGui.QColor("#F7931A"), 2)         # inbound = orange ring
             else: pen = QtGui.QPen(QtGui.QColor("#14405c"), 1)
             self.scene.addEllipse(x - r, y - r, 2 * r, 2 * r, pen, QtGui.QBrush(col))
-            self._hits.append((x, y, r, p)); self._links.append((x, y, frac))
+            self._hits.append((x, y, r, p)); self._links.append((x, y, pin, pout))
             lbl = self.scene.addText(p.get('addr', '')[:24] + "\n" + p.get('subver', '').replace('/', ''))
             lbl.setDefaultTextColor(QtGui.QColor("#FFD37A") if selected else QtGui.QColor("#d6e3ef")); lbl.setScale(0.75)
             lbl.setPos(x + (12 if math.cos(ang) >= 0 else -110), y - 8)
@@ -846,10 +1477,11 @@ class NetworkMapTab(QtWidgets.QWidget):
                 lab = e.get("addr") or (("peer=" + e["peer"]) if e.get("peer") else "")
                 if lab:
                     t = self.scene.addText(lab); t.setDefaultTextColor(col); t.setScale(0.6); t.setPos(x + 6, y - 8)
-        self.view.fitInView(self.scene.itemsBoundingRect().adjusted(-60, -40, 60, 40), QtCore.Qt.KeepAspectRatio)
+        if not self._user_zoom: self._fitview()
         if peers:
-            self.info.setText(f"Network map — {len(peers)} peers · ~{len(self._known):,} known · flowing dots = traffic · "
-                              f"gold = ★favourite · orange = inbound · click a node for diagnostics{' · cached' if stale else ''}")
+            self.info.setText(f"Network map — {len(peers)} peers · ~{len(self._known):,} known · "
+                              f"orange dots = live data IN (peer→node) · green dots = live data OUT (node→peer) · "
+                              f"gold ring = ★favourite · wheel = zoom · click a node{' · cached' if stale else ''}")
         elif acts:
             nc = sum(1 for e in acts if e['kind'] == 'connected'); nf = sum(1 for e in acts if e['kind'] == 'failed')
             self.info.setText(f"Network map — peer RPC busy (IBD); showing live connection activity from the log: "
@@ -857,7 +1489,7 @@ class NetworkMapTab(QtWidgets.QWidget):
         else:
             self.info.setText("Network map — waiting for the node (RPC busy during verification/IBD)")
     def resizeEvent(self, e):
-        if self.scene.items(): self.view.fitInView(self.scene.itemsBoundingRect().adjusted(-60, -40, 60, 40), QtCore.Qt.KeepAspectRatio)
+        if not self._user_zoom: self._fitview()
         super().resizeEvent(e)
 
 
@@ -884,6 +1516,7 @@ class GlobeWidget(QtWidgets.QWidget):
         self._mkey = None                      # cache key for the spin-independent projection map
         self._t = QtCore.QTimer(self); self._t.timeout.connect(self._tick); self._t.start(40)  # ~25 fps
     def _tick(self):
+        if not anim_on(self): return           # THERMAL: no 25 fps spin while hidden/minimized
         if self._drag is None:                 # auto-spin + inertia only when not hand-dragging
             self.spin = (self.spin + self.auto + self._vel) % 360
             self._vel *= 0.92
@@ -1352,51 +1985,116 @@ class MeshPanel(QtWidgets.QWidget):
     recent block-interval sparkline, and the headline average block time (drawn with QPainter)."""
     def __init__(self):
         super().__init__()
-        self.setMinimumHeight(300)
+        self.setMinimumHeight(180)                                         # shrunk from 300
         self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         self._phase = 0.0; self._series = []; self._headline = "—"; self._sub = ""
-        self._t = QtCore.QTimer(self); self._t.timeout.connect(self._tick); self._t.start(45)  # shimmer ~22 fps
-    def _tick(self): self._phase = (self._phase + 0.010) % 1.0; self.update()
+        self._t = QtCore.QTimer(self); self._t.timeout.connect(self._tick); self._t.start(50)  # shimmer ~20 fps
+    def _tick(self):
+        if not anim_on(self): return           # THERMAL: no 20 fps shimmer while hidden/minimized
+        self._phase = (self._phase + 0.010) % 1.0; self.update()
     def set_series(self, vals): self._series = vals or []; self.update()
     def set_headline(self, h, sub=""): self._headline = h; self._sub = sub; self.update()
     def paintEvent(self, e):
         qp = QtGui.QPainter(self); qp.setRenderHint(QtGui.QPainter.Antialiasing)
         w, h = self.width(), self.height()
         qp.fillRect(0, 0, w, h, QtGui.QColor("#04070c"))
-        step = 16
-        qp.setPen(QtGui.QPen(QtGui.QColor(0, 191, 255, 36), 1))            # fine electric-blue mesh
+        step = 18
+        qp.setPen(QtGui.QPen(QtGui.QColor(0, 191, 255, 30), 1))            # fine electric-blue mesh
         x = 0
         while x <= w: qp.drawLine(x, 0, x, h); x += step
         y = 0
         while y <= h: qp.drawLine(0, y, w, y); y += step
-        cx = self._phase * (w + 240) - 120                                 # shimmer band sweeping across
+        # headline avg block time lives in the TOP band; the timeline gets the bottom band
+        head_h = int(h * 0.46)
+        cx = self._phase * (w + 240) - 120                                 # shimmer band sweeping the headline
         gx = 0
         while gx <= w:
             d = abs(gx - cx)
-            if d < 110:
-                qp.setPen(QtGui.QPen(QtGui.QColor(150, 228, 255, int(150 * (1 - d / 110))), 1.4)); qp.drawLine(gx, 0, gx, h)
+            if d < 100:
+                qp.setPen(QtGui.QPen(QtGui.QColor(150, 228, 255, int(120 * (1 - d / 100))), 1.3)); qp.drawLine(gx, 0, gx, head_h)
             gx += step
-        if len(self._series) > 1:                                          # block-interval sparkline
-            mx = max(self._series) or 1; n = len(self._series)
-            path = QtGui.QPainterPath()
-            for i, vlt in enumerate(self._series):
-                px = 14 + i / (n - 1) * (w - 28)
-                py = h - 22 - (vlt / mx) * (h - 110)
-                path.moveTo(px, py) if i == 0 else path.lineTo(px, py)
-            qp.setPen(QtGui.QPen(QtGui.QColor("#F7931A"), 2)); qp.drawPath(path)
-        # THROB: the headline pulses forward/back (depth) — a glow halo + size pulse from a sine
         throb = 0.5 + 0.5 * math.sin(self._phase * 2 * math.pi * 2)
-        gr = 80 + 55 * throb
-        gg = QtGui.QRadialGradient(w / 2, h / 2 - 8, gr)
-        gg.setColorAt(0, QtGui.QColor(0, 191, 255, int(55 + 70 * throb))); gg.setColorAt(1, QtGui.QColor(0, 191, 255, 0))
+        gr = 58 + 30 * throb
+        gg = QtGui.QRadialGradient(w / 2, head_h / 2, gr)
+        gg.setColorAt(0, QtGui.QColor(0, 191, 255, int(45 + 55 * throb))); gg.setColorAt(1, QtGui.QColor(0, 191, 255, 0))
         qp.setPen(QtCore.Qt.NoPen); qp.setBrush(QtGui.QBrush(gg))
-        qp.drawEllipse(QtCore.QPointF(w / 2, h / 2 - 8), gr, gr * 0.5)
-        qp.setPen(QtGui.QColor("#eef3f8"))                                  # headline avg block time
-        f = qp.font(); f.setPointSize(26 + int(6 * throb)); f.setBold(True); qp.setFont(f)
-        qp.drawText(QtCore.QRectF(0, h / 2 - 38, w, 54), QtCore.Qt.AlignCenter, self._headline)
-        f.setPointSize(10); f.setBold(False); qp.setFont(f); qp.setPen(QtGui.QColor("#8aa0b4"))
-        qp.drawText(QtCore.QRectF(0, h / 2 + 18, w, 20), QtCore.Qt.AlignCenter, self._sub)
+        qp.drawEllipse(QtCore.QPointF(w / 2, head_h / 2), gr, gr * 0.5)
+        qp.setPen(QtGui.QColor("#eef3f8"))                                  # headline: avg block time
+        f = qp.font(); f.setPointSize(20 + int(4 * throb)); f.setBold(True); qp.setFont(f)
+        qp.drawText(QtCore.QRectF(0, 4, w, head_h - 22), QtCore.Qt.AlignCenter, self._headline)
+        f.setPointSize(9); f.setBold(False); qp.setFont(f); qp.setPen(QtGui.QColor("#8aa0b4"))
+        qp.drawText(QtCore.QRectF(0, head_h - 20, w, 18), QtCore.Qt.AlignCenter, self._sub)
+        self._paint_timeline(qp, w, h, head_h)
         qp.end()
+    @staticmethod
+    def _nice_axis(want):
+        # (axis-max, major-step, minor-step) — all WHOLE minutes. minor = single-minute grid,
+        # major = labeled 5-minute lines; steps coarsen only when the range zooms out.
+        for top, major, minor in [(15, 5, 1), (20, 5, 1), (30, 10, 2), (45, 15, 5),
+                                  (60, 15, 5), (90, 30, 10), (120, 30, 10)]:
+            if want <= top: return top, major, minor
+        import math as _m
+        top = int(_m.ceil(want / 30) * 30); return top, 30, 10
+    def _paint_timeline(self, qp, w, h, top):
+        # block-interval timeline — minutes between recent blocks, with the 10-minute protocol target
+        L, R, B, T = 40, w - 12, h - 16, top + 10                          # plot rect (leave room for labels)
+        if R - L < 20 or B - T < 12: return
+        f = qp.font(); f.setPointSize(8); f.setBold(False); qp.setFont(f)
+        s = self._series
+        avg = (sum(s) / len(s)) if s else 0.0
+        # scale around the ACTUAL average (baseline 15m so a ~10m average sits ~2/3 up); outliers clip
+        vmax, major, minor = self._nice_axis(max(15.0, avg * 1.5))
+        yof = lambda v: B - (min(v, vmax) / vmax) * (B - T)
+        # minor gridlines — single-minute detail (faint, unlabeled)
+        val = 0.0
+        while val <= vmax + 0.1:
+            if val % major > 0.01:                                          # skip where a major line lands
+                gy = yof(val); qp.setPen(QtGui.QPen(QtGui.QColor(90, 120, 145, 26), 1))
+                qp.drawLine(int(L), int(gy), int(R), int(gy))
+            val += minor
+        # major gridlines every 5 min — labeled; the 10-min protocol target is highlighted
+        val = 0.0
+        while val <= vmax + 0.1:
+            gy = yof(val); is_target = (abs(val - 10) < 0.01)
+            qp.setPen(QtGui.QPen(QtGui.QColor(0, 191, 255, 150) if is_target else QtGui.QColor(90, 120, 145, 70),
+                                 1, QtCore.Qt.DashLine if is_target else QtCore.Qt.SolidLine))
+            qp.drawLine(int(L), int(gy), int(R), int(gy))
+            qp.setPen(QtGui.QColor("#00BFFF") if is_target else QtGui.QColor("#5a7891"))
+            qp.drawText(2, int(gy) + 4, f"{val:g}m")
+            val += major
+        if len(s) > 1:
+            n = len(s); xof = lambda i: L + i / (n - 1) * (R - L)
+            # area fill under the curve (orange gradient)
+            area = QtGui.QPainterPath(); area.moveTo(L, B)
+            for i, v in enumerate(s): area.lineTo(xof(i), yof(v))
+            area.lineTo(R, B); area.closeSubpath()
+            ag = QtGui.QLinearGradient(0, T, 0, B)
+            ag.setColorAt(0, QtGui.QColor(247, 147, 26, 90)); ag.setColorAt(1, QtGui.QColor(247, 147, 26, 8))
+            qp.setPen(QtCore.Qt.NoPen); qp.setBrush(QtGui.QBrush(ag)); qp.drawPath(area)
+            # the interval curve
+            line = QtGui.QPainterPath(); line.moveTo(xof(0), yof(s[0]))
+            for i in range(1, n): line.lineTo(xof(i), yof(s[i]))
+            qp.setPen(QtGui.QPen(QtGui.QColor("#F7931A"), 2)); qp.setBrush(QtCore.Qt.NoBrush); qp.drawPath(line)
+            # series average — measured from the raw block-time seconds, so show m + s precision
+            ay = yof(avg)
+            am = int(avg); asec = int(round((avg - am) * 60))
+            if asec == 60: am += 1; asec = 0
+            qp.setPen(QtGui.QPen(QtGui.QColor(255, 211, 122, 170), 1, QtCore.Qt.DotLine))
+            qp.drawLine(int(L), int(ay), int(R), int(ay))
+            qp.setPen(QtGui.QColor("#FFD37A"))
+            qp.drawText(QtCore.QRectF(L + 4, ay - 14, 104, 12), QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
+                        f"avg {am}m {asec:02d}s")
+            # latest-point marker + its value
+            lx, ly, lv = xof(n - 1), yof(s[-1]), s[-1]
+            qp.setBrush(QtGui.QBrush(QtGui.QColor("#FFD37A"))); qp.setPen(QtGui.QPen(QtGui.QColor("#F7931A"), 1.5))
+            qp.drawEllipse(QtCore.QPointF(lx, ly), 3.2, 3.2)
+            qp.setPen(QtGui.QColor("#FFD37A"))
+            qp.drawText(QtCore.QRectF(lx - 60, ly - 18, 56, 14), QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter, f"{lv:.1f}m")
+            qp.setPen(QtGui.QColor("#5a7891"))
+            qp.drawText(int(L), int(B) + 13, f"◀ {n} block intervals")
+        else:
+            qp.setPen(QtGui.QColor("#5a7891"))
+            qp.drawText(QtCore.QRectF(L, T, R - L, B - T), QtCore.Qt.AlignCenter, "collecting block intervals…")
 
 
 class Collapsible(QtWidgets.QWidget):
@@ -1521,16 +2219,18 @@ class OracleTab(QtWidgets.QWidget):
     mesh graphical area (block-interval sparkline + headline) beside the statistical readout, plus a
     block-measurement history accordion for per-block scientific analysis (getblockstats)."""
     def __init__(self):
-        super().__init__(); outer = QtWidgets.QVBoxLayout(self); outer.setContentsMargins(6, 6, 6, 6)
+        super().__init__(); outer = QtWidgets.QVBoxLayout(self); outer.setContentsMargins(5, 5, 5, 5); outer.setSpacing(5)
         frame = QtWidgets.QFrame(); frame.setObjectName("oracleframe")
-        v = QtWidgets.QVBoxLayout(frame)
+        v = QtWidgets.QVBoxLayout(frame); v.setContentsMargins(7, 5, 7, 7); v.setSpacing(5)
         t = QtWidgets.QLabel("₿  BTC.oracle — the clock kept on a Bitcoin block"); t.setObjectName("oracletitle")
         t.setAlignment(QtCore.Qt.AlignCenter); v.addWidget(t)
         mid = QtWidgets.QHBoxLayout()
         self.mesh = MeshPanel(); mid.addWidget(self.mesh, 3)               # graphical area
         box, self.f = cardgrid(["chain height", "tip block date", "time since last block",
             "avg block time — all-time (from genesis)", "avg block time — recent (~2016 blk)",
-            "protocol target", "basis used", "recommended poll", "genesis", "time since last update"])
+            "protocol target", "basis used", "recommended poll",
+            "avg peer ping", "network ↓ / ↑ rate", "network total ↓ / ↑",
+            "genesis", "time since last update"])
         box.setMaximumWidth(440); mid.addWidget(box, 2)                    # statistical area
         v.addLayout(mid, 1)
         outer.addWidget(frame, 1)
@@ -1558,6 +2258,7 @@ class OracleTab(QtWidgets.QWidget):
         self.verb.setToolTip("Detail level for block monitoring / BTC.oracle diagnostics:\n"
                              "Quiet = one-line · Normal = full metric grid · Verbose = + raw getblockstats · "
                              "Scientific = + header + derived measures")
+        self.verb.currentTextChanged.connect(self._verb_changed)
         hrow.addWidget(self.verb); outer.addLayout(hrow)
         sc = QtWidgets.QScrollArea(); sc.setWidgetResizable(True); sc.setStyleSheet("border:1px solid #2e4a63;border-radius:6px")
         hold = QtWidgets.QWidget(); self.hist_lay = QtWidgets.QVBoxLayout(hold); self.hist_lay.setAlignment(QtCore.Qt.AlignTop)
@@ -1569,12 +2270,13 @@ class OracleTab(QtWidgets.QWidget):
         el = QtWidgets.QPushButton("JSONL"); el.clicked.connect(lambda: self._export("jsonl")); ml.addWidget(el)
         ec = QtWidgets.QPushButton("CSV"); ec.setObjectName("secondary"); ec.clicked.connect(lambda: self._export("csv")); ml.addWidget(ec)
         clr = QtWidgets.QPushButton("clear"); clr.setObjectName("danger"); ml.addWidget(clr); outer.addLayout(ml)
-        self.mlog = QtWidgets.QPlainTextEdit(); self.mlog.setReadOnly(True); self.mlog.setMaximumHeight(130)
+        self.mlog = QtWidgets.QPlainTextEdit(); self.mlog.setReadOnly(True); self.mlog.setMaximumHeight(96)
         self.mlog.setStyleSheet("font-family:monospace;font-size:11px;background:#05080d;color:#c9d4e0"); outer.addWidget(self.mlog)
         clr.clicked.connect(self.mlog.clear)
         qsplit.addWidget(histcol); qsplit.setSizes([460, 500])
         page.addWidget(qsplit, 2)   # complete the 2×2: Q3 science | Q4 history now under Q1|Q2
         self._hist_heights = set(); self._measurements = []
+        self._last_block = None; self._last_prev = None
         self._logdir = Path.home() / "bankon-tools" / "oracle-logs"   # default: auto-persist as JSONL
         try: self._logdir.mkdir(parents=True, exist_ok=True)
         except Exception: pass
@@ -1583,13 +2285,15 @@ class OracleTab(QtWidgets.QWidget):
         self._clk = QtCore.QTimer(self); self._clk.timeout.connect(self._clock); self._clk.start(1000)
         # auto-measure: poll for new blocks every 8s (log-based, runs even when this tab isn't shown)
         self._mtimer = QtCore.QTimer(self); self._mtimer.timeout.connect(self._tick_measure); self._mtimer.start(8000)
+    SERIES_N = 90                                                  # consistent block window feeding the graph
     def _tick_measure(self):
-        if self.automeasure.isChecked():
-            spawn_fn(lambda: fetch_json("/api/recentblocks?n=30").get("blocks", []), self._fill_blocks)
+        if self.isVisible() and self.automeasure.isChecked():
+            spawn_fn(lambda: fetch_json(f"/api/recentblocks?n={self.SERIES_N}").get("blocks", []), self._fill_blocks)
     def refresh(self):
         spawn_fn(lambda: fetch_json("/api/oracle").get("oracle", {}), self._fill)
         spawn_fn(synctip, self._fill_sync)
-        spawn_fn(lambda: fetch_json("/api/recentblocks?n=60").get("blocks", []), self._fill_blocks)
+        spawn_fn(lambda: fetch_json(f"/api/recentblocks?n={self.SERIES_N}").get("blocks", []), self._fill_blocks)
+        spawn_fn(lambda: fetch_json("/api/nethealth"), self._fill_net)
         self.science.refresh()                                     # Q3: re-measure the running block
     def _fill_blocks(self, rb):
         blocks = [b for b in (rb or []) if b.get("time") and b.get("height") is not None]
@@ -1602,6 +2306,7 @@ class OracleTab(QtWidgets.QWidget):
         self.mesh.set_series(series)
         # accordion history — add any new blocks (ascending → insert at top so newest is on top)
         tmap = {b["height"]: b["time"] for b in srt}
+        newly = []
         for b in srt:
             hgt = b["height"]
             if hgt in self._hist_heights: continue
@@ -1611,27 +2316,64 @@ class OracleTab(QtWidgets.QWidget):
             title = f"#{hgt:,}   ·   {when} UTC   ·   Δ {iv}   ·   {b.get('nTx','?')} txs"
             row = Collapsible(title, on_expand=lambda lay, lbl, H=hgt: self._block_detail(H, lay, lbl))
             self.hist_lay.insertWidget(0, row)
-            if self._primed and self.automeasure.isChecked():             # only NEW arrivals, not the backlog
-                self._log_basic(b, tmap.get(hgt - 1))
-        self._primed = True                                               # first fill = backlog (no auto-log spam)
+            newly.append(b)
+        if not self._primed:                                              # tab just opened: seed the log so it isn't blank
+            if newly:
+                self.mlog.appendPlainText(f"— BTC.oracle log · level: {self.verb.currentText()} · "
+                                          f"persisting → {self._auto_jsonl}")
+                for b in newly[-6:]: self._log_block(b, tmap.get(b["height"] - 1), seeded=True)
+            self._primed = True
+        elif self.automeasure.isChecked():                                # live: log each new arrival
+            for b in newly: self._log_block(b, tmap.get(b["height"] - 1))
         while self.hist_lay.count() > 80:                                 # cap memory
             w = self.hist_lay.takeAt(self.hist_lay.count() - 1).widget()
             if w: w.setParent(None)
-    def _log_basic(self, b, prevtime):
-        # lightweight per-block measurement (log-based — works during the RPC choke). The live stream
-        # in the log is the visual confirmation the node is connected and feeding blocks.
+    def _log_block(self, b, prevtime, seeded=False):
+        # per-block measurement (log-based — works during the RPC choke). The verbosity control
+        # sets how much each line shows: Quiet → id only · Normal → +txs/interval · Verbose →
+        # +hash/timestamp · Scientific → +derived rates and (async) getblockstats economics.
+        self._last_block, self._last_prev = b, prevtime           # remember for live verbosity changes
+        lvl = self.verb.currentText()
         h = b["height"]; iv = ((b["time"] - prevtime) / 60.0) if prevtime else None
         ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
-        line = f"[{ts}] ⬢ NEW block #{h:,}  ·  {b.get('nTx','?')} txs"
-        if iv is not None: line += f"  ·  Δ {iv:.1f} min"
+        tag = "seed " if seeded else "NEW block "
+        if lvl == "Quiet":
+            line = f"[{ts}] ⬢ #{h:,}"
+        else:
+            line = f"[{ts}] ⬢ {tag}#{h:,}  ·  {b.get('nTx','?')} txs"
+            if iv is not None: line += f"  ·  Δ {iv:.1f} min"
+        if lvl in ("Verbose", "Scientific"):
+            hsh = b.get("hash", "")
+            btime = datetime.fromtimestamp(b["time"], timezone.utc).strftime("%H:%M:%S") if b.get("time") else "—"
+            line += f"  ·  mined {btime}Z"
+            if hsh: line += f"  ·  {hsh[:20]}…"
+            if lvl == "Scientific" and iv and b.get("nTx"):
+                line += f"  ·  {b['nTx'] / (iv * 60):.2f} tx/s"    # derived: tx throughput this interval
         self.mlog.appendPlainText(line)
+        if lvl == "Scientific" and not seeded:                    # pull economics (fees/feerate) async
+            spawn_fn(lambda H=h: self._blockstats(H), lambda st, H=h: self._log_sci(H, st))
         rec = {"ts": datetime.now(timezone.utc).isoformat(), "height": h, "time": b.get("time"),
                "nTx": b.get("nTx"), "interval_min": round(iv, 3) if iv is not None else None,
-               "hash": b.get("hash"), "source": "auto"}
+               "hash": b.get("hash"), "source": "seed" if seeded else "auto", "level": lvl}
         self._measurements.append(rec)
         try:
             with open(self._auto_jsonl, "a") as fh: fh.write(json.dumps(rec) + "\n")
         except Exception: pass
+    def _log_sci(self, height, st):
+        if not isinstance(st, dict): return
+        fee = st.get("totalfee"); mn, mx = st.get("minfeerate"), st.get("maxfeerate"); med = st.get("medianfeerate")
+        vb = st.get("total_weight"); sz = st.get("total_size")
+        parts = [f"    ↳ #{height:,} science:"]
+        if fee is not None: parts.append(f"fees {fee/1e8:.4f}₿")
+        if med is not None: parts.append(f"feerate {mn}/{med}/{mx} s/vB")
+        if sz is not None: parts.append(f"size {sz/1000:.0f} kB")
+        if vb is not None: parts.append(f"weight {vb/1000:.0f} kWU")
+        self.mlog.appendPlainText("  ".join(parts))
+    def _verb_changed(self, lvl):
+        # make the control visibly do something immediately: annotate + re-log the latest block at the new level
+        self.mlog.appendPlainText(f"— logging level → {lvl}")
+        if getattr(self, "_last_block", None):
+            self._log_block(self._last_block, self._last_prev, seeded=True)
     @staticmethod
     def _blockstats(h):
         try: return rpc("getblockstats", [h], timeout=15)
@@ -1768,6 +2510,25 @@ class OracleTab(QtWidgets.QWidget):
         self.f["genesis"].setText(datetime.fromtimestamp(g, timezone.utc).strftime("%Y-%m-%d") if g else "—")
         self.mesh.set_headline(mn(a), "average block time · all-time, from genesis")
         self._clock()
+    @staticmethod
+    def _fmt_bytes(n, per_s=False):
+        if n is None: return "—"
+        u = "B";
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if n < 1024 or unit == "TB": u = unit; break
+            n /= 1024.0
+        return f"{n:.1f} {u}{'/s' if per_s else ''}"
+    def _fill_net(self, d):
+        if not d or not d.get("ok"):
+            return
+        ap, mp, pk = d.get("avgPingMs"), d.get("minPingMs"), d.get("peers")
+        self.f["avg peer ping"].setText(
+            f"{ap:.0f} ms   (min {mp:.0f} ms · {pk} peers)" if ap is not None else f"— ({pk or 0} peers)")
+        ri, ro = d.get("rateIn"), d.get("rateOut")
+        self.f["network ↓ / ↑ rate"].setText(
+            f"↓ {self._fmt_bytes(ri, True)}   ·   ↑ {self._fmt_bytes(ro, True)}" if ri is not None else "measuring…")
+        self.f["network total ↓ / ↑"].setText(
+            f"↓ {self._fmt_bytes(d.get('totalRecv'))}   ·   ↑ {self._fmt_bytes(d.get('totalSent'))}")
     def _clock(self):
         if not self.isVisible(): return
         now = _now()
@@ -1798,22 +2559,24 @@ class NetworkTab(QtWidgets.QWidget):
         # tiers additionally need inbound reachability (:8333 open) and -maxconnections sized up.
         r2 = QtWidgets.QHBoxLayout()
         r2.addWidget(QtWidgets.QLabel("peer target"))
-        self.tgt = QtWidgets.QComboBox()
-        for n in (1, 2, 4, 8, 16, 32): self.tgt.addItem(str(n), n)
-        for n in (64, 128, 256): self.tgt.addItem(f"{n} ⚡ enterprise", n)
-        cur = int(os.environ.get("BANKON_PEER_TARGET", "12"))
-        ix = self.tgt.findData(cur)
-        if ix < 0: self.tgt.insertItem(0, f"{cur} (current)", cur); ix = 0
-        self.tgt.setCurrentIndex(ix)
-        self.tgt.setToolTip("Desired peer-connection FLOOR, powers of 2. 8 = standard · 16/32 = strong ·\n"
-                            "64+ = enterprise (needs inbound :8333 + -maxconnections in bitcoin.conf)")
-        self.tgt.currentIndexChanged.connect(self._set_target); r2.addWidget(self.tgt)
+        self.tgt = Pow2SpinBox(); self.tgt.setRange(1, 1024)
+        self.tgt.setValue(int(os.environ.get("BANKON_PEER_TARGET", "12")))
+        self.tgt.setToolTip("Desired peer-connection FLOOR. Type ANY number; the ▲/▼ arrows jump in\n"
+                            "powers of two (8·16·32·64…). 8 = standard · 16/32 = strong · 64+ = enterprise\n"
+                            "(needs inbound :8333 + -maxconnections in bitcoin.conf).")
+        self.tgt.valueChanged.connect(lambda _v: self._set_target()); r2.addWidget(self.tgt)
         self.autogrow = QtWidgets.QCheckBox("auto-grow (continuous)")
         self.autogrow.setToolTip("Enterprise mode: every refresh below target dials the fastest known peers\n"
                                  "(Console /api/node/connect-fast) until the target is met — throttled to 1/min")
         r2.addWidget(self.autogrow)
         g = QtWidgets.QPushButton("⚡ Grow now"); g.setToolTip("Dial fast peers toward the target immediately")
         g.clicked.connect(self._grow); r2.addWidget(g)
+        self.fastpref = QtWidgets.QCheckBox("⚡ prefer fastest")
+        self.fastpref.setToolTip("Continuously bias the peer set toward the fastest block-serving peers:\n"
+                                 "promote the fastest, top up from saved fast nodes, and gently drop the\n"
+                                 "single slowest non-favourite peer. Background loop; persists. (Console\n"
+                                 "/api/node/fastpref) — the on/off switch for fast-peer preference.")
+        self.fastpref.toggled.connect(self._toggle_fastpref); r2.addWidget(self.fastpref)
         r2.addStretch(); v.addLayout(r2)
         # ₿ network intelligence strip — self-sourced Bitcoin facts: OUR addrman census (total nodes
         # this node has actually heard of — bitnodes-style, no third party) + difficulty / hashrate /
@@ -1855,6 +2618,8 @@ class NetworkTab(QtWidgets.QWidget):
         self.act.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers); v.addWidget(self.act, 1)
     def refresh(self):
         self._have_ni_conns = False        # getnetworkinfo owns the count each cycle; peerinfo is fallback
+        if not getattr(self, "_fastpref_synced", False):   # reflect persisted fast-preference toggle once
+            self._fastpref_synced = True; self._sync_fastpref()
         spawn("getpeerinfo", self._fill, timeout=10)
         spawn("getnetworkinfo", self._setni, timeout=8)                       # our local node address + conn count
         spawn_fn(lambda: fetch_json("/api/netactivity?n=50"), self._setact)   # log-based connection activity
@@ -1890,19 +2655,30 @@ class NetworkTab(QtWidgets.QWidget):
         if parts: self.btcinfo.setText("₿ network:  " + "   ·   ".join(parts))
     # ---- peer-target tiers + growth ----
     def _set_target(self):
-        n = int(self.tgt.currentData())
+        n = int(self.tgt.value())
         os.environ["BANKON_PEER_TARGET"] = str(n)                 # _render_conns reads this floor
         hint = "" if n <= 18 else f"   ⚡ enterprise: needs inbound :8333 reachable + -maxconnections ≥ {n+10}"
         self.status.setText(f"peer target set to {n}{hint}")
         self.refresh()
     def _grow(self):
-        tgt = int(self.tgt.currentData()); n = len(getattr(self, "_peers", None) or [])
+        tgt = int(self.tgt.value()); n = len(getattr(self, "_peers", None) or [])
         want = max(4, min(48, tgt - n if tgt > n else 8))         # console clamps to 48/dispatch
         self._lastgrow = time.time()
         self.status.setText(f"⚡ dialing {want} fast peers toward target {tgt}…")
         spawn_fn(lambda: post_json("/api/node/connect-fast", {"count": want}, timeout=15),
                  lambda d: self.status.setText("⚡ " + str((d or {}).get("note") or (d or {}).get("error") or "dispatched")),
                  lambda e: self.status.setText(f"⚡ grow failed: {e}"))
+    def _sync_fastpref(self):
+        # reflect the server's persisted fast-preference state in the checkbox (without re-triggering)
+        def apply(d):
+            if not d or not d.get("ok"):
+                return
+            self.fastpref.blockSignals(True); self.fastpref.setChecked(bool(d.get("on"))); self.fastpref.blockSignals(False)
+        spawn_fn(lambda: fetch_json("/api/node/fastpref"), apply)
+    def _toggle_fastpref(self, on):
+        self.status.setText("⚡ fast-peer preference " + ("ON — biasing toward the fastest peers" if on else "off"))
+        spawn_fn(lambda: post_json("/api/node/fastpref", {"on": bool(on)}, timeout=10),
+                 lambda d: None, lambda e: self.status.setText(f"⚡ fastpref failed: {e}"))
     def _render_conns(self, n, out, inb, stale):
         """Single place that renders the 'connections: N (out · in)' headline, so every source agrees."""
         tgt = int(os.environ.get("BANKON_PEER_TARGET", "12"))
@@ -2195,36 +2971,115 @@ class ControlTab(QtWidgets.QWidget):
 
 class NetLogTab(QtWidgets.QWidget):
     """📡 Network Activity Log — every connect / inbound / disconnect / fail event
-    from the BANKON BTC WaaS node (via /api/netactivity), streamed to a live log."""
+    from the BANKON BTC WaaS node (via /api/netactivity), parsed from debug.log so it
+    works even during the IBD RPC choke. Rich detail per event: peer id, direction/role
+    (outbound-full-relay / block-relay-only / manual / inbound / feeler), BIP324 transport
+    (v1 legacy / v2 encrypted), protocol version, the peer's tip height at connect, network
+    class (IPv4 / IPv6 / Tor / I2P / CJDNS), and the disconnect / failure reason."""
+    KIND_COLOR = {"connected": "#16C784", "inbound": "#00BFFF", "disconnect": "#F7931A",
+                  "failed": "#f85149", "feeler": "#9d7bd8", "local": "#8aa0b4", "info": "#6a7f92"}
+    COLS = ["time", "event", "peer", "role", "tr", "client", "peer height", "net", "address", "note"]
     def __init__(self):
         super().__init__(); v = QtWidgets.QVBoxLayout(self)
         top = QtWidgets.QHBoxLayout()
-        self.info = QtWidgets.QLabel("Network activity — all peer connect / inbound / disconnect / fail events")
+        self.info = QtWidgets.QLabel("Network activity — peer connect / inbound / disconnect / fail events")
         self.info.setStyleSheet("color:#16C784;font-weight:600"); top.addWidget(self.info, 1)
+        top.addWidget(QtWidgets.QLabel("show"))
+        self.filter = QtWidgets.QComboBox()
+        self.filter.addItems(["all", "connected", "inbound", "disconnect", "failed", "feeler", "local"])
+        self.filter.setToolTip("Filter the table by event type")
+        self.filter.currentTextChanged.connect(lambda _: self._render()); top.addWidget(self.filter)
         self.live = QtWidgets.QCheckBox("live"); self.live.setChecked(True); top.addWidget(self.live)
-        clr = QtWidgets.QPushButton("clear"); clr.clicked.connect(lambda: (self.log.clear(), self._seen.clear())); top.addWidget(clr)
+        clr = QtWidgets.QPushButton("clear")
+        clr.clicked.connect(lambda: (self._events.clear(), self._seen.clear(), self._render())); top.addWidget(clr)
         v.addLayout(top)
-        self.log = QtWidgets.QPlainTextEdit(); self.log.setReadOnly(True); self.log.setMaximumBlockCount(8000)
-        self.log.setStyleSheet("font-family:monospace;background:#05080d;color:#d6e3ef;border:1px solid #0e3d57;border-radius:6px")
-        v.addWidget(self.log, 1)
-        self._seen = set()
+        # live summary bar — running tallies + transport/network mix + this node's local addresses
+        self.summary = QtWidgets.QLabel("…"); self.summary.setWordWrap(True)
+        self.summary.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.summary.setStyleSheet("font-family:monospace;background:#070c14;color:#c8d6e5;"
+                                   "border:1px solid #0e3d57;border-radius:6px;padding:6px")
+        v.addWidget(self.summary)
+        self.t = QtWidgets.QTableWidget(); self.t.setColumnCount(len(self.COLS))
+        self.t.setHorizontalHeaderLabels(self.COLS)
+        self.t.verticalHeader().setVisible(False)
+        self.t.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.t.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.t.setAlternatingRowColors(True)
+        hh = self.t.horizontalHeader(); hh.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
+        hh.setStretchLastSection(False)   # every column hugs its content — no wide empty note column
+        hh.setDefaultAlignment(QtCore.Qt.AlignLeft)
+        hh.setMaximumSectionSize(240)     # cap any one column (long IPv6 addresses) — elide the overflow
+        self.t.setTextElideMode(QtCore.Qt.ElideMiddle)   # keep both ends of an address visible
+        self.t.setStyleSheet("QTableWidget{font-family:monospace;background:#05080d;color:#d6e3ef;"
+                             "gridline-color:#0e2436;border:1px solid #0e3d57;border-radius:6px;"
+                             "alternate-background-color:#080d16}"
+                             "QHeaderView::section{background:#0c1a28;color:#8aa0b4;border:0;padding:4px}")
+        v.addWidget(self.t, 1)
+        self._events, self._seen, self._latest = [], set(), {}
         self._t = QtCore.QTimer(self); self._t.timeout.connect(self.refresh); self._t.start(3000)
     def refresh(self):
-        if self.live.isChecked():
+        if self.isVisible() and self.live.isChecked():
             spawn_fn(lambda: fetch_json("/api/netactivity?n=200"), self._on)
     def _on(self, d):
-        evs = (d or {}).get("events", [])
-        for e in sorted(evs, key=lambda x: x.get("time") or x.get("ts") or 0):
-            key = (e.get("time") or e.get("ts"), e.get("addr"), e.get("kind"))
+        d = d or {}; self._latest = d
+        for e in sorted(d.get("events", []), key=lambda x: str(x.get("time") or "")):
+            key = (e.get("time"), e.get("addr"), e.get("kind"), e.get("peer"))
             if key in self._seen:
                 continue
-            self._seen.add(key)
-            t = e.get("time") or e.get("ts")
-            ts = datetime.fromtimestamp(t).strftime("%H:%M:%S") if isinstance(t, (int, float)) else str(t or "")
-            kind = e.get("kind", "?")
-            detail = e.get("detail") or e.get("reason") or ""
-            self.log.appendPlainText(f"{ts}  {kind:<10}  {e.get('addr',''):<28}  {detail}")
-        self.info.setText(f"Network activity — {len(self._seen)} events logged (BANKON BTC WaaS)")
+            self._seen.add(key); self._events.append(e)
+        self._events = self._events[-8000:]
+        self._render()
+    def _render(self):
+        want = self.filter.currentText()
+        rows = [e for e in self._events if want == "all" or e.get("kind") == want]
+        self.t.setRowCount(len(rows))
+        DASH = "—"
+        for r, e in enumerate(rows):
+            k = e.get("kind", "info"); col = QtGui.QColor(self.KIND_COLOR.get(k, "#d6e3ef"))
+            role = e.get("conntype", "") or ("→ dial" if k == "failed" else "")
+            tr = e.get("transport", "")
+            addr = e.get("addr", "")
+            # client column shows the peer's software (subver), e.g. Satoshi:31.0.0 — the useful,
+            # varying version, not the near-constant protocol number
+            client = e.get("subver", "")
+            cells = [str(e.get("time", "")).split(" ")[-1] if e.get("time") else DASH,
+                     k, ("#" + e["peer"]) if e.get("peer") else DASH, role or DASH, tr or DASH,
+                     client or DASH, e.get("blocks", "") or DASH, e.get("net", "") or DASH,
+                     addr or DASH, e.get("reason", "") or DASH]   # note: only the failure/disconnect cause
+            for c, val in enumerate(cells):
+                it = QtWidgets.QTableWidgetItem(str(val))
+                if str(val) == DASH:                             # dim the intentional blanks
+                    it.setForeground(QtGui.QColor("#3a4b5c"))
+                elif c == 1:                                     # colour the event-kind cell
+                    it.setForeground(col); f = it.font(); f.setBold(True); it.setFont(f)
+                elif c == 4 and tr == "v2":                      # BIP324 encrypted transport — flag green
+                    it.setForeground(QtGui.QColor("#16C784"))
+                elif c == 4 and tr == "v1":
+                    it.setForeground(QtGui.QColor("#8aa0b4"))
+                self.t.setItem(r, c, it)
+        # the "note" column earns its space only when a visible row actually has a note
+        has_note = any(e.get("reason") for e in rows)
+        self.t.setColumnHidden(self.COLS.index("note"), not has_note)
+        self.t.scrollToBottom()   # header is ResizeToContents — columns auto-hug their content
+        self._render_summary()
+    def _render_summary(self):
+        d = self._latest; tally = d.get("tally", {}) or {}
+        tr = d.get("transports", {}) or {}; nets = d.get("nets", {}) or {}
+        ct = d.get("conntypes", {}) or {}; local = d.get("local", []) or []
+        def seg(label, m):
+            parts = [f"{k} {v}" for k, v in sorted(m.items(), key=lambda x: -x[1]) if v]
+            return f"{label}: " + (" · ".join(parts) if parts else "—")
+        counts = (f"<b>{len(self._events)}</b> events shown  ·  "
+                  f"<span style='color:#16C784'>connected {tally.get('connected',0)}</span> · "
+                  f"<span style='color:#00BFFF'>inbound {tally.get('inbound',0)}</span> · "
+                  f"<span style='color:#F7931A'>disconnect {tally.get('disconnect',0)}</span> · "
+                  f"<span style='color:#f85149'>failed {tally.get('failed',0)}</span>")
+        line2 = (seg("transport", {"v2 (encrypted)": tr.get("v2", 0), "v1 (legacy)": tr.get("v1", 0)})
+                 + "   |   " + seg("net", nets) + "   |   " + seg("roles", ct))
+        line3 = ("local: " + (" · ".join(local) if local else "—"))
+        self.summary.setText(f"{counts}<br>{line2}<br>{line3}")
+        self.info.setText(f"Network activity — {len(self._events)} events (BANKON BTC WaaS) · "
+                          f"parsed live from debug.log")
 
 
 class IceTab(QtWidgets.QWidget):
@@ -2261,6 +3116,7 @@ class IceTab(QtWidgets.QWidget):
                 best = val
         return best
     def refresh(self):
+        if not self.isVisible(): return        # no 2s /sys+rfkill probing while the tab is hidden
         t = self._cpu_temp()
         if t is not None:
             col = "#f85149" if t >= 85 else "#f0a020" if t >= 70 else "#16C784"
@@ -2291,7 +3147,14 @@ class IceTab(QtWidgets.QWidget):
 
 class Main(QtWidgets.QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle("BANKON BITCOIN Wallet as a Service"); self.resize(940, 680)
+        super().__init__(); self.setWindowTitle("BANKON BITCOIN Wallet as a Service")
+        # Universal sizing: fill ~92% of whatever screen we open on (laptop, 4K, anything),
+        # centred, and never larger than that screen. Percent-of-screen instead of fixed px.
+        scr = self.screen() or QtGui.QGuiApplication.primaryScreen()
+        avail = scr.availableGeometry() if scr else QtCore.QRect(0, 0, 1280, 800)
+        self.resize(int(avail.width() * 0.92), int(avail.height() * 0.92))
+        self.setMinimumSize(min(720, avail.width()), min(520, avail.height()))
+        self.move(avail.center() - self.rect().center())
         self.tabs = QtWidgets.QTabWidget()
         # Central content inset by a margin; an electric-blue glow renders in that
         # margin = an "auric" shimmer on the outer periphery.
@@ -2519,8 +3382,13 @@ QSS = """
   QPushButton#danger:hover { background:qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #38b6ff, stop:1 #0072d6); border:2px solid #00BFFF; }
   QPushButton#good { background:qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #2bd6a6, stop:1 #07a06f); border:2px solid #064f38; color:#03120d; font-weight:700; }
   QPushButton#good:hover { background:qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #FFD37A, stop:1 #E6850A); border:2px solid #00BFFF; }
-  QPushButton#waas { background:qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #FFC06B, stop:1 #E6850A); color:#1a1200; border:2px solid #7a4806; font-weight:700; }
-  QPushButton#waas:hover { background:qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #2bd6a6, stop:1 #07a06f); color:#03120d; border:2px solid #00BFFF; }
+  /* WaaS button — Bitcoin ORANGE background AND orange highlights (hover brightens, never re-hues) */
+  QPushButton#waas { background:qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #FFC06B, stop:1 #F7931A); color:#1a1200; border:2px solid #7a4806; font-weight:700; }
+  QPushButton#waas:hover { background:qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #FFD9A0, stop:1 #F7931A); color:#1a1200; border:2px solid #FFB74D; }
+  QPushButton#waas:pressed { background:#E6850A; border:2px solid #FFD9A0; }
+  /* secondary — Polygon purple (chain-accent token) */
+  QPushButton#secondary { background:qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #9F6BFF, stop:1 #6C2BD9); color:#fff; border:2px solid #3a1c78; font-weight:700; }
+  QPushButton#secondary:hover { background:qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #B98BFF, stop:1 #8247E5); border:2px solid #C4A2FF; }
   QTabBar::tab { background:#10161f; color:#8aa0b4; padding:6px 14px; border:1px solid #0e2738; border-bottom:0; margin-right:1px; }
   QTabBar::tab:selected { color:#eef3f8; background:#13202c; border-bottom:2px solid #00BFFF; }
   QTabBar::tab:hover { color:#7DF9FF; }

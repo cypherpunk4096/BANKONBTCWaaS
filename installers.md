@@ -45,6 +45,16 @@ cd bankon-qt && ./bankon.sh            # BANKON BTC WaaS UI, logs here, Ctrl-C t
 
 ---
 
+## ♻️ Duplication as a Service (DaaS) — a WaaS sub-component
+
+BANKON offers the expensive-to-rebuild Bitcoin **index** as a portable bundle, so a peer
+skips the long verify/rebuild (the chain is in the ~1TB zone — real hardware + electricity +
+time to recreate). The local machine acts as a UI + external blockchain-reference device.
+
+| Script | What it does |
+|--------|--------------|
+| `bankon-index-export.sh` | Export `~/.bitcoin/indexes/*` + a manifest (height, best-block hash, Core version, sha256) as `bankon-index-<h>-<hash>.tar.zst`. `--stop` (safe) · `--force` · `--datadir` · `--out` · `--gzip`. Import: extract into another node's datadir while its `bitcoind` is stopped, then start — it validates against its own blocks. |
+
 ## ⚙️ Install / systemd
 
 | Script | What it does | Root? |

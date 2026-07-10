@@ -6,6 +6,7 @@ New here? Start with **[../README.md](../README.md)** then **[../USAGE.md](../US
 ## Start here
 | Doc | Hook |
 |-----|------|
+| [introduction.md](introduction.md) | **Introduction to BANKON BTC WaaS** — what it is, the non-custodial idea, how a payment flows (start here if new) |
 | [../README.md](../README.md) | What BANKON is; one-command start; license summary |
 | [../USAGE.md](../USAGE.md) | Complete startup guide — web UI · Qt · CLI |
 | [getting-started.md](getting-started.md) | Install, `bankon up`, the URLs, one-click Core install |
@@ -16,10 +17,17 @@ New here? Start with **[../README.md](../README.md)** then **[../USAGE.md](../US
 |-----|------|
 | [architecture.md](architecture.md) | Multi-node design, non-custodial model, data flow |
 | [wallets.md](wallets.md) | Wallet types, BTC Standard, create → sign → send, multisig |
-| [api.md](api.md) | WaaS + Console HTTP API reference |
-| [console.md](console.md) | The diagnostics Console (tabs, levels, RPC catalog, Network topology map, node actions) |
+| [airgapped-waas.md](airgapped-waas.md) | **Standalone & air-gapped WaaS** — decouple from diagnostics (`bankon waas`/`console`/`offline`), the vendored offline signer, the two-machine pattern |
+| [waas-beyond-core.md](waas-beyond-core.md) | **WaaS beyond Bitcoin Core** — the wallet-experience layer Core doesn't provide (payment requests/QR, contacts, air-gap PSBT transport, portfolio, notifications) + roadmap |
+| [api.md](api.md) | WaaS + Console HTTP API reference (quick per-endpoint) |
+| [server.md](server.md) | **Console server — complete reference** (RPC engine/circuit breaker, caching, IBD resilience, every endpoint, node control, security, config) |
+| [console.md](console.md) | The diagnostics Console (tabs, levels, RPC catalog, Network topology map, Net Log, node actions) |
+| [indexer.md](indexer.md) | **Indexes & the UTXO snapshot** — txindex/coinstatsindex/blockfilter, and `dumptxoutset`→`loadtxoutset` (assumeUTXO) export for other nodes |
+| [coinbase.md](coinbase.md) | **Coinbase transactions & messages** — the block's first tx, what's in the coinbase field (height, nonce, pool tags), maturity, and the genesis headline |
 | [ragebtc.md](ragebtc.md) | **RAGEbtc** — rageRPC accelerated/self-protecting RPC controller + RAGE handoff to pgvectorscale |
+| [../SECURITY.md](../SECURITY.md) | **Threat model, trust boundaries, disclosure policy** (the GitHub security policy) |
 | [security.md](security.md) | Non-custodial guarantees, auth, backups, offline client |
+| [ICE.md](ICE.md) | **🧊 ICE** — the wall between the network and the wallet (thermal scaling + RF AIRGAP) + the **blackICE** roadmap |
 | [operations.md](operations.md) | Launcher, systemd, monitoring, multi-node, pruning |
 | [testing.md](testing.md) | Sign / e2e / multisig / anchor test suites |
 | [waas-accuracy.md](waas-accuracy.md) | Accurate WaaS positioning — proven vs built vs gated vs future |
