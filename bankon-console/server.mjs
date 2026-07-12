@@ -6,6 +6,7 @@ import express from 'express';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { readFileSync, existsSync, readdirSync, writeFileSync, mkdirSync, rmSync, statSync, realpathSync } from 'node:fs';
+import * as fsp from 'node:fs/promises';
 import { homedir, cpus as oscpus, loadavg, totalmem, freemem } from 'node:os';
 import { spawn, execFile, execSync } from 'node:child_process';
 import net from 'node:net';
@@ -1191,6 +1192,122 @@ app.get('/api/exports', (req, res) => {
     res.json({ ok: true, dir: EXPORT_DIR, count: files.length, files });
   } catch (e) { res.json({ ok: false, error: String(e.message) }); }
 });
+
+// ── rageBTC .bitcoin DISCOVERY — find every datadir on local + external devices, pick the largest ──
+// Fast: bounded BFS (depth ≤6) over $HOME + mount roots, skip-list for heavy trees, hard 15 s
+// deadline, sizes from blocks/blk*.dat metadata only (never du over 800 GB). Runs on FIRST STARTUP
+// and persists every location ever seen to .history — so a datadir on an unplugged drive is
+// still remembered (lastSeen tells you it's offline).
+const DDH_FILE = join(__dir, '.history');
+const _ddHistLoad = () => { try { return JSON.parse(readFileSync(DDH_FILE, 'utf8')); } catch { return {}; } };
+const _ddHistSave = (h) => { try { writeFileSync(DDH_FILE, JSON.stringify(h, null, 2)); } catch {} };
+let _ddLast = null, _ddRunning = false;
+const DD_SKIP = new Set(['node_modules', '__pycache__', 'Trash', 'lost+found', 'snap', 'flatpak',
+  'venv', 'proc', 'sys', 'dev', 'run', 'tmp']);
+function _ddMounts() {
+  try {
+    return readFileSync('/proc/mounts', 'utf8').split('\n').filter(l => l.startsWith('/dev/'))
+      .map(l => { const p = l.split(' '); return { dev: p[0], mnt: p[1].replace(/\\040/g, ' ') }; })
+      .sort((a, b) => b.mnt.length - a.mnt.length);
+  } catch { return []; }
+}
+function _ddScore(p) {                    // chain size from blk*.dat metadata — cheap even on USB
+  let blk = 0, bytes = 0;
+  try {
+    for (const f of readdirSync(join(p, 'blocks'))) {
+      if (f.startsWith('blk') && f.endsWith('.dat')) { blk++; try { bytes += statSync(join(p, 'blocks', f)).size; } catch {} }
+    }
+  } catch {}
+  return { blk, bytes };
+}
+// Well-known layouts probed FIRST (instant, no traversal): ~/.bitcoin, /home/*/.bitcoin,
+// <mount>/.bitcoin and <mount>/home/*/.bitcoin for every /media|/mnt|/run/media volume.
+function _ddProbes() {
+  const out = [join(homedir(), '.bitcoin')];
+  const users = (p) => { try { return readdirSync(p).map(u => join(p, u)); } catch { return []; } };
+  for (const u of users('/home')) out.push(join(u, '.bitcoin'));
+  const vols = [];
+  for (const base of ['/media', '/run/media']) for (const u of users(base)) vols.push(...users(u));
+  vols.push(...users('/mnt'));
+  for (const v of vols) {
+    out.push(join(v, '.bitcoin'));
+    for (const hu of users(join(v, 'home'))) out.push(join(hu, '.bitcoin'));
+  }
+  return out;
+}
+async function findDatadirs() {
+  const t0 = Date.now(); const DEADLINE = 15000, MAXD = 6;
+  const seen = new Set(); const found = [];
+  const consider = (full) => {
+    let real; try { real = realpathSync(full); } catch { real = full; }
+    if (seen.has(real)) return; seen.add(real);
+    if (existsSync(join(real, 'blocks')) || existsSync(join(real, 'bitcoin.conf'))) found.push(real);
+  };
+  for (const pr of _ddProbes()) if (existsSync(pr)) consider(pr);      // phase 1: instant
+  // phase 2: breadth-first sweep for exotic locations — ASYNC (never blocks the event loop),
+  // shallow-first so a deadline hit only costs the deep tail.
+  const q = [homedir(), '/home', '/media', '/mnt', '/run/media'].filter(r => existsSync(r)).map(r => ({ p: r, d: 0 }));
+  for (let i = 0; i < q.length && Date.now() - t0 < DEADLINE; i++) {
+    const { p, d } = q[i];
+    let ents; try { ents = await fsp.readdir(p, { withFileTypes: true }); } catch { continue; }
+    for (const e of ents) {
+      if (!e.isDirectory() || e.isSymbolicLink()) continue;            // never follow symlinks (loops)
+      if (e.name === '.bitcoin') { consider(join(p, e.name)); continue; }
+      if (d >= MAXD || e.name.startsWith('.') || DD_SKIP.has(e.name)) continue;
+      q.push({ p: join(p, e.name), d: d + 1 });
+    }
+  }
+  const mounts = _ddMounts();
+  let cur = null; try { cur = realpathSync(join(homedir(), '.bitcoin')); } catch {}
+  const dirs = found.map(p => {
+    const { blk, bytes } = _ddScore(p);
+    const m = mounts.find(m => p === m.mnt || p.startsWith(m.mnt.endsWith('/') ? m.mnt : m.mnt + '/')) || {};
+    return { path: p, blkFiles: blk, bytes, gib: +(bytes / 2 ** 30).toFixed(1),
+             device: m.dev || null, mount: m.mnt || null,
+             external: !!(m.mnt && /^\/(media|mnt|run\/media)\//.test(m.mnt)),
+             current: p === cur };
+  }).sort((a, b) => b.bytes - a.bytes);
+  if (dirs.length) dirs[0].largest = true;                            // pick the LARGEST .bitcoin
+  const h = _ddHistLoad(); const now = Math.floor(Date.now() / 1000);     // persistence: .history
+  for (const d of dirs) h[d.path] = { ...(h[d.path] || { firstSeen: now }), lastSeen: now,
+    bytes: d.bytes, blkFiles: d.blkFiles, device: d.device, mount: d.mount, external: d.external };
+  if (cur) h._current = { path: cur, asOf: now };
+  _ddHistSave(h);
+  _ddLast = { ts: Date.now(), elapsedMs: Date.now() - t0, dirs, largest: dirs[0]?.path || null, current: cur };
+  return _ddLast;
+}
+app.get('/api/datadirs', (req, res) => {
+  try {
+    if (req.query.fresh !== '1' && _ddLast && Date.now() - _ddLast.ts < 10 * 60 * 1000)
+      return res.json({ ok: true, cached: true, history: _ddHistLoad(), ..._ddLast });
+    if (_ddRunning) return res.json({ ok: true, running: true, history: _ddHistLoad(), ...(_ddLast || {}) });
+    _ddRunning = true;
+    findDatadirs()
+      .then(r => res.json({ ok: true, cached: false, history: _ddHistLoad(), ...r }))
+      .catch(e => res.json({ ok: false, error: String(e.message || e) }))
+      .finally(() => { _ddRunning = false; });
+  } catch (e) { res.json({ ok: false, error: String(e.message || e) }); }
+});
+// .history hygiene — delete, or TRUE-SHRED (N overwrite passes + final zero pass, then unlink).
+app.post('/api/datadirs/history/clear', (req, res) => {
+  if (!NODE_CONTROL) return res.status(403).json({ ok: false, error: 'node control disabled' });
+  if (!existsSync(DDH_FILE)) return res.json({ ok: true, existed: false });
+  if (req.body?.shred) {
+    const passes = Math.max(1, Math.min(35, Number(req.body?.passes) || 7));   // default 7 passes
+    execFile('shred', ['-u', '-z', '-n', String(passes), DDH_FILE], { timeout: 60000 }, (err) => {
+      if (err) return res.json({ ok: false, error: String(err.message) });
+      res.json({ ok: true, shredded: true, passes });
+    });
+    return;
+  }
+  try { rmSync(DDH_FILE); res.json({ ok: true, deleted: true }); }
+  catch (e) { res.json({ ok: false, error: String(e.message) }); }
+});
+setTimeout(() => {                                                   // FIRST-STARTUP discovery
+  findDatadirs()
+    .then(r => console.log(`[rageBTC] datadir discovery: ${r.dirs.length} found in ${r.elapsedMs}ms · largest = ${r.largest}`))
+    .catch(e => console.error('[rageBTC] datadir discovery failed:', e.message));
+}, 4000);
 
 // Host system — CPU usage %, load, temperature (°C), memory. Cheap local reads, no node RPC.
 function _cpuTimes() {

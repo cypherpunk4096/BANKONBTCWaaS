@@ -67,6 +67,22 @@ is running, then repoints the `~/.bitcoin` symlink atomically (`ln -sfn`). **Ope
 the datadir in the file manager. This is the recovery path when a chain disk fills: copy the datadir
 to a bigger drive, stop Core, point ICE at the copy, start Core.
 
+### D2. rageBTC discovery + `.history`
+ICE carries the rageBTC datadir tools: **🔎 Find all .bitcoin** searches local + external devices
+(well-known layouts probed instantly — `~/.bitcoin`, `/home/*/.bitcoin`, `<vol>/.bitcoin`,
+`<vol>/home/*/.bitcoin` — then a bounded breadth-first sweep), lists every datadir **largest-first**
+with ⭐ largest / ✓ current marks, and runs automatically **on first startup**. Every location ever
+seen persists in one shared **`.history`** (`bankon-console/.history`, shared with the Console's
+`GET /api/datadirs`) — an unplugged drive's datadir stays remembered (`⚪ offline`). Hygiene:
+**🗑 delete** (plain remove) or **🔥 shred** — a TRUE shred (`shred -u -z -n N`, choice of overwrite
+passes, **default 7**, plus a final zero pass) for when the location record itself is sensitive.
+
+### Control links & precedence
+BANKON control surfaces (Qt Control Center, the ₿UTTON) **link to ICE** — they can *launch* it.
+That is the whole contract: ICE exposes **no network listener and no remote-control API**; every
+ICE action (firewall, AIRGAP, thermal, datadir custody, `.history` hygiene) executes only in ICE,
+as root, locally. **ICE has precedence** — nothing outside ICE can drive ICE.
+
 ### E. 3D controllers (knobs)
 Both primary controls are cairo-drawn **rotary knobs** (QKnob-styled: coloured value arc on a dark
 track, raised bevelled centre disc, drag to turn · scroll to nudge — software-rendered, no GL):
