@@ -1,0 +1,108 @@
+================================================================================
+  BANKONME — ARCHIVE MAP
+  The decades-old self-custody vision behind bankon-vault.
+  Org: https://github.com/bankonme
+  Mission (verbatim): "privacy, integrity and security for your personal
+  banking information."  →  be your own bank, keys offline.
+================================================================================
+
+This is a curated map of the bankonme software archive (the org holds ~452 repos,
+overwhelmingly forks; the significant tools are indexed below with URL + a brief
+description). bankonme PRECEDES bankonOS and is the founding lineage of BANKON.
+No secrets or private material from any legacy artifact are included here.
+
+--------------------------------------------------------------------------------
+  COLD STORAGE & OFFLINE KEY GENERATION  (the core of the plan)
+--------------------------------------------------------------------------------
+cold-storage          https://github.com/bankonme/cold-storage
+                      Scripts to safely store bitcoin offline. [Python]
+                      → the literal "keys offline" spec bankon-vault fulfils.
+bitaddress.org        https://github.com/bankonme/bitaddress.org
+                      Client-side (in-browser) Bitcoin wallet / paper-wallet
+                      generator — no server ever sees the key. [JavaScript]
+monero-wallet-generator  https://github.com/bankonme/monero-wallet-generator
+                      Self-contained offline JavaScript Monero wallet generator. [HTML]
+BitcoinArmory         https://github.com/bankonme/BitcoinArmory
+                      Python/C++ cold-storage & multisig Bitcoin wallet. [C++]
+keyhunter             https://github.com/bankonme/keyhunter
+                      Recover lost bitcoin private keys from dead hard drives. [Python]
+trezor-emu            https://github.com/bankonme/trezor-emu
+                      Python TREZOR-compatible hardware-wallet emulator. [Python]
+
+--------------------------------------------------------------------------------
+  DISK / PARTITION ENCRYPTION  (the "frozen storage" heritage)
+--------------------------------------------------------------------------------
+LUKS                  https://github.com/bankonme/LUKS
+                      Secure encrypted disk partition. [Shell]
+                      → heir line to bankon-vault's removable-media (LUKS) cold path.
+zuluCrypt             https://github.com/bankonme/zuluCrypt
+                      Front end to cryptsetup / tcplay for encrypted block devices. [C]
+
+--------------------------------------------------------------------------------
+  WALLETS  (custody clients across platforms)
+--------------------------------------------------------------------------------
+FreeWallet            https://github.com/bankonme/FreeWallet
+                      Open-source mobile wallet (Bitcoin + Counterparty). [JavaScript]
+coinomi-android       https://github.com/bankonme/coinomi-android
+                      Multi-coin Coinomi wallet for Android. [Java]
+My-Wallet-V3-Frontend https://github.com/bankonme/My-Wallet-V3-Frontend
+                      Blockchain.info wallet frontend. [JavaScript]
+WalletCordova         https://github.com/bankonme/WalletCordova
+                      GreenAddress.it open-source Android (Cordova) client. [Java]
+BTCReceive            https://github.com/bankonme/BTCReceive
+                      Lightweight Android receive-only Bitcoin app. [Java]
+
+--------------------------------------------------------------------------------
+  EXCHANGE / PAYMENTS  (peer-to-peer, non-custodial rails)
+--------------------------------------------------------------------------------
+bitsquare             https://github.com/bankonme/bitsquare
+                      The decentralized bitcoin exchange (pre-Bisq). [Java]
+shapeshift-lens       https://github.com/bankonme/shapeshift-lens
+                      ShapeShift exchange interface. [JavaScript]
+Moneychanger          https://github.com/bankonme/Moneychanger
+                      QT/C++ client for Open-Transactions. [C]
+bitcore-channel       https://github.com/bankonme/bitcore-channel
+                      Payment-channel smart-contract support for bitcore. [JavaScript]
+gocoin-woocommerce    https://github.com/bankonme/gocoin-woocommerce
+                      WooCommerce extension for the GoCoin payment gateway. [PHP]
+cryptocap-api         https://github.com/bankonme/cryptocap-api
+                      Crypto Capital API documentation & samples. [HTML]
+
+--------------------------------------------------------------------------------
+  IDENTITY / NAMING / SECURITY INFRA
+--------------------------------------------------------------------------------
+blockchain-resolver   https://github.com/bankonme/blockchain-resolver
+                      Resolve DNS entries from blockchain-based domains. [Python]
+tuf                   https://github.com/bankonme/tuf
+                      The Update Framework — securing software updaters. [Python]
+validator-registry-webapp  https://github.com/bankonme/validator-registry-webapp
+                      UI for the Rippled validator registry. [JavaScript]
+passport-ripple       https://github.com/bankonme/passport-ripple
+                      Passport Ripple-ID OAuth2 plugin. [JavaScript]
+OpenBazaar-Installer  https://github.com/bankonme/OpenBazaar-Installer
+                      Build process for OpenBazaar executables. [MIT]
+
+--------------------------------------------------------------------------------
+  COINS / CHAINS  (protocol experiments in the archive)
+--------------------------------------------------------------------------------
+LibertyCoin           https://github.com/bankonme/LibertyCoin   100% Proof-of-Stake. [C++]
+Feathercoin           https://github.com/bankonme/Feathercoin   Litecoin-family coin. [C++]
+talkcoin-wallet       https://github.com/bankonme/talkcoin-wallet  Coin w/ decentralized chat. [C++]
+darkcoin-abe          https://github.com/bankonme/darkcoin-abe   Abe block explorer for Darkcoin. [Python]
+
+--------------------------------------------------------------------------------
+  REFERENCE / BUILD
+--------------------------------------------------------------------------------
+reading-list          https://github.com/bankonme/reading-list
+                      Research papers on blockchains & P2P networks. [Markdown]
+boost                 https://github.com/bankonme/boost
+                      Modularized Boost super-project (build dep). [HTML]
+
+================================================================================
+  Note: the full org is ~452 repositories (mostly forks kept as an archive of
+  the early Bitcoin self-custody ecosystem). The list above indexes the
+  representative/first-party tools. For the live, complete list see:
+  https://github.com/orgs/bankonme/repositories
+  Lineage into bankon-vault is documented in bankon-vault/LINEAGE.md and
+  docs/origins.md.
+================================================================================

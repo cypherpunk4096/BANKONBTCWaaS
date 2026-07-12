@@ -176,7 +176,7 @@ async function rpc(node, method, params = [], wallet = null, timeoutMs = null) {
   // CIRCUIT BREAKER: while open, don't call the node — callers serve cache. This drains the node's
   // queue and stops the flood at the source. When the window expires, the next calls are the probes
   // (half-open): a success heals via _healthyTick, another 500/timeout re-trips with escalated backoff.
-  if (rpcCircuitOpen()) throw new Error('node busy (circuit breaker open)');
+  if (rpcCircuitOpen()) throw new Error(`engine cooling down ${Math.ceil((_distressUntil - Date.now()) / 1000)}s — the node was briefly saturated (heavy tx reads on the datadir disk) and rageRPC is protecting it; retry shortly`);
   await _acquire();
   RPC_STATS.calls++;
   try {

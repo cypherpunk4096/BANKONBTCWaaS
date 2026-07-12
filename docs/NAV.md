@@ -26,6 +26,8 @@ New here? Start with **[../README.md](../README.md)** then **[../USAGE.md](../US
 | [coinbase.md](coinbase.md) | **Coinbase transactions & messages** — the block's first tx, what's in the coinbase field (height, nonce, pool tags), maturity, and the genesis headline |
 | [ragebtc.md](ragebtc.md) | **RAGEbtc** — rageRPC accelerated/self-protecting RPC controller + RAGE handoff to pgvectorscale |
 | [../SECURITY.md](../SECURITY.md) | **Threat model, trust boundaries, disclosure policy** (the GitHub security policy) |
+| [../bankon-vault/README.md](../bankon-vault/README.md) | **bankon-vault** — chain-agnostic vault, BTC signature access + gating, sign-don't-export, ICE frozen storage |
+| [origins.md](origins.md) | **Origins & lineage** — bankonme (founding vision) → … → cypherpunk2048; + [bankonme-archive.txt](bankonme-archive.txt) |
 | [security.md](security.md) | Non-custodial guarantees, auth, backups, offline client |
 | [ICE.md](ICE.md) | **🧊 ICE** — the wall between the network and the wallet (thermal scaling + RF AIRGAP) + the **blackICE** roadmap |
 | [operations.md](operations.md) | Launcher, systemd, monitoring, multi-node, pruning |

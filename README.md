@@ -85,6 +85,8 @@ The full loop is verified end-to-end (incl. multisig) by the regtest suite — s
 | [API](docs/api.md) | WaaS + Console HTTP reference |
 | [Console](docs/console.md) | the diagnostics dashboard |
 | [SECURITY.md](SECURITY.md) | **threat model, trust boundaries, disclosure policy** |
+| [bankon-vault](bankon-vault/README.md) | **the chain-agnostic vault** — BTC signature access + gating, sign-don't-export, ICE frozen storage |
+| [Origins](docs/origins.md) | the decades-old lineage (bankonme → … → cypherpunk2048) + [archive](docs/bankonme-archive.txt) |
 | [Security](docs/security.md) | guarantees, auth, backups, offline client |
 | [Operations](docs/operations.md) | launcher, systemd, monitoring, pruning |
 | [Testing](docs/testing.md) | the regtest + signing test suites |

@@ -25,6 +25,19 @@ bankon.env
 #    separately; geoip/LICENSE is kept for attribution) ──────────────
 geoip/*.mmdb
 
+# ── bankon-vault — NEVER commit key material or vault state ────────
+**/.bankon-vault/
+**/vault_bankon/
+*.enc
+.master.key
+.salt
+*.psbt.signed
+# also block anything obviously secret that a legacy import might drop in
+*mnemonic*
+*seed.txt
+wallet.dat
+passwords.*
+
 # ── OS / editor cruft ─────────────────────────────────────────────
 .DS_Store
 *.swp
