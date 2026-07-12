@@ -1,0 +1,56 @@
+/* bankonme-www — the original 2017 "an operating system you can bankon" expression, cleaned house.
+   This finally answers the original FAQ's "Why is your webpage so ugly?" — one tidy dark theme,
+   bitcoin-orange brand, self-contained (no WordPress, no trackers, no external calls). */
+:root {
+  --bg: #0e1116; --panel: #151a21; --ink: #e6edf3; --dim: #8aa0b4;
+  --orange: #F7931A; --green: #16C784; --line: #22303c;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 16px/1.65 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+a { color: var(--orange); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.wrap { max-width: 760px; margin: 0 auto; padding: 0 20px 64px; }
+
+header {
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, #12171f, #0e1116);
+}
+header .wrap { padding-top: 26px; padding-bottom: 22px; }
+.brand { font-size: 30px; font-weight: 800; letter-spacing: -0.5px; }
+.brand b { color: var(--orange); }
+.tag { color: var(--dim); margin-top: 4px; }
+nav { margin-top: 16px; display: flex; gap: 18px; }
+nav a { font-weight: 700; color: var(--ink); }
+nav a.active { color: var(--orange); }
+
+h1 { font-size: 26px; margin: 34px 0 6px; }
+h2 { font-size: 20px; margin: 30px 0 8px; color: var(--orange); }
+.meta { color: var(--dim); font-size: 13px; margin-bottom: 18px; }
+p { margin: 12px 0; }
+code, .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+code { background: var(--panel); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; font-size: 14px; }
+
+.card {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 12px; padding: 18px 20px; margin: 20px 0;
+}
+.card.accent { border-color: var(--orange); }
+
+.faq h2 { border-top: 1px solid var(--line); padding-top: 22px; }
+.update {
+  border-left: 3px solid var(--green); background: #0f1a14;
+  padding: 12px 16px; border-radius: 0 8px 8px 0; margin: 22px 0; color: #cfe9d8;
+}
+.update b { color: var(--green); }
+.btn {
+  display: inline-block; background: var(--orange); color: #1a1200; font-weight: 800;
+  padding: 9px 16px; border-radius: 8px; margin-top: 8px;
+}
+.btn:hover { background: #ffab3d; text-decoration: none; }
+footer { color: var(--dim); font-size: 13px; border-top: 1px solid var(--line); margin-top: 40px; padding-top: 18px; }
+footer .wrap { padding-bottom: 30px; }
+@media (max-width: 520px) { .brand { font-size: 24px; } .wrap { padding: 0 16px 48px; } }

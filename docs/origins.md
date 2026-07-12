@@ -38,6 +38,18 @@ with Debian compatibility** (the on-disk Ubuntu-22.04 provisioning kit is one de
 that design, not the whole thing). It is documented here as **lineage/tools context — it is not a
 current public repo** — and BANKON vendors none of it.
 
+## The original web expression (revived)
+
+The 2017 **bankonmeOS** site — *"an operating system you can bankon"* — is the original web
+expression of the vision. It has been **cleaned house** and revived as a lean, self-contained static
+site at [`bankonme-www/`](../bankonme-www/README.md): the WordPress chrome, trackers, external news
+feed and price-ticker widget removed; the original text, FAQ and licensing (Gregory L. Magnusson,
+GPLv3/BSD/MIT) kept verbatim, with clearly-marked 2026 updates. The bankonmeOS bash-script builds
+carried philosopher codenames — **Aristotle** (the released Ubuntu-16.04 installer,
+`github.com/bankonmeOS/aristotle`), **Babbage**, **Hume** and others in the
+`bankonmeOS.alphabetatheta` archive. (No key material from those archives is included — scanned and
+excluded.)
+
 ## What bankon-vault delivers on the plan
 
 The decades-old plan — *encrypted, offline, client-controlled Bitcoin keys* — is now a single clean
