@@ -400,17 +400,29 @@ class Launcher:
 
     def _find_overview(self):
         me = (self.win.get_title() or "").lower()
+        best = None
         for w in self._wm_list():
             t = w["title"].lower()
-            if "bankon" in t and "launcher" not in t and t != me:
+            if "launcher" in t or t == me or "bankon" not in t:
+                continue
+            if "wallet as a service" in t:      # the Qt console's exact title — always preferred
                 return w
-        return None
+            best = best or w                    # fallback: any other BANKON window (browser tab etc.)
+        return best
+
+    def _dock_pos(self, qt):
+        # DOCK position = the right-hand side OF the Overview console screen (floating above it) —
+        # the console is typically full-width, so "beside" would land off-screen.
+        bw, _bh = self.win.get_size()
+        return max(0, qt["x"] + qt["w"] - bw - 18), max(0, qt["y"] + 42)
 
     def on_dock(self, _b):
         qt = self._find_overview()
         if qt:
-            self.win.move(qt["x"] + qt["w"] + 10, qt["y"])
-            self.status.set_text("⚓ ₿UTTON docked beside the Overview window.")
+            x, y = self._dock_pos(qt)
+            self.win.move(x, y)
+            self.win.present()                             # ₿UTTON floats above the console
+            self.status.set_text("⚓ ₿UTTON docked — right-hand side of the Overview console.")
         else:
             scr = Gdk.Screen.get_default()
             w, _h = self.win.get_size()
@@ -418,21 +430,45 @@ class Launcher:
             self.status.set_text("⚓ Overview not found — docked to the screen's top-right instead.")
 
     def on_call(self, _b):
-        x, y = self.win.get_position()
+        bx, by = self.win.get_position()
+        bw, _bh = self.win.get_size()
         qt = self._find_overview()
-        try:  # the Console comes along on every CALL
-            subprocess.Popen(["xdg-open", "http://127.0.0.1:8090"],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
         if qt is None:
+            # DEPLOY from the ₿UTTON: start the console; when its window appears it opens BEHIND
+            # the ₿UTTON, and the ₿UTTON snaps to the DOCK position on top of it.
             self.on_start(None)
-            self.status.set_text("📞 CALL — starting ₿ANKON; Console opening. Press DOCK once it's up.")
+            self.status.set_text("📞 CALL — deploying the console behind the ₿UTTON…")
+            self._await_console()
             return
-        subprocess.run(["wmctrl", "-i", "-r", qt["id"], "-e", f"0,{max(0, x)},{max(0, y)},-1,-1"], check=False)
+        # bring the console TO the ₿UTTON: position it so the ₿UTTON sits at its right-hand side
+        # (the DOCK relation), raise it, then put the ₿UTTON back on top.
+        qx = max(0, bx + bw + 18 - qt["w"])
+        qy = max(0, by - 42)
+        subprocess.run(["wmctrl", "-i", "-r", qt["id"], "-e", f"0,{qx},{qy},-1,-1"], check=False)
         subprocess.run(["wmctrl", "-i", "-a", qt["id"]], check=False)
-        self.win.move(x + qt["w"] + 10, y)                 # …and dock the ₿UTTON beside it
-        self.status.set_text("📞 Overview called to the ₿UTTON · Console opening · ₿UTTON docked beside it.")
+        self.win.present()                                 # console behind, ₿UTTON in front
+        self.status.set_text("📞 console called to the ₿UTTON — ₿UTTON docked on its right-hand side.")
+
+    def _await_console(self, tries=30):
+        # poll for the console window after a CALL-deploy; when it appears: console behind,
+        # ₿UTTON moved to the DOCK position and presented on top.
+        self._await_left = tries
+
+        def _poll():
+            qt = self._find_overview()
+            if qt:
+                subprocess.run(["wmctrl", "-i", "-a", qt["id"]], check=False)   # raise the console…
+                x, y = self._dock_pos(qt)
+                self.win.move(x, y)
+                self.win.present()                                             # …₿UTTON on top, docked
+                self.status.set_text("📞 console deployed behind the ₿UTTON — ₿UTTON in the DOCK position.")
+                return False
+            self._await_left -= 1
+            if self._await_left <= 0:
+                self.status.set_text("console window did not appear — press DOCK once it is up.")
+                return False
+            return True
+        GLib.timeout_add(1000, _poll)
 
     def _on_expand(self, x, *_):
         # give an OPEN accordion the window's spare space; on close, fully compress
