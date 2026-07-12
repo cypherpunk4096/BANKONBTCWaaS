@@ -870,6 +870,27 @@ app.post('/api/node/boot', async (req, res) => {
   if (err && !gone) return res.json({ ok: false, error: out || String(err.message || err) });
   res.json({ ok: true, addr, booted: true, note: gone ? 'already disconnected' : 'disconnected' });
 });
+// BLACKLIST — ban (unreliable) / unban a peer. setban wants a bare IP or ip/subnet (no port).
+app.post('/api/node/ban', async (req, res) => {
+  if (!NODE_CONTROL) return res.status(403).json({ ok: false, error: 'node control disabled' });
+  const raw = String(req.body?.addr || '').trim();
+  if (!raw) return res.status(400).json({ ok: false, error: 'need {addr}' });
+  const ip = raw.includes(']') ? raw.slice(1, raw.indexOf(']'))          // [ipv6]:port → ipv6
+           : raw.includes('/') ? raw : raw.split(':')[0];               // keep subnets; strip :port
+  const on = req.body?.on !== false;
+  if (on) {
+    const hours = Math.max(1, Math.min(24 * 365, Number(req.body?.hours) || 24 * 7));
+    const fav = _loadFav(); if (fav[raw] || fav[ip]) { delete fav[raw]; delete fav[ip]; _saveFav(fav); }
+    await _cliDirect(['addnode', raw, 'remove']).catch(() => {});
+    const { err, out } = await _cliDirect(['setban', ip, 'add', String(hours * 3600)]);
+    if (err && !/already banned/i.test(out || err.message || '')) return res.json({ ok: false, error: out || String(err.message || err) });
+    _cliDirect(['disconnectnode', raw]).catch(() => {});                 // drop any live connection too
+    return res.json({ ok: true, ip, banned: true, hours });
+  }
+  const { err, out } = await _cliDirect(['setban', ip, 'remove']);
+  if (err && !/not.*banned|unban.*fail/i.test(out || err.message || '')) return res.json({ ok: false, error: out || String(err.message || err) });
+  res.json({ ok: true, ip, banned: false });
+});
 app.post('/api/node/connect-fast', async (req, res) => {
   if (!NODE_CONTROL) return res.status(403).json({ ok: false, error: 'node control disabled' });
   const n = Math.max(1, Math.min(48, Number(req.body?.count) || 16));

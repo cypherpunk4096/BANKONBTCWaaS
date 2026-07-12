@@ -1163,6 +1163,15 @@ class NetworkMapTab(QtWidgets.QWidget):
                             "border-radius:6px;font-weight:800;font-size:15px;padding:0}"
                             "QPushButton:hover{background:#14405c;color:#fff}")
             b.raise_(); self._zbtns.append(b)
+        # EXPLORE mode: back-to-default overlay button (top-left, only while exploring)
+        self._explore = None; self._cloud = []
+        self.backbtn = QtWidgets.QPushButton("⬅ local view", self.view)
+        self.backbtn.setToolTip("Return to the default presentation — local node → connected peers with live traffic")
+        self.backbtn.move(10, 10)
+        self.backbtn.setStyleSheet("QPushButton{background:rgba(8,16,26,0.9);color:#F7931A;border:1px solid #F7931A;"
+                                   "border-radius:6px;font-weight:800;padding:4px 10px}"
+                                   "QPushButton:hover{background:#3a2500}")
+        self.backbtn.clicked.connect(self._exit_explore); self.backbtn.hide()
         # DOWN-STATE onboarding overlay — when Core is off there are no nodes to map, so turn the empty
         # map into a call-to-action: start Core + read the BANKON FAQ/docs. Shown over the view; hidden
         # the moment peers/activity appear.
@@ -1225,11 +1234,92 @@ class NetworkMapTab(QtWidgets.QWidget):
         self.btn_boot = QtWidgets.QPushButton("⏏ Boot"); self.btn_boot.setObjectName("danger")
         self.btn_boot.setToolTip("Disconnect this peer now (disconnectnode)")
         self.btn_boot.clicked.connect(lambda: self._act_peer("boot"))
-        br.addWidget(self.btn_promote); br.addWidget(self.btn_boot); d.addLayout(br)
+        self.btn_ban = QtWidgets.QPushButton("🚫 Ban"); self.btn_ban.setObjectName("danger")
+        self.btn_ban.setToolTip("Blacklist as unreliable — setban 7 days + disconnect")
+        self.btn_ban.clicked.connect(lambda: self._list_ban(self._sel.get("addr") if self._sel else "", True))
+        br.addWidget(self.btn_promote); br.addWidget(self.btn_boot); br.addWidget(self.btn_ban); d.addLayout(br)
         self.diag_status = QtWidgets.QLabel(""); self.diag_status.setStyleSheet("color:#8aa0b4"); self.diag_status.setWordWrap(True)
         d.addWidget(self.diag_status)
-        self.btn_promote.setEnabled(False); self.btn_boot.setEnabled(False)
+        self.btn_promote.setEnabled(False); self.btn_boot.setEnabled(False); self.btn_ban.setEnabled(False)
+        # ---- winners + whitelist/blacklist: 🏆 fastest · ★ promoted · 🚫 banned (view + edit) ----
+        self.lists = QtWidgets.QTabWidget(); self.lists.setMaximumHeight(190)
+        self.lists.setStyleSheet("QTabBar::tab{padding:3px 10px} QListWidget{font-family:monospace;font-size:11px;"
+                                 "background:#05080d;border:1px solid #14405c;border-radius:4px}")
+        self.win_list, self.fav_list, self.ban_list = (QtWidgets.QListWidget() for _ in range(3))
+        self.win_list.setToolTip("Fastest measured nodes (fastpref speed index + live ping) — the winners")
+        self.lists.addTab(self.win_list, "🏆 fastest"); self.lists.addTab(self.fav_list, "★ promoted")
+        self.lists.addTab(self.ban_list, "🚫 banned")
+        d.addWidget(self.lists)
+        er = QtWidgets.QHBoxLayout()
+        self.list_edit = QtWidgets.QLineEdit(); self.list_edit.setPlaceholderText("ip[:port] — or select a row above")
+        er.addWidget(self.list_edit, 1)
+        for txt, fn, tip in (("★", lambda: self._list_promote(self._edit_addr(), True), "Whitelist: promote (favourite + addnode)"),
+                             ("🚫", lambda: self._list_ban(self._edit_addr(), True), "Blacklist: ban as unreliable (7 days)"),
+                             ("✖", self._list_remove, "Remove the selected/typed entry from the current list")):
+            b = QtWidgets.QPushButton(txt); b.setFixedWidth(34); b.setToolTip(tip); b.clicked.connect(fn); er.addWidget(b)
+        d.addLayout(er)
         return w
+    # ---- winners / whitelist / blacklist plumbing ----
+    def _edit_addr(self):
+        t = self.list_edit.text().strip()
+        if t: return t
+        cur = self.lists.currentWidget().currentItem()
+        return cur.data(QtCore.Qt.UserRole) if cur else ""
+    def _fill_lists(self):
+        spawn_fn(lambda: fetch_json("/api/node/fastnodes"), self._fill_winners)
+        spawn_fn(lambda: fetch_json("/api/node/favourites"), self._fill_favs)
+        spawn("listbanned", self._fill_banned, timeout=10)
+    def _fill_winners(self, d):
+        idx = (d or {}).get("nodes") or d or {}
+        rows = sorted((v for v in (idx.values() if isinstance(idx, dict) else idx) if isinstance(v, dict)),
+                      key=lambda x: (-(x.get("score") or 0), x.get("pingMs") or 9e9))[:12]
+        live = {p.get("addr"): p for p in self._peers or []}
+        self.win_list.clear()
+        for i, r in enumerate(rows):
+            a = r.get("addr", "?"); ping = r.get("pingMs")
+            on = "🟢" if a in live else "·"
+            it = QtWidgets.QListWidgetItem(f"{'🥇🥈🥉'[i] if i < 3 else f'{i+1:2d}'} {on} {a:<22} {ping if ping is not None else '—':>5} ms  score {r.get('score', 0)}")
+            it.setData(QtCore.Qt.UserRole, a)
+            if i < 3: it.setForeground(QtGui.QColor("#F7931A"))
+            self.win_list.addItem(it)
+        if not rows:
+            peers = sorted((p for p in self._peers or [] if p.get("minping")), key=lambda p: p["minping"])[:8]
+            for i, p in enumerate(peers):
+                it = QtWidgets.QListWidgetItem(f"{i+1:2d} 🟢 {p.get('addr',''):<22} {p['minping']*1000:5.0f} ms  (live ping)")
+                it.setData(QtCore.Qt.UserRole, p.get("addr")); self.win_list.addItem(it)
+            if not peers: self.win_list.addItem("no measurements yet — enable ⚡ prefer fastest (Network tab)")
+    def _fill_favs(self, d):
+        rows = (d or {}).get("nodes") or []
+        self.fav_list.clear()
+        for v in sorted(rows, key=lambda r: r.get("addr", "")):
+            a = v.get("addr", "")
+            it = QtWidgets.QListWidgetItem(f"★ {a:<24} {(v.get('subver') or '').strip('/')[:24]}")
+            it.setData(QtCore.Qt.UserRole, a); it.setForeground(QtGui.QColor("#FFD37A")); self.fav_list.addItem(it)
+        self.lists.setTabText(1, f"★ promoted ({self.fav_list.count()})")
+    def _fill_banned(self, rows, stale=False):
+        self.ban_list.clear()
+        for b in rows or []:
+            a = b.get("address", "")
+            until = datetime.fromtimestamp(b.get("banned_until", 0), timezone.utc).strftime("%m-%d %H:%M")
+            it = QtWidgets.QListWidgetItem(f"🚫 {a:<22} until {until}")
+            it.setData(QtCore.Qt.UserRole, a); it.setForeground(QtGui.QColor("#f85149")); self.ban_list.addItem(it)
+        self.lists.setTabText(2, f"🚫 banned ({self.ban_list.count()})")
+    def _list_promote(self, addr, on):
+        if not addr: return
+        spawn_fn(lambda: post_json("/api/node/promote", {"addr": addr, "on": on}),
+                 lambda d: (self.diag_status.setText(("★ promoted " if on else "un-promoted ") + addr), self._fill_lists()))
+    def _list_ban(self, addr, on):
+        if not addr: return
+        spawn_fn(lambda: post_json("/api/node/ban", {"addr": addr, "on": on}),
+                 lambda d: (self.diag_status.setText((f"🚫 banned {addr} ({(d or {}).get('hours','?')}h)" if on else f"unbanned {addr}")
+                                                     if (d or {}).get("ok") else f"ban failed: {(d or {}).get('error')}"),
+                            self._fill_lists()))
+    def _list_remove(self):
+        addr = self._edit_addr()
+        if not addr: return
+        tab = self.lists.currentIndex()
+        if tab == 2: self._list_ban(addr, False)          # banned list → unban
+        else: self._list_promote(addr, False)             # promoted (or winners) → un-promote
     def refresh(self):
         spawn("getnetworkinfo", self._setni)
         n = self.maxnodes.value()
@@ -1239,6 +1329,7 @@ class NetworkMapTab(QtWidgets.QWidget):
         spawn_fn(lambda: fetch_json("/api/netactivity?n=60"), self._setact)   # log-based fallback (works during the RPC choke)
         spawn_fn(lambda: fetch_json("/api/coremon"),                          # is Core actually off? → onboarding overlay
                  lambda d: self._set_down(bool(d) and d.get("state") == "off"))
+        self._fill_lists()                                                    # 🏆 winners · ★ promoted · 🚫 banned
     # ---- zoom ----
     def _zoom(self, f):
         self._user_zoom = True; self.view.scale(f, f)
@@ -1306,8 +1397,14 @@ class NetworkMapTab(QtWidgets.QWidget):
                 if dd <= (r + 10) ** 2 and dd < bestd: best, bestd = p, dd
             if best: self._select(best)
             else: self._sel = None; self.diag_title.setText("◎ click a peer node for diagnostics"); \
-                self._clear_form(); self.btn_promote.setEnabled(False); self.btn_boot.setEnabled(False); self.diag_status.setText("")
+                self._clear_form(); self.btn_promote.setEnabled(False); self.btn_boot.setEnabled(False); self.btn_ban.setEnabled(False); self.diag_status.setText("")
             return False
+        if obj is self.view.viewport() and ev.type() == QtCore.QEvent.MouseButtonDblClick:
+            sp = self.view.mapToScene(ev.position().toPoint()) if hasattr(ev, "position") else self.view.mapToScene(ev.pos())
+            for (x, y, r, p) in self._hits:
+                if (sp.x() - x) ** 2 + (sp.y() - y) ** 2 <= (r + 10) ** 2:
+                    self._enter_explore(p); return True
+            if self._explore: self._exit_explore(); return True
         return super().eventFilter(obj, ev)
     def _clear_form(self):
         while self.diag_form.rowCount(): self.diag_form.removeRow(0)
@@ -1321,7 +1418,7 @@ class NetworkMapTab(QtWidgets.QWidget):
         self._sel = p
         self.diag_title.setText("◎ " + (p.get("addr", "—")))
         self._fill_diag(p)
-        self.btn_promote.setEnabled(True); self.btn_boot.setEnabled(True)
+        self.btn_promote.setEnabled(True); self.btn_boot.setEnabled(True); self.btn_ban.setEnabled(True)
         self.btn_promote.setText("★ Promoted" if p.get("addnode") else "★ Promote")
         self.diag_status.setText("Promote = favourite + persistent · Boot = disconnect now")
         self._redraw()
@@ -1333,7 +1430,7 @@ class NetworkMapTab(QtWidgets.QWidget):
     def _acted(self, kind, d):
         if d and d.get("ok"):
             self.diag_status.setText(f"✓ {kind} done — {d.get('addr', '')}")
-            if kind == "boot": self._sel = None; self.btn_promote.setEnabled(False); self.btn_boot.setEnabled(False)
+            if kind == "boot": self._sel = None; self.btn_promote.setEnabled(False); self.btn_boot.setEnabled(False); self.btn_ban.setEnabled(False)
             QtCore.QTimer.singleShot(700, self.refresh)
         else:
             self.diag_status.setText(f"✗ {(d or {}).get('error', 'failed')}")
@@ -1346,6 +1443,11 @@ class NetworkMapTab(QtWidgets.QWidget):
             try: self.scene.removeItem(it)
             except Exception: pass
         self._anim = []
+        if self._explore:                      # STABLE 3D rotation: items persist, only positions move
+            if getattr(self, "_cloud_items", None):
+                self._cloud_rot = getattr(self, "_cloud_rot", 0.0) + 0.010
+                self._layout_cloud()
+            return
         if not self._links and not self._sel: return
         self._phase += 0.05                                        # unbounded so per-link speeds stay smooth
         import math
@@ -1375,6 +1477,64 @@ class NetworkMapTab(QtWidgets.QWidget):
                 hr = sr + 6 + 4 * math.sin(self._phase * 2 * math.pi)
                 ring = self.scene.addEllipse(sx - hr, sy - hr, 2 * hr, 2 * hr, QtGui.QPen(QtGui.QColor("#FFD37A"), 2.5))
                 self._anim.append(ring)
+    # ---- 3D cluster explore: double-click a peer → its network neighbourhood as a pointcloud ----
+    def _enter_explore(self, peer):
+        import math
+        ip = (peer.get("addr") or "").rsplit(":", 1)[0].strip("[]")
+        base = next((nd for nd in self._known or [] if nd.get("ip") == ip), None)
+        a = base.get("asn") if base else None
+        pre = ".".join(ip.split(".")[:2]) if "." in ip else None
+        hood = [nd for nd in (self._known or [])
+                if nd.get("ip") != ip and ((a and nd.get("asn") == a) or (pre and nd.get("ip", "").startswith(pre + ".")))]
+        if len(hood) < 12:                          # sparse neighbourhood -> widen to a general gossip sample
+            hood = [nd for nd in (self._known or []) if nd.get("ip") != ip][:120]
+        hood = hood[:150]
+        ga = math.pi * (3 - math.sqrt(5))           # golden-angle sphere: even 3D distribution
+        n = max(1, len(hood))
+        self._cloud = []
+        for i, nd in enumerate(hood):
+            zz = 1 - 2 * (i + 0.5) / n
+            rr = math.sqrt(max(0.0, 1 - zz * zz))
+            th = ga * i
+            R = 170 + (i % 5) * 14                  # shells give the cloud volume
+            self._cloud.append((rr * math.cos(th) * R, zz * R * 0.72, rr * math.sin(th) * R,
+                                nd.get("ip", ""), nd.get("org") or ""))
+        self._explore = peer
+        self._cloud_rot = 0.0
+        self.backbtn.show(); self.backbtn.raise_()
+        self._redraw()
+    def _layout_cloud(self):
+        # rotate around the vertical axis and restyle by depth — pure moves on persistent items
+        import math
+        rot = getattr(self, "_cloud_rot", 0.0)
+        ORANGE, BLUE = QtGui.QColor(247, 147, 26), QtGui.QColor(0, 191, 255)
+        front = []
+        for i, (x3, y3, z3, ip, org) in enumerate(self._cloud):
+            e, tx, ln = self._cloud_items[i]
+            xr = x3 * math.cos(rot) - z3 * math.sin(rot)
+            zr = x3 * math.sin(rot) + z3 * math.cos(rot)
+            depth = max(0.0, min(1.0, (zr / 260 + 1) / 2))
+            sz = 1.5 + 4.5 * depth                    # nearer = bigger + brighter (the 3D cue)
+            col = QtGui.QColor(ORANGE if depth > 0.62 else BLUE)
+            col.setAlpha(int(60 + 190 * depth))
+            e.setRect(xr - sz, y3 - sz, 2 * sz, 2 * sz)
+            e.setBrush(col); e.setZValue(depth)
+            if ln:
+                ln.setLine(0, 0, xr, y3)
+                ln.setPen(QtGui.QPen(QtGui.QColor(90, 150, 180, int(18 + 48 * depth)), 1))
+            front.append((depth, xr, y3, tx))
+        # ADDRESSES: label the front-facing nodes (nearest 14) — the rest stay hover-tooltips
+        front.sort(key=lambda q: -q[0])
+        for j, (depth, x, y, tx) in enumerate(front):
+            if j < 14 and depth > 0.55:
+                tx.setPos(x + 7, y - 6); tx.setZValue(2); tx.setOpacity(0.35 + 0.65 * depth); tx.setVisible(True)
+            else:
+                tx.setVisible(False)
+    def _exit_explore(self):
+        # return to the DEFAULT presentation: local node -> connected peers with live traffic
+        self._explore = None; self._cloud = []; self._cloud_items = []
+        self.backbtn.hide()
+        self._redraw()
     # ---- down-state onboarding (advertising moment when Core is off) ----
     def _start_core(self):
         self.downmsg.setText("starting Bitcoin Core…")
@@ -1419,6 +1579,29 @@ class NetworkMapTab(QtWidgets.QWidget):
     def _redraw(self):
         import math
         self.scene.clear(); self._anim = []; self._hits = []; self._links = []   # clear() frees overlay items too
+        if self._explore:                      # ── 3D CLUSTER EXPLORE: selected node at centre ──
+            p = self._explore
+            self.scene.addEllipse(-26, -26, 52, 52, QtGui.QPen(QtGui.QColor("#F7931A"), 3), QtGui.QBrush(QtGui.QColor("#1a1200")))
+            t = self.scene.addText((p.get("addr") or "?") + "\n" + (p.get("subver") or "").replace("/", ""))
+            t.setDefaultTextColor(QtGui.QColor("#F7931A")); t.setScale(0.85)
+            t.setPos(-t.boundingRect().width() * 0.85 / 2, 30)
+            # honest label: Core doesn't expose a remote node's peer list — this is its gossip cluster
+            self.info.setText(f"Explore — network neighbourhood of {p.get('addr')} · {len(self._cloud)} known nodes "
+                              f"near it (same AS / prefix, from our addrman gossip; peers' own connection lists are "
+                              f"not public) · rotating 3D cluster · double-click empty space or ⬅ to return")
+            # persistent cloud items — created ONCE here; _pulse only moves them (no blink)
+            self._cloud_items = []
+            for i, (x3, y3, z3, ip, org) in enumerate(self._cloud):
+                ln = self.scene.addLine(0, 0, 0, 0, QtGui.QPen(QtGui.QColor(90, 150, 180, 30), 1)) if i % 3 == 0 else None
+                e = self.scene.addEllipse(-3, -3, 6, 6, QtGui.QPen(QtCore.Qt.NoPen), QtGui.QBrush(QtGui.QColor(0, 191, 255, 120)))
+                e.setToolTip(f"{ip}\n{org}" if org else ip)          # every node's address on hover
+                tx = self.scene.addSimpleText(ip)
+                tx.setBrush(QtGui.QColor(207, 227, 242)); tx.setScale(0.72); tx.setVisible(False)
+                self._cloud_items.append((e, tx, ln))
+            self._layout_cloud()                                      # position immediately — no blank frame
+            if not self._user_zoom:
+                self.view.fitInView(QtCore.QRectF(-300, -260, 600, 520), QtCore.Qt.KeepAspectRatio)
+            return
         peers = self._peers or []; stale = self._pstale; n = max(1, len(peers)); R = 250
         # faint outer cloud = every node our addrman knows (the "all nodes" backdrop)
         if self._known:
