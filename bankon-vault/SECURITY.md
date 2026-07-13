@@ -41,6 +41,27 @@ standard. Point-by-point:
   payload-bound nonces**, recomputes the payload hash server-side (a replayed token can't redirect the
   signature), and supports an optional bearer token (`BANKON_VAULT_TOKEN`, constant-time compared).
 
+## Prevention from eyes — RAM, mlock, swap, TEE
+Keeping a live key away from observers is a layered problem; the vault does what software can and is
+honest about what needs hardware:
+
+- **`mlock` (done).** On unlock the 32-byte master key's pages are pinned with `mlock` so they can
+  **never be swapped to disk** — no plaintext key ever lands in swap for later forensics. `munlock` +
+  zeroize on `lock()`. `info()` reports `mlocked`.
+- **RAM-backed vault (supported).** Point the vault at a **tmpfs/ramfs** mount (e.g. `/dev/shm`) and
+  the encrypted store lives entirely in RAM — nothing hits disk, and it's gone on power-off (the
+  amnesic model). `info()` reports `on_ram_fs`. For a fully cold path, combine with the **GNU Tomb**
+  LUKS backend (closed = plaintext gone).
+- **Swap (advisory).** `info()` reports `swap_active`; for high-value key ops run `swapoff -a` (or use
+  encrypted swap) so nothing can page out. ICE can do this as part of a "freeze" ceremony.
+- **TEE (hardware-gated, honest).** A true Trusted Execution Environment (Intel SGX, ARM TrustZone,
+  AMD SEV) hides keys even from root — the strongest "prevention from eyes." It requires modern
+  hardware; the reference machine (HD 3000) has none, so this is a roadmap item behind a secure
+  element / hardware wallet, not a software claim.
+- **Residual (unavoidable in software):** a root-level attacker can read live process RAM while the
+  vault is *unlocked*, and cold-boot/DMA can read RAM briefly after power-off. Minimise the unlocked
+  window (auto-lock), create keys **air-gapped via ICE**, and prefer the Tomb/RAM path for cold keys.
+
 ## Known limitations (alpha — honest)
 - **Gating verifies by pinned pubkey**, not address-recovery: BIP-137 recoverable signatures and full
   **BIP-322** are Step-2 (embit has no recid). Verification against a pinned pubkey is equally sound;

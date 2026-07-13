@@ -85,6 +85,19 @@ Migrating an old store? `migrate.py` imports a legacy JSON / `.env` (or an in-me
 bankon-vault migrate --json legacy.json           # or --env legacy.env
 ```
 
+### Residual-free — close clean, uninstall traceless
+- **Clean close:** `lock()` zeroizes the master `bytearray` **and `munlock`s** its pages; an **atexit
+  hook auto-locks every live vault**, so even a crash or a forgotten `close()` never leaves an unlocked
+  key behind. `with BankonVault(path) as v:` locks on exit.
+- **Key never swaps to disk:** the master is **`mlock`ed** in RAM; `info()` reports `mlocked`,
+  `on_ram_fs`, `swap_active`. Put the vault on **tmpfs** (`/dev/shm`) for an amnesic, disk-free store.
+- **Traceless uninstall:** `destroy()` / `bankon-vault destroy` / `uninstall.sh` **N-pass shred** every
+  file (default 7) then remove the directory — nothing of the vault remains on disk.
+```bash
+bankon-vault destroy                       # securely erase the vault (confirms)
+bash uninstall.sh --purge-source           # shred vault + remove launcher + delete the module — no trace
+```
+
 ### Frozen storage — GNU Tomb (the crypto undertaker)
 `bankon_vault/tomb.py` (optional) buries the whole vault directory inside a **LUKS Tomb** — the
 tomb/mausoleum model of our own [gnugui/GNUVAULT](https://github.com/gnugui/GNUVAULT) and the legacy

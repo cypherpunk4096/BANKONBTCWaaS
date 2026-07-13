@@ -63,10 +63,41 @@ def main(argv=None):
     tb.add_argument("--file", default=os.path.expanduser("~/.bankon-vault.tomb")); tb.add_argument("--mount", default=DEFAULT_PATH)
     ce = sub.add_parser("ceremony"); ce.add_argument("--threshold", type=int, default=3); ce.add_argument("--total", type=int, default=5)
     mg = sub.add_parser("migrate"); mg.add_argument("--json"); mg.add_argument("--env"); mg.add_argument("--context", default="imported")
+    ds = sub.add_parser("destroy"); ds.add_argument("--passes", type=int, default=7); ds.add_argument("--yes", action="store_true")
+    un = sub.add_parser("uninstall"); un.add_argument("--passes", type=int, default=7); un.add_argument("--yes", action="store_true")
     args = ap.parse_args(argv)
+
+    if args.cmd in ("destroy", "uninstall"):
+        from .core import BankonVault
+        if not os.path.exists(os.path.join(args.path, ".salt")):
+            print(f"no vault at {args.path}")
+        else:
+            if not args.yes:
+                print(f"⚠  This SECURELY ERASES the vault at {args.path} ({args.passes}-pass shred) — "
+                      "irreversible, leaves no trace.")
+                if input("type ERASE to confirm: ").strip() != "ERASE":
+                    sys.exit("aborted")
+            rep = BankonVault(args.path).destroy(shred_passes=args.passes)
+            print(json.dumps(rep, indent=2))
+        if args.cmd == "uninstall":
+            # also remove the launcher + any user site copy of this module, leaving no trace
+            for launcher in (os.path.expanduser("~/.local/bin/bankon-vault"),):
+                try:
+                    if os.path.exists(launcher):
+                        os.remove(launcher); print(f"removed {launcher}")
+                except OSError:
+                    pass
+            print("bankon-vault uninstalled. (The module source folder, if any, can now be deleted; "
+                  "no keys, salt, or state remain.)")
+        return
 
     if args.cmd == "ceremony":
         from .ceremony import genesis
+        from .core import BankonVault
+        if BankonVault.network_connected():
+            print("⚠  NETWORK IS CONNECTED. Wallet/master creation should be done AIR-GAPPED — take "
+                  "ICE AIRGAP up first (cut all radios), then run genesis. [Ctrl-C to abort]",
+                  file=sys.stderr)
         shares, manifest = genesis(threshold=args.threshold, total=args.total)
         mpath = os.path.join(args.path, "ceremony-manifest.json")
         os.makedirs(args.path, exist_ok=True)
@@ -124,6 +155,9 @@ def main(argv=None):
         return
 
     if args.cmd == "gen-btc":
+        if BankonVault.network_connected():
+            print("⚠  NETWORK IS CONNECTED. New keys should be minted AIR-GAPPED — take ICE AIRGAP up "
+                  "first, then generate. [Ctrl-C to abort]", file=sys.stderr)
         v = _open(args.path)
         m = BitcoinAdapter(args.net).new_secret()
         v.store(args.id, m, context="bitcoin_wallet")

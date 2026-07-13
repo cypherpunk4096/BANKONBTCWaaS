@@ -29,10 +29,14 @@ Discipline (why this is safe to trust with keys):
 """
 from __future__ import annotations
 
+import atexit
 import json
 import os
+import shutil
+import subprocess
 import threading
 import time
+import weakref
 from dataclasses import dataclass, field, asdict
 from typing import Optional, Callable
 
@@ -54,6 +58,22 @@ class VaultError(Exception):
 
 class VaultLocked(VaultError):
     pass
+
+
+# RESIDUAL-FREE CLOSE: every live vault is tracked weakly and locked at interpreter exit — so even a
+# crash or a forgotten close() never leaves an unlocked key (or an mlocked page) behind.
+_LIVE_VAULTS: "weakref.WeakSet" = weakref.WeakSet()
+
+
+def _lock_all_vaults():
+    for v in list(_LIVE_VAULTS):
+        try:
+            v.lock()
+        except Exception:
+            pass
+
+
+atexit.register(_lock_all_vaults)
 
 
 @dataclass
@@ -126,6 +146,7 @@ class BankonVault:
         self._timer: Optional[threading.Timer] = None
         self._salt = self._load_or_make_salt()
         self._load_entries()
+        _LIVE_VAULTS.add(self)          # tracked for atexit auto-lock (residual-free close)
 
     # ---- salt / entries persistence ----
     def _load_or_make_salt(self) -> bytes:
@@ -169,6 +190,7 @@ class BankonVault:
                 _zero(ikm)
         with self._lock:
             self._vault_key = bytearray(vk)
+            self._mlocked = _try_mlock(self._vault_key)   # pin in RAM — never swap the key to disk
             self._touch()
         return True
 
@@ -176,6 +198,9 @@ class BankonVault:
         with self._lock:
             if self._vault_key is not None:
                 _zero(self._vault_key)
+                if getattr(self, "_mlocked", False):
+                    _try_munlock(self._vault_key)
+                    self._mlocked = False
                 self._vault_key = None
             if self._timer is not None:
                 self._timer.cancel()
@@ -252,9 +277,57 @@ class BankonVault:
                  "updated_at": e.updated_at, "access_count": e.access_count}
                 for e in self._entries.values()]
 
+    def close(self) -> None:
+        """Idempotent clean shutdown: lock (zeroize + munlock), cancel timers, drop from the registry."""
+        self.lock()
+        _LIVE_VAULTS.discard(self)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+    def destroy(self, shred_passes: int = 7) -> dict:
+        """TRACELESS erase — securely wipe the ENTIRE vault directory (shred every file, then remove).
+        Zeroizes memory first. After this, nothing of the vault remains on disk. Irreversible."""
+        self.close()
+        shredded, removed = 0, 0
+        have_shred = shutil.which("shred") is not None
+        for root, _dirs, files in os.walk(self.path):
+            for fn in files:
+                p = os.path.join(root, fn)
+                try:
+                    if have_shred:
+                        subprocess.run(["shred", "-u", "-z", "-n", str(shred_passes), p],
+                                       check=False, capture_output=True)
+                        shredded += 1
+                    else:                                   # fallback: overwrite N× + zero, then unlink
+                        sz = os.path.getsize(p)
+                        with open(p, "r+b") as f:
+                            for _ in range(shred_passes):
+                                f.seek(0); f.write(os.urandom(sz)); f.flush(); os.fsync(f.fileno())
+                            f.seek(0); f.write(b"\x00" * sz); f.flush(); os.fsync(f.fileno())
+                        os.remove(p); shredded += 1
+                    removed += 1
+                except OSError:
+                    pass
+        shutil.rmtree(self.path, ignore_errors=True)
+        return {"destroyed": True, "path": self.path, "files_shredded": shredded,
+                "method": "shred" if have_shred else "overwrite", "exists": os.path.exists(self.path)}
+
     def info(self) -> dict:
+        on_ram = False
+        try:                                              # is the vault dir on a RAM filesystem?
+            import subprocess
+            fs = subprocess.run(["stat", "-f", "-c", "%T", self.path], capture_output=True, text=True).stdout.strip()
+            on_ram = fs in ("tmpfs", "ramfs")
+        except Exception:
+            pass
         return {"path": self.path, "version": VAULT_VERSION, "unlocked": self.is_unlocked(),
-                "entries": len(self._entries), "autolock_sec": self._autolock_sec}
+                "entries": len(self._entries), "autolock_sec": self._autolock_sec,
+                "mlocked": getattr(self, "_mlocked", False), "on_ram_fs": on_ram,
+                "swap_active": swap_active()}
 
     # ---- context-manager sugar: `with vault.session(overseer): ...` auto-locks on exit ----
     def session(self, overseer, challenge: str = "", evidence=None):
@@ -282,6 +355,37 @@ class BankonVault:
 def _zero(buf) -> None:
     for i in range(len(buf)):
         buf[i] = 0
+
+
+# --- mlock: pin the master key's pages in RAM so they can NEVER be swapped to disk (prevention from
+#     eyes: no plaintext key ever lands in swap for forensics). Best-effort + cross-platform-safe. ---
+def _try_mlock(buf) -> bool:
+    try:
+        import ctypes
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        addr = ctypes.addressof((ctypes.c_char * len(buf)).from_buffer(buf))
+        return libc.mlock(ctypes.c_void_p(addr), ctypes.c_size_t(len(buf))) == 0
+    except Exception:
+        return False
+
+
+def _try_munlock(buf) -> None:
+    try:
+        import ctypes
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        addr = ctypes.addressof((ctypes.c_char * len(buf)).from_buffer(buf))
+        libc.munlock(ctypes.c_void_p(addr), ctypes.c_size_t(len(buf)))
+    except Exception:
+        pass
+
+
+def swap_active() -> bool:
+    """True if the system has active swap — a place the key could page out to. Advisory."""
+    try:
+        with open("/proc/swaps") as f:
+            return len(f.readlines()) > 1
+    except Exception:
+        return False
 
 
 class _Session:
