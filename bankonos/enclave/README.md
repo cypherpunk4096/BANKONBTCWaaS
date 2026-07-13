@@ -49,6 +49,10 @@ product; the ISO is convenience.
 4. Eject, move to an online machine, `bitcoin-cli finalizepsbt` + `sendrawtransaction`.
 5. **Power off** the enclave — the vault and seed are erased.
 
+> **Other OSes:** the same enclave builds on **Debian** (`debian/` — `live-build` + `toram`, the Tails
+> model) and **OpenBSD** (`openbsd/` — via FuguIta's copy-to-RAM mode). See **[PLATFORMS.md](PLATFORMS.md)**
+> for the side-by-side and how to pick.
+
 ## Files
 - `genapkovl-bankon-enclave.sh` — generates the Alpine APKOVL overlay (packages, airgap, signer service).
 - `enclave-signer.sh` — the on-device air-gapped signer (USB-only, refuses if networked).
