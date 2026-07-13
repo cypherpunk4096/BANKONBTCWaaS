@@ -288,33 +288,44 @@ class BankonVault:
     def __exit__(self, *exc):
         self.close()
 
-    def destroy(self, shred_passes: int = 7) -> dict:
-        """TRACELESS erase — securely wipe the ENTIRE vault directory (shred every file, then remove).
-        Zeroizes memory first. After this, nothing of the vault remains on disk. Irreversible."""
+    def destroy(self, shred_passes: int = 7, *, zero: bool = True, force: bool = True,
+                exact: bool = True, remove_how: str = "wipesync") -> dict:
+        """TRACELESS erase — securely wipe the ENTIRE vault directory, then remove it. Zeroizes memory
+        first. Irreversible. Uses GNU `shred` with configurable options (see shred(1)):
+          shred_passes -> -n N   ·  zero -> -z (final zero pass)  ·  force -> -f (chmod if needed)
+          exact -> -x (don't round to block)  ·  remove_how -> -u=HOW (unlink|wipe|wipesync)
+        Falls back to an in-Python overwrite when `shred` is absent."""
         self.close()
-        shredded, removed = 0, 0
-        have_shred = shutil.which("shred") is not None
+        shredded = 0
+        shred_bin = shutil.which("shred")
+        if shred_bin:
+            opts = ["-n", str(shred_passes)]
+            if zero: opts.append("-z")
+            if force: opts.append("-f")
+            if exact: opts.append("-x")
+            opts.append(f"-u={remove_how}" if remove_how in ("unlink", "wipe", "wipesync") else "-u")
         for root, _dirs, files in os.walk(self.path):
             for fn in files:
                 p = os.path.join(root, fn)
                 try:
-                    if have_shred:
-                        subprocess.run(["shred", "-u", "-z", "-n", str(shred_passes), p],
-                                       check=False, capture_output=True)
-                        shredded += 1
-                    else:                                   # fallback: overwrite N× + zero, then unlink
+                    if shred_bin:
+                        subprocess.run([shred_bin, *opts, p], check=False, capture_output=True)
+                    else:                                   # fallback: overwrite N× (+ zero), then unlink
                         sz = os.path.getsize(p)
                         with open(p, "r+b") as f:
                             for _ in range(shred_passes):
                                 f.seek(0); f.write(os.urandom(sz)); f.flush(); os.fsync(f.fileno())
-                            f.seek(0); f.write(b"\x00" * sz); f.flush(); os.fsync(f.fileno())
-                        os.remove(p); shredded += 1
-                    removed += 1
+                            if zero:
+                                f.seek(0); f.write(b"\x00" * sz); f.flush(); os.fsync(f.fileno())
+                        os.remove(p)
+                    shredded += 1
                 except OSError:
                     pass
         shutil.rmtree(self.path, ignore_errors=True)
         return {"destroyed": True, "path": self.path, "files_shredded": shredded,
-                "method": "shred" if have_shred else "overwrite", "exists": os.path.exists(self.path)}
+                "method": f"shred(-n{shred_passes}{',z' if zero else ''}{',x' if exact else ''},{remove_how})"
+                          if shred_bin else f"overwrite(x{shred_passes})",
+                "exists": os.path.exists(self.path)}
 
     def info(self) -> dict:
         on_ram = False

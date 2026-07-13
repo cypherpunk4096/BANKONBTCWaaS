@@ -63,8 +63,14 @@ def main(argv=None):
     tb.add_argument("--file", default=os.path.expanduser("~/.bankon-vault.tomb")); tb.add_argument("--mount", default=DEFAULT_PATH)
     ce = sub.add_parser("ceremony"); ce.add_argument("--threshold", type=int, default=3); ce.add_argument("--total", type=int, default=5)
     mg = sub.add_parser("migrate"); mg.add_argument("--json"); mg.add_argument("--env"); mg.add_argument("--context", default="imported")
-    ds = sub.add_parser("destroy"); ds.add_argument("--passes", type=int, default=7); ds.add_argument("--yes", action="store_true")
-    un = sub.add_parser("uninstall"); un.add_argument("--passes", type=int, default=7); un.add_argument("--yes", action="store_true")
+    for name in ("destroy", "uninstall"):                 # shred options mirror shred(1)
+        sp = sub.add_parser(name)
+        sp.add_argument("--passes", type=int, default=7, help="shred -n (overwrite iterations)")
+        sp.add_argument("--no-zero", action="store_true", help="omit shred -z (final zero pass)")
+        sp.add_argument("--no-exact", action="store_true", help="omit shred -x (round to block)")
+        sp.add_argument("--no-force", action="store_true", help="omit shred -f (chmod to write)")
+        sp.add_argument("--remove-how", default="wipesync", choices=["unlink", "wipe", "wipesync"], help="shred -u=HOW")
+        sp.add_argument("--yes", action="store_true")
     args = ap.parse_args(argv)
 
     if args.cmd in ("destroy", "uninstall"):
@@ -77,7 +83,9 @@ def main(argv=None):
                       "irreversible, leaves no trace.")
                 if input("type ERASE to confirm: ").strip() != "ERASE":
                     sys.exit("aborted")
-            rep = BankonVault(args.path).destroy(shred_passes=args.passes)
+            rep = BankonVault(args.path).destroy(
+                shred_passes=args.passes, zero=not args.no_zero, force=not args.no_force,
+                exact=not args.no_exact, remove_how=args.remove_how)
             print(json.dumps(rep, indent=2))
         if args.cmd == "uninstall":
             # also remove the launcher + any user site copy of this module, leaving no trace
