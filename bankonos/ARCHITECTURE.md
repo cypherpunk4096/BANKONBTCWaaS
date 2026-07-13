@@ -31,6 +31,16 @@ properties, and the crypto behaviour is identical.
 | **bankonDebian** | **cryptoDebian** | Debian live | `toram` (Tails model) | persistence partition | `enclave/debian/` |
 | **bankonBSD** | **cryptoBSD** | OpenBSD + FuguIta | mode 2 (RAM-only) | mode 3 (encrypted vol) | `cryptobsd/` |
 
+## One command: `deploy.sh`
+Drive the whole family from a single entry point — it dispatches `<os> <role>` to the right base + crypto scripts:
+```sh
+sh bankonos/deploy.sh alpine vault      # build the Alpine amnesic signing-enclave ISO
+sh bankonos/deploy.sh debian node       # provision a persistent Bitcoin node on Debian
+sh bankonos/deploy.sh bsd    vault      # cryptoBSD vault on a booted FuguIta
+sh bankonos/deploy.sh auto   node --yes # detect this OS, run the node setup
+```
+(vault builds a portable image; node provisions the running OS, so it must run ON the target.)
+
 ### Two standard deployments (any platform)
 1. **Vault builder / signing enclave** — the OS boots **amnesic** (Alpine diskless · Debian `toram` ·
    FuguIta mode 2); the crypto layer is just `bankon-vault` + the USB PSBT signer. Air-gapped,
