@@ -69,6 +69,22 @@ vault.
   plaintext** — the key is never returned by any function or HTTP endpoint. (Verified by the test suite
   and by the oracle/JS client, which reject any reply containing key material.)
 
+### Frozen custody — the operator ceremony (Shamir K-of-N)
+For the coldest tier, no single person, machine, or site holds the key. `ceremony.py` runs an
+**air-gapped genesis**: it mints a 64-byte master, **Shamir-splits it K-of-N** (default 3-of-5) over a
+self-contained GF(256) field, and emits per-operator shares + a **public manifest** (fingerprint +
+per-share commitments, no secret). Reconstitution needs any **K** shares — verified against the
+manifest so you *know* you rebuilt the original. `ShamirOverseer` reconstructs and unlocks the vault
+directly; any K-subset yields the same master, any K-1 reveals nothing.
+```bash
+bankon-vault ceremony --threshold 3 --total 5     # AIR-GAPPED: prints 5 shares + writes the manifest
+```
+Migrating an old store? `migrate.py` imports a legacy JSON / `.env` (or an in-memory mapping) with
+**round-trip verification** (every value read back and byte-compared) and an ids-only manifest:
+```bash
+bankon-vault migrate --json legacy.json           # or --env legacy.env
+```
+
 ### Frozen storage — GNU Tomb (the crypto undertaker)
 `bankon_vault/tomb.py` (optional) buries the whole vault directory inside a **LUKS Tomb** — the
 tomb/mausoleum model of our own [gnugui/GNUVAULT](https://github.com/gnugui/GNUVAULT) and the legacy
@@ -136,7 +152,8 @@ lineage drop in the same way. A non-BTC secret is just another entry:
 
 Shipped: agnostic core, three overseers, BTC adapter (addresses + BSM-ECDSA gating + PSBT
 sign-don't-export), approval gate, **programmable policy engine** (limits/allow-deny/cooldown/
-timelock/N-of-M + audit), **GNU Tomb frozen-storage backend**, loopback oracle, JS client, CLI,
-installer, **21 passing tests** (11 vault + 10 policy). Optional ordinals live in the separate
-[`bankon-ord`](../bankon-ord/README.md) module. **Next:** frozen-storage hardening (Shamir 3-of-5
-split + operator ceremony) and a legacy-vault migration importer. See `LINEAGE.md` and `SECURITY.md`.
+timelock/N-of-M + audit), **frozen custody** — GF(256) **Shamir K-of-N operator ceremony** +
+`ShamirOverseer` + **GNU Tomb** LUKS backend — a **legacy-vault migration importer**, loopback
+oracle, JS client, CLI, installer, **27 passing tests** (11 vault + 10 policy + 6 ceremony). Optional
+ordinals live in the separate [`bankon-ord`](../bankon-ord/README.md) module. The full stepwise plan
+(vault → ord → policy → frozen hardening) is **complete**. See `LINEAGE.md` and `SECURITY.md`.

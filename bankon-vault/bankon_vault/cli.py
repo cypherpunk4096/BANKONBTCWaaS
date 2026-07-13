@@ -61,7 +61,40 @@ def main(argv=None):
     pol.add_argument("--not-before-height", type=int); pol.add_argument("--no-approval", action="store_true")
     tb = sub.add_parser("tomb"); tb.add_argument("tomb_cmd", choices=["status", "open", "close"])
     tb.add_argument("--file", default=os.path.expanduser("~/.bankon-vault.tomb")); tb.add_argument("--mount", default=DEFAULT_PATH)
+    ce = sub.add_parser("ceremony"); ce.add_argument("--threshold", type=int, default=3); ce.add_argument("--total", type=int, default=5)
+    mg = sub.add_parser("migrate"); mg.add_argument("--json"); mg.add_argument("--env"); mg.add_argument("--context", default="imported")
     args = ap.parse_args(argv)
+
+    if args.cmd == "ceremony":
+        from .ceremony import genesis
+        shares, manifest = genesis(threshold=args.threshold, total=args.total)
+        mpath = os.path.join(args.path, "ceremony-manifest.json")
+        os.makedirs(args.path, exist_ok=True)
+        with open(mpath, "w") as f:
+            json.dump(manifest.to_dict(), f, indent=2)
+        print(f"\n⚰️  GENESIS CEREMONY — {args.threshold}-of-{args.total}. Run this AIR-GAPPED.")
+        print(f"   Give ONE share to each of {args.total} operators; any {args.threshold} reconstruct the master.")
+        print(f"   Manifest (public, no secret) → {mpath}\n")
+        for i, sh in enumerate(shares, 1):
+            print(f"   operator {i}:  {sh}")
+        print("\n   Write these down, distribute, and DESTROY this screen. Unlock later with any "
+              f"{args.threshold} shares.")
+        return
+
+    if args.cmd == "migrate":
+        from . import migrate
+        v = _open(args.path)
+        try:
+            if args.json:
+                rep = migrate.migrate_json(args.json, v, args.context)
+            elif args.env:
+                rep = migrate.migrate_env(args.env, v, args.context)
+            else:
+                sys.exit("migrate needs --json PATH or --env PATH")
+            print(json.dumps({k: rep[k] for k in ("count", "imported", "failed")}, indent=2))
+        finally:
+            v.lock()
+        return
 
     if args.cmd == "policy":
         from .policy import PolicyEngine, PolicyConfig

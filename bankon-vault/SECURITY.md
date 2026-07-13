@@ -19,6 +19,19 @@ keys, crypto-agile).
 6. **Signature-bound custody.** `WalletSignatureOverseer` derives the master from a wallet signature
    that is never stored — lose the signer, lose the vault (non-custodial).
 
+## cypherpunk2048 / CP2048-QR conformance (all key handling)
+Every key path in this module is held to the [cypherpunk2048](https://github.com/cypherpunk2048)
+standard. Point-by-point:
+
+| Tenet | How bankon-vault meets it |
+|---|---|
+| **Non-custodial** | no server or third party ever holds a key. The master material is never persisted (only the random 32-byte `.salt`); the private key never leaves the module (`sign_psbt` returns a *signed PSBT*; the oracle/JS client reject any reply with key material). |
+| **Client-side keys** | keys are minted, stored, split and used **locally**; no network is required for any key operation. The oracle binds to loopback only. |
+| **≥112-bit symmetric-equivalent** | exceeded everywhere: **AES-256-GCM** (256-bit), **HKDF-SHA512**, **PBKDF2-HMAC-SHA512 @ 600k**, **GF(2⁸) Shamir**, **secp256k1** (~128-bit). No MD5/SHA-1/DES/ECB; no `random.random` — entropy is `os.urandom` throughout, including Shamir coefficients. |
+| **Verification replaces trust** | AEAD `AAD=entry_id` binds every record; the ceremony **manifest fingerprint** proves a reconstruction is the original; the policy **quorum** verifies each approver signature; migration is **round-trip byte-verified**. |
+| **Crypto-agility (PQC-ready)** | the `Overseer` / `ChainAdapter` abstractions isolate the primitives so they can be swapped. *Honest note:* the signing curve is classical **secp256k1** because **Bitcoin itself is pre-PQC** — a hybrid-PQC overseer (e.g. layering a PQC KEM over the master material) is the roadmap and does not require changing the vault core. |
+| **Zeroization** | the master key lives in a `bytearray` and is wiped on `lock()`; retrieved plaintext, the reconstructed Shamir master, and the signing seed are all zeroed after use. |
+
 ## Trust boundary
 - The vault trusts the **local host** and the **overseer**. Anyone who can run code as your user and
   observe RAM while the vault is *unlocked* can read secrets — no software vault can prevent that.
