@@ -1,0 +1,11 @@
+# noasks.node — unattended FuguIta boot preset for the cryptoBSD NODE role (persistent crypto node).
+# Mode 3 = "boot with retrieving saved files from storage device / enter passphrase for an ENCRYPTED
+# volume". This is the durable, ENCRYPTED OpenBSD base that runs Bitcoin Core + other cryptocurrency
+# daemons — the foundational install. Persistence is via FuguIta's usbfadm + an encrypted volume.
+
+noask_rdev=''                 # operating device — '' autodetects the boot device (or set e.g. sd0a)
+noask_umem=''                 # mfs size for the working RAM layer
+noask_setup_rw_mode=3         # 3 = retrieve saved files / decrypt persistent volume  (the node)
+noask_confdev=''              # saved-config device (usbfadm target); '' prompts. Set to your encrypted vol.
+noask_confdata='usbfadm'      # restore the saved config on boot
+# NOTE: mode 3 prompts for the encryption passphrase — that is deliberate (no unattended decryption).

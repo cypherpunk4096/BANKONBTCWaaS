@@ -1,0 +1,10 @@
+# noasks.vault — unattended FuguIta boot preset for the bankonOS VAULT role (amnesic signing enclave).
+# Drop as /livecd-config/<osrel>/<osmac>/noasks on the FuguIta media (see bankonos-fuguita.sh).
+# FuguIta's rc sources this to skip the boot prompts. Mode 2 = "works using only RAM" → AMNESIC:
+# nothing persists, everything vanishes on power-off. This IS the signing-enclave posture.
+
+noask_rdev=''                 # operating device — '' lets FuguIta autodetect the boot USB (or set e.g. sd1a)
+noask_umem=''                 # mfs/tmpfs size — '' = default (needs ~1GB RAM for mode 2)
+noask_setup_rw_mode=2         # 2 = RAM-only, amnesic  (the vault builder / enclave)
+noask_confdev=''              # no saved-config device — the vault must not persist
+noask_confdata=''
