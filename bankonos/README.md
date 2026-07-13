@@ -33,9 +33,31 @@ COMPONENTS="base dev bitcoin bankon harden" sh install.sh --yes
 | **base** | git · curl · gnupg · tmux · jq · ca-certificates · python3 |
 | **dev** | Go · Node · Rust · build toolchain (the sovereign dev workstation) |
 | **bitcoin** | Bitcoin Core — BANKON's verified `install-core` if present, else the OS package |
-| **bankon** | clones `cypherpunk2048/bankon-tools`, runs the `bankon-vault` installer, points at ICE |
+| **bankon** | clones `cypherpunk2048/bankon-tools`, installs the **vault** (below), points at ICE |
+| **vault** | **bankon-vault on any OS, correctly** — see below |
 | **ai** | fetches the official ollama installer for review (skipped on OpenBSD) |
 | **harden** | firewall (`ufw`/`awall`/`pf`) + the air-gap/`swapoff` guidance for key ops |
+
+## bankon-vault on any OS — correct vault handling
+`sh install.sh --only vault` (or as part of `bankon`) installs bankon-vault properly on **every**
+supported OS, because the pieces differ:
+
+- **Crypto backend.** `cryptography` ships a *compiled* backend; a bare `pip install` on **Alpine
+  (musl)** or **OpenBSD** tries to build it (needs a Rust/OpenSSL toolchain). So the installer uses
+  the **system package** — `py3-cryptography` (Alpine/OpenBSD) / `python3-cryptography` (Debian) —
+  and only pip-installs the pure-Python `embit` (with `--break-system-packages` where the distro
+  externally-manages pip).
+- **Key-hygiene tools** (all optional; the vault degrades honestly without them):
+  - **Alpine** — `coreutils` for a real `shred -n` (busybox's `shred` lacks passes); `cryptsetup`.
+  - **Debian** — `coreutils` + **`tomb`** (the LUKS "frozen" backend).
+  - **OpenBSD** — no Tomb/LUKS; the installer points you at `rm -P`, the **RAM-vault**, and
+    **softraid(4) CRYPTO** for cold storage instead.
+- **RAM-vault path** differs: `/dev/shm` on Linux, an `mfs`/`tmpfs` mount on OpenBSD — the installer
+  prints the right `BANKON_VAULT_PATH` for your OS.
+- Always ends with the same guidance: **create keys air-gapped (ICE AIRGAP) with swap off**.
+
+The result is identical vault *behaviour* (AES-256-GCM + HKDF, mlock, sign-don't-export, Shamir
+ceremony, policy engine) on Alpine, OpenBSD, and Debian — only the provisioning path adapts.
 
 ## Design notes
 - **OpenBSD-first mindset**: prefers `doas`, respects `pf` (built-in), never assumes systemd.

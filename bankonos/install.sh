@@ -126,6 +126,41 @@ component_bitcoin() {
   fi
 }
 
+component_vault() {
+  # bankon-vault on ANY OS with correct vault handling. `cryptography` ships a compiled backend, so
+  # on Alpine (musl) and OpenBSD we install the SYSTEM package (a bare pip build needs a toolchain);
+  # `embit` is pure-Python. We also ensure the vault's key-hygiene tools exist per OS.
+  say "vault — bankon-vault (encrypted keys · signature gating · frozen storage)"
+  # 1) crypto deps — system package where a pip build would otherwise be needed
+  case "$OS" in
+    alpine)  pkg_install py3-cryptography py3-pip python3 ;;
+    openbsd) pkg_install py3-cryptography py3-pip ;;
+    debian)  pkg_install python3-cryptography python3-pip python3-venv ;;
+  esac
+  # embit (pure Python) via pip; --break-system-packages where the distro externally-manages pip
+  if [ "$DRY" = 1 ]; then say "   [dry-run] pip install --user embit"; else
+    python3 -m pip install --user --quiet embit 2>/dev/null \
+      || python3 -m pip install --user --quiet --break-system-packages embit 2>/dev/null || true
+  fi
+  # 2) key-hygiene tools the vault uses (all OPTIONAL — the vault degrades honestly without them):
+  #    shred (traceless erase), tomb (LUKS frozen backend, Linux-only), swap tooling.
+  case "$OS" in
+    alpine)  pkg_install coreutils || true; have cryptsetup || pkg_install cryptsetup || true ;;   # busybox shred lacks -n
+    debian)  pkg_install coreutils || true; have tomb || pkg_install tomb || warn "tomb optional (LUKS frozen storage)" ;;
+    openbsd) say "   OpenBSD: shred≈none (use 'rm -P'); Tomb/LUKS is Linux-only — use the RAM-vault + softraid(4)CRYPTO" ;;
+  esac
+  # 3) run the vault's own OS-aware installer if the source is here; else pip-install path only
+  if [ -f "$BANKON_DIR/bankon-vault/install.sh" ]; then
+    run "sh \"$BANKON_DIR/bankon-vault/install.sh\""
+  fi
+  # 4) correct vault handling — the RAM/tmpfs vault path differs per OS
+  case "$OS" in
+    alpine|debian) say "   RAM-vault: export BANKON_VAULT_PATH=/dev/shm/vault  (amnesic, disk-free)" ;;
+    openbsd)       say "   RAM-vault: mount an mfs/tmpfs and set BANKON_VAULT_PATH there (no /dev/shm on OpenBSD)" ;;
+  esac
+  say "   create keys AIR-GAPPED (ICE AIRGAP) + 'swapoff'/encrypted-swap — see bankon-vault SECURITY.md"
+}
+
 component_bankon() {
   say "bankon — the sovereign stack (bankon-tools + bankon-vault + ICE)"
   if [ ! -d "$BANKON_DIR" ]; then
@@ -134,7 +169,7 @@ component_bankon() {
   else
     say "  bankon-tools present at $BANKON_DIR"
   fi
-  [ -f "$BANKON_DIR/bankon-vault/install.sh" ] && run "sh \"$BANKON_DIR/bankon-vault/install.sh\"" || true
+  component_vault
   say "  ICE (thermal/airgap/firewall + BANKON_VAULT frozen storage): $BANKON_DIR/../ICE or ~/ICE"
 }
 
@@ -157,7 +192,7 @@ component_harden() {
 }
 
 # ── run selected components ────────────────────────────────────────────────────
-ALL="base dev bitcoin bankon ai harden"
+ALL="base dev bitcoin bankon vault ai harden"
 SEL="${ONLY:-${COMPONENTS:-}}"
 if [ -z "$SEL" ]; then
   if [ "$YES" = 1 ]; then SEL="base bitcoin bankon harden"       # sane default set
