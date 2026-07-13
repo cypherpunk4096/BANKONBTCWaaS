@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import json
 import os
 import sys
 
@@ -54,7 +55,35 @@ def main(argv=None):
     sub.add_parser("list")
     s = sub.add_parser("sign"); s.add_argument("--id", default="btc.seed"); s.add_argument("--net", default="main"); s.add_argument("--psbt", required=True)
     sv = sub.add_parser("serve"); sv.add_argument("--port", type=int, default=8099); sv.add_argument("--id", default="btc.seed"); sv.add_argument("--net", default="main")
+    pol = sub.add_parser("policy"); pol.add_argument("policy_cmd", choices=["show", "set"])
+    pol.add_argument("--max-fee-sats", type=int); pol.add_argument("--max-total-out-sats", type=int)
+    pol.add_argument("--cooldown-sec", type=int); pol.add_argument("--allow", action="append", default=[])
+    pol.add_argument("--not-before-height", type=int); pol.add_argument("--no-approval", action="store_true")
+    tb = sub.add_parser("tomb"); tb.add_argument("tomb_cmd", choices=["status", "open", "close"])
+    tb.add_argument("--file", default=os.path.expanduser("~/.bankon-vault.tomb")); tb.add_argument("--mount", default=DEFAULT_PATH)
     args = ap.parse_args(argv)
+
+    if args.cmd == "policy":
+        from .policy import PolicyEngine, PolicyConfig
+        if args.policy_cmd == "show":
+            print(json.dumps(PolicyEngine.load_config(args.path).to_dict(), indent=2)); return
+        cfg = PolicyEngine.load_config(args.path)
+        if args.max_fee_sats is not None: cfg.max_fee_sats = args.max_fee_sats
+        if args.max_total_out_sats is not None: cfg.max_total_out_sats = args.max_total_out_sats
+        if args.cooldown_sec is not None: cfg.cooldown_sec = args.cooldown_sec
+        if args.not_before_height is not None: cfg.not_before_height = args.not_before_height
+        if args.allow: cfg.allowlist = args.allow
+        if args.no_approval: cfg.require_approval = False
+        PolicyEngine(cfg, args.path).save_config()
+        print("policy saved:\n" + json.dumps(cfg.to_dict(), indent=2)); return
+
+    if args.cmd == "tomb":
+        from .tomb import TombVault
+        t = TombVault(args.file)
+        if args.tomb_cmd == "status": print(json.dumps(t.status(), indent=2))
+        elif args.tomb_cmd == "open": print("opened at", t.open(args.mount))
+        elif args.tomb_cmd == "close": t.close(); print("tomb buried (closed)")
+        return
 
     if args.cmd == "init":
         v = _open(args.path, create=True)

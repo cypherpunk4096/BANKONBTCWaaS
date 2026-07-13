@@ -42,26 +42,10 @@ class ApprovalGate:
             return False
 
 
-class Policy:
-    """STEP-3 STUB — a programmable gate. Documented here so callers can target the interface now.
-
-    Planned rules (each returns allow/deny with a reason):
-      • max_fee_sats / max_output_sats / max_total_sats   (spend limits)
-      • allowlist: only these output addresses may be paid
-      • cooldown_sec: minimum time between signatures
-      • timelock: refuse before a wall-clock/height
-      • quorum: N-of-M approver signatures required
-
-    Until implemented, Policy.approve delegates to a wrapped fallback gate (default DenyAll) so a
-    caller that opts into policy without configuring rules stays fail-closed.
-    """
-    def __init__(self, rules: Optional[dict] = None, fallback: Optional[Gate] = None):
-        self.rules = rules or {}
-        self._fallback = fallback or DenyAll()
-
-    def approve(self, req: SigningRequest) -> bool:
-        # alpha: no rules engine yet → fail closed through the fallback gate.
-        return self._fallback.approve(req)
+# The programmable engine lives in policy_engine.py (spend limits, allow/deny lists, cooldown,
+# timelocks, N-of-M quorum, audit log). Import it here so callers can `from ...policy import
+# PolicyEngine, PolicyConfig`. It implements the Gate protocol, so it drops into gated_sign_psbt.
+from .policy_engine import PolicyEngine, PolicyConfig, Decision   # noqa: E402,F401
 
 
 def gated_sign_psbt(vault, adapter, entry_id: str, psbt_b64: str, gate: Gate,
@@ -74,13 +58,21 @@ def gated_sign_psbt(vault, adapter, entry_id: str, psbt_b64: str, gate: Gate,
     """
     summary = adapter.decode_psbt(psbt_b64)
     req = SigningRequest(entry_id, psbt_b64, summary, requester)
-    if not gate.approve(req):
+    # a PolicyEngine exposes evaluate() with detailed reasons (and may carry quorum votes on the req)
+    if hasattr(gate, "evaluate"):
+        decision = gate.evaluate(req, getattr(req, "quorum_votes", None))
+        if not decision:
+            raise PermissionError("signature denied by policy: " + "; ".join(decision.reasons))
+    elif not gate.approve(req):
         raise PermissionError("signature denied by gate")
     secret = vault.retrieve(entry_id)                 # bytearray
     if secret is None:
         raise KeyError(f"no vault entry {entry_id!r}")
     try:
-        return adapter.sign_psbt(secret.decode(), psbt_b64)
+        signed = adapter.sign_psbt(secret.decode(), psbt_b64)
     finally:
         for i in range(len(secret)):                  # wipe the plaintext seed
             secret[i] = 0
+    if hasattr(gate, "record_signed"):                # arm the cooldown after a successful sign
+        gate.record_signed()
+    return signed

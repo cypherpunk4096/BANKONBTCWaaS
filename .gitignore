@@ -42,3 +42,9 @@ passwords.*
 .DS_Store
 *.swp
 bankon-console/.history
+
+# bankon-vault policy runtime state
+**/.policy_state.json
+**/.policy_audit.jsonl
+*.tomb
+*.tomb.key

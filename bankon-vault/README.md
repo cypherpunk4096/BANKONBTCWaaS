@@ -58,12 +58,28 @@ vault.
 
 - **Who may open** the vault: `WalletSignatureOverseer` — the master key is derived from a secp256k1
   signature over a fixed challenge; the signature is never stored. No signer, no vault.
-- **Whether a given transaction signs**: the `Gate`. Alpha = `ApprovalGate` — the approver is shown the
-  **decoded PSBT** (inputs, outputs, amounts, fee) and must confirm. Default is `DenyAll` (fail-closed).
-  Programmable policy (spend limits / allowlists / timelocks / N-of-M) is the Step-3 `Policy` stub.
+- **Whether a given transaction signs**: the `Gate`. `ApprovalGate` shows the **decoded PSBT** and asks
+  a human; default is `DenyAll` (fail-closed).
+- **Programmable policy engine** (`PolicyEngine`, `PolicyConfig`) — a signing *firewall*, each rule
+  fail-closed and AND-ed: **spend limits** (`max_fee_sats` / `max_output_sats` / `max_total_out_sats`),
+  **address allowlist / denylist**, **cooldown** (rate-limit), **timelocks** (`not_before_epoch` /
+  `not_before_height`), and **N-of-M quorum** (approvers sign the PSBT payload; verified via the BTC
+  adapter). Every decision is appended to a `.policy_audit.jsonl`; config persists at `.policy.json`.
 - **Sign-don't-export**: `gated_sign_psbt()` retrieves the seed, signs the PSBT, and **wipes the
   plaintext** — the key is never returned by any function or HTTP endpoint. (Verified by the test suite
   and by the oracle/JS client, which reject any reply containing key material.)
+
+### Frozen storage — GNU Tomb (the crypto undertaker)
+`bankon_vault/tomb.py` (optional) buries the whole vault directory inside a **LUKS Tomb** — the
+tomb/mausoleum model of our own [gnugui/GNUVAULT](https://github.com/gnugui/GNUVAULT) and the legacy
+`bankonvault.sh` lineage. **Closed = frozen**: the plaintext directory does not exist on disk between
+signings; **open** it (under AIRGAP via ICE) only to unlock+sign, then `close` (bury) it again.
+Degrades honestly if `tomb` isn't installed (`sudo apt install tomb`).
+```bash
+bankon-vault policy set --max-fee-sats 20000 --cooldown-sec 3600 --allow bc1q…   # firewall rules
+bankon-vault policy show
+bankon-vault tomb status | open | close                                          # LUKS cold storage
+```
 
 ## Installation
 
@@ -118,8 +134,9 @@ lineage drop in the same way. A non-BTC secret is just another entry:
 
 ## Status
 
-**Alpha** (Step 1 of the stepwise plan). Shipped: agnostic core, three overseers, BTC adapter
-(addresses + BSM-ECDSA gating + PSBT sign-don't-export), approval gate, loopback oracle, JS client,
-CLI, installer, 11 passing tests. **Next steps:** ordinals (`ord`) alpha (wallet-isolated), the
-programmable `Policy` engine, and frozen-storage hardening (Shamir split + LUKS removable-media
-automation). See `LINEAGE.md` and `SECURITY.md`.
+Shipped: agnostic core, three overseers, BTC adapter (addresses + BSM-ECDSA gating + PSBT
+sign-don't-export), approval gate, **programmable policy engine** (limits/allow-deny/cooldown/
+timelock/N-of-M + audit), **GNU Tomb frozen-storage backend**, loopback oracle, JS client, CLI,
+installer, **21 passing tests** (11 vault + 10 policy). Optional ordinals live in the separate
+[`bankon-ord`](../bankon-ord/README.md) module. **Next:** frozen-storage hardening (Shamir 3-of-5
+split + operator ceremony) and a legacy-vault migration importer. See `LINEAGE.md` and `SECURITY.md`.

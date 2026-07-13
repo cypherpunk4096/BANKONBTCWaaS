@@ -9,8 +9,11 @@ The core (BankonVault, overseers) is chain-independent. BTC lives in chains.btc 
 from .core import BankonVault, VaultEntry, VaultError, VaultLocked, VAULT_VERSION
 from .overseer import (Overseer, PassphraseOverseer, KeyfileOverseer,
                        WalletSignatureOverseer, DEFAULT_CHALLENGE)
+from .policy import (DenyAll, ApprovalGate, SigningRequest, gated_sign_psbt,
+                     PolicyEngine, PolicyConfig, Decision)
 
 __all__ = ["BankonVault", "VaultEntry", "VaultError", "VaultLocked", "VAULT_VERSION",
            "Overseer", "PassphraseOverseer", "KeyfileOverseer", "WalletSignatureOverseer",
-           "DEFAULT_CHALLENGE"]
+           "DEFAULT_CHALLENGE", "DenyAll", "ApprovalGate", "SigningRequest", "gated_sign_psbt",
+           "PolicyEngine", "PolicyConfig", "Decision"]
 __version__ = VAULT_VERSION
