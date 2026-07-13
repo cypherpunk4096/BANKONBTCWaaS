@@ -48,3 +48,8 @@ bankon-console/.history
 **/.policy_audit.jsonl
 *.tomb
 *.tomb.key
+
+# bankonOS enclave build artifacts
+bankonos/enclave/_stage/
+bankonos/enclave/*.apkovl.tar.gz
+bankonos/enclave/iso/
