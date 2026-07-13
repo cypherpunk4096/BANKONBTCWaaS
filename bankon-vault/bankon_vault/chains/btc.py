@@ -107,6 +107,50 @@ class BitcoinAdapter(ChainAdapter):
         tx.sign_with(root)                          # adds signatures for every input this root owns
         return tx.to_base64()
 
+    # ---- multisig round: merge cosigners' partial sigs, know when N-of-M is met, finalize ----
+    def combine_psbts(self, psbts_b64: list) -> str:
+        """Merge partial signatures from several cosigners (each signed the SAME PSBT) into one."""
+        if not psbts_b64:
+            raise ValueError("no PSBTs to combine")
+        base = PSBT.from_base64(psbts_b64[0].strip())
+        for other_b64 in psbts_b64[1:]:
+            o = PSBT.from_base64(other_b64.strip())
+            for i, inp in enumerate(base.inputs):
+                for pub, sig in o.inputs[i].partial_sigs.items():
+                    inp.partial_sigs[pub] = sig                # union of signatures
+        return base.to_base64()
+
+    def signatures_present(self, psbt_b64: str) -> list:
+        """Per-input count of partial signatures collected so far (multisig progress)."""
+        tx = PSBT.from_base64(psbt_b64.strip())
+        return [len(inp.partial_sigs) for inp in tx.inputs]
+
+    def threshold(self, psbt_b64: str) -> list:
+        """Per-input (M, N) for multisig inputs — reads the witness/redeem script. (1,1) for single-sig."""
+        from embit import finalizer
+        tx = PSBT.from_base64(psbt_b64.strip())
+        out = []
+        for inp in tx.inputs:
+            scr = inp.witness_script or inp.redeem_script
+            try:
+                m, pubs = finalizer.parse_multisig(scr)
+                out.append((m, len(pubs)))
+            except Exception:
+                out.append((1, 1))
+        return out
+
+    def is_complete(self, psbt_b64: str) -> bool:
+        """True only if EVERY input has met its real M-of-N signature threshold (not just 'some sigs')."""
+        present = self.signatures_present(psbt_b64)
+        needed = self.threshold(psbt_b64)
+        return all(p >= m for p, (m, _n) in zip(present, needed)) and len(present) > 0
+
+    def finalize(self, psbt_b64: str) -> str:
+        """Finalize a fully-signed (multisig) PSBT → network-ready raw transaction hex."""
+        from embit import finalizer
+        tx = finalizer.finalize_psbt(PSBT.from_base64(psbt_b64.strip()))
+        return tx.serialize().hex()
+
     def decode_psbt(self, psbt_b64: str) -> dict:
         """Human-readable summary for the per-sign approval gate: inputs, outputs, amounts, fee."""
         tx = PSBT.from_base64(psbt_b64.strip())
