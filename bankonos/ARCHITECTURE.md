@@ -37,7 +37,7 @@ properties, and the crypto behaviour is identical.
    sign-don't-export, power-off = amnesia. (`enclave/`, `cryptobsd.sh vault`.)
 2. **Foundational node** — the OS boots **persistent + encrypted** (LUKS on Alpine/Debian · FuguIta
    mode 3 encrypted volume); the crypto layer runs **Bitcoin Core + other coins** as durable daemons,
-   with the BANKON read-only Console/WaaS attached. (`cryptobsd.sh node` / `node-setup.sh`.)
+   with the BANKON read-only Console/WaaS attached. (node setups: `cryptobsd/node-setup.sh` · `cryptoalpine/node-setup.sh` · `cryptodebian/node-setup.sh`.)
 
 ## Why this split matters
 - **Audit surface** — you can verify the OS air-gap/hardening separately from the key handling.
