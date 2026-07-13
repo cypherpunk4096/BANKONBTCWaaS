@@ -32,6 +32,29 @@ standard. Point-by-point:
 | **Crypto-agility (PQC-ready)** | the `Overseer` / `ChainAdapter` abstractions isolate the primitives so they can be swapped. *Honest note:* the signing curve is classical **secp256k1** because **Bitcoin itself is pre-PQC** — a hybrid-PQC overseer (e.g. layering a PQC KEM over the master material) is the roadmap and does not require changing the vault core. |
 | **Zeroization** | the master key lives in a `bytearray` and is wiped on `lock()`; retrieved plaintext, the reconstructed Shamir master, and the signing seed are all zeroed after use. |
 
+## Quantum posture — CP2048-QR (declared honestly)
+The [CP2048-QR](https://github.com/cypherpunk2048/quantum-standard) standard insists systems **declare
+their real capability, not the aspirational one.** So, honestly:
+
+- **Symmetric / hash layer — already PQC-baseline.** AES-256-GCM + HKDF/PBKDF2-**SHA-512** meet the
+  standard's "AES-256 + SHA-512/SHA-3, ≥112-bit floor." Grover only halves symmetric strength, so
+  AES-256 stays ~128-bit post-quantum — fine.
+- **Signature layer — Tier-C (classical), by necessity.** BTC signing is **secp256k1 (ECDSA)**, which
+  Shor's algorithm breaks — but **Bitcoin itself is pre-PQC**, so no vault can change that today.
+  bankon-vault is therefore **Tier-C for BTC signing** and does not pretend otherwise.
+- **Crypto-agile — Tier-A ready.** The `Overseer`/`ChainAdapter`/gate abstractions make the signature
+  scheme **swappable, not hard-wired**, per CP2048-QR — so a PQC signer drops in without touching the
+  core. Roadmap: an **FN-DSA (Falcon) / ML-DSA** overseer+adapter, following **Algorand's Falcon**
+  quantum-native initiative (the first Tier-Q mainnet, Nov 2025); the multi-chain `walletcreator`
+  already carries Algorand keys, so Falcon is the natural next adapter.
+- **Key custody — conformant.** Client-side keys, **no server escrow, one key per use, open source** —
+  exactly CP2048-QR's custody mandate.
+
+> **Honesty note on `shred --pow2 8192`:** more overwrite passes is **anti-forensic depth** (defeating
+> disk-recovery of erased data), **not** quantum resistance. Quantum resistance lives in the signature
+> algorithm above, not in how many times a file is overwritten. The option exists for those who want
+> maximal overwrite; it makes no quantum claim.
+
 ## Trust boundary
 - The vault trusts the **local host** and the **overseer**. Anyone who can run code as your user and
   observe RAM while the vault is *unlocked* can read secrets — no software vault can prevent that.

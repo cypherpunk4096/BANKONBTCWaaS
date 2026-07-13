@@ -65,7 +65,12 @@ def main(argv=None):
     mg = sub.add_parser("migrate"); mg.add_argument("--json"); mg.add_argument("--env"); mg.add_argument("--context", default="imported")
     for name in ("destroy", "uninstall"):                 # shred options mirror shred(1)
         sp = sub.add_parser(name)
-        sp.add_argument("--passes", type=int, default=7, help="shred -n (overwrite iterations)")
+        sp.add_argument("--passes", type=int, default=7,
+                        help="shred -n overwrite iterations (anti-forensic overwrite DEPTH; power-of-2 "
+                             "progression accepted …512,1024,2048,4096,8192). NOTE: overwrite depth is "
+                             "not quantum resistance — that's the signature algorithm; see SECURITY.md.")
+        sp.add_argument("--pow2", type=int, metavar="EXP",
+                        help="set passes = 2**EXP (e.g. --pow2 13 = 8192); overrides --passes")
         sp.add_argument("--no-zero", action="store_true", help="omit shred -z (final zero pass)")
         sp.add_argument("--no-exact", action="store_true", help="omit shred -x (round to block)")
         sp.add_argument("--no-force", action="store_true", help="omit shred -f (chmod to write)")
@@ -83,8 +88,10 @@ def main(argv=None):
                       "irreversible, leaves no trace.")
                 if input("type ERASE to confirm: ").strip() != "ERASE":
                     sys.exit("aborted")
+            passes = (1 << args.pow2) if args.pow2 is not None else args.passes
+            passes = max(1, min(passes, 8192))            # cap at 8192 (2**13)
             rep = BankonVault(args.path).destroy(
-                shred_passes=args.passes, zero=not args.no_zero, force=not args.no_force,
+                shred_passes=passes, zero=not args.no_zero, force=not args.no_force,
                 exact=not args.no_exact, remove_how=args.remove_how)
             print(json.dumps(rep, indent=2))
         if args.cmd == "uninstall":
