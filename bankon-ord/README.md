@@ -6,6 +6,10 @@ ordinals demand. Install it only if you want ordinals; nothing in BANKON or `ban
 it. Supports **mainnet and testnet** (also signet + regtest).
 
 > Not affiliated with ordinals/ord. This wraps its CLI (CC0). Docs: <https://docs.ordinals.com>.
+>
+> **Read alongside:** [SCIENCE.md](SCIENCE.md) — *Ordinals: A Science* + **SciFi = Scientific Finance**
+> (accuracy-first oracles / NFTs / ordinals / bridges) · [TOOLS.md](TOOLS.md) — the instrument
+> catalogue, incl. our ordinals org [satoshigen](https://github.com/satoshigen).
 
 ## Ordinal theory in one paragraph
 Every satoshi is numbered by the order it was mined (**ordinals**), and sats move through transactions
