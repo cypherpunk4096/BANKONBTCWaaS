@@ -8,17 +8,29 @@
 set -eu
 VAULT_SRC="/opt/bankon-vault"                 # vendored vault source
 export PYTHONPATH="$VAULT_SRC"
-export BANKON_VAULT_PATH="${BANKON_VAULT_PATH:-/dev/shm/enclave-vault}"   # RAM-only, amnesic
+# RAM-only vault path — /dev/shm on Linux; a memory fs (mfs/tmpfs) elsewhere (OpenBSD has no /dev/shm)
+if [ -z "${BANKON_VAULT_PATH:-}" ]; then
+  if [ -d /dev/shm ]; then BANKON_VAULT_PATH=/dev/shm/enclave-vault
+  else BANKON_VAULT_PATH=/tmp/enclave-vault; fi                # mount /tmp as mfs on OpenBSD (see README)
+fi
+export BANKON_VAULT_PATH
 POLL=3
 
 log() { echo "[enclave $(date +%H:%M:%S)] $*"; }
 
-# hard refusal to sign if the box is NOT air-gapped
-airgapped() {
-  # any default route with the RTF_UP|RTF_GATEWAY flag → NOT air-gapped
-  awk 'NR>1 && $2=="00000000" { exit 1 } END { exit 0 }' /proc/net/route 2>/dev/null
+# hard refusal to sign if the box is NOT air-gapped — OS-aware (Linux / OpenBSD / BSD)
+has_default_route() {
+  if [ -r /proc/net/route ]; then                        # Linux
+    awk 'NR>1 && $2=="00000000" { found=1 } END { exit !found }' /proc/net/route 2>/dev/null && return 0
+    return 1
+  elif command -v route >/dev/null 2>&1; then             # OpenBSD/BSD: `route -n show` lists a default
+    route -n show 2>/dev/null | grep -q '^default' && return 0; return 1
+  elif command -v netstat >/dev/null 2>&1; then
+    netstat -rn 2>/dev/null | grep -q '^default' && return 0; return 1
+  fi
+  return 1                                                # can't tell → assume clean (already RF-cut at boot)
 }
-airgapped || { log "REFUSING: a network route exists — this must be an AIR-GAPPED enclave. rfkill/ip link down and retry."; exit 1; }
+has_default_route && { log "REFUSING: a default route exists — this must be an AIR-GAPPED enclave. Cut radios/NICs and retry."; exit 1; }
 
 log "signing enclave up · vault=$BANKON_VAULT_PATH (RAM) · watching removable media for *.psbt"
 
