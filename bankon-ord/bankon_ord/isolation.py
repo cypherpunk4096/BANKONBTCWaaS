@@ -1,0 +1,69 @@
+# SPDX-License-Identifier: CC0-1.0
+# bankon-ord — wallet ISOLATION. The single most important safety rule for ordinals:
+#
+#   Bitcoin Core is NOT inscription-aware. A normal spend from a wallet that holds inscriptions can
+#   send the inscribed sat as ordinary change and DESTROY the inscription. Therefore ordinal-bearing
+#   ("ordinal") and plain-BTC ("cardinal") wallets must NEVER mix, and the generic BANKON/vault BTC
+#   signer must NEVER be pointed at an ordinal wallet's UTXOs.
+#
+# This module encodes that as guardrails: a naming convention, a fail-closed check before any mutating
+# ord action, and a "material funds" warning. Reads are always allowed; mutations are gated.
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Callable, Optional
+
+ORDINAL_MARKERS = ("ord", "ordinal", "inscription", "insc", "rune")   # a wallet name must declare intent
+MATERIAL_FUNDS_SATS = 10_000_000        # 0.1 BTC — refuse ordinals ops on a wallet this "hot" (docs' warning)
+
+
+class IsolationError(RuntimeError):
+    pass
+
+
+def is_ordinal_wallet(name: str) -> bool:
+    """An ordinal wallet must DECLARE itself by name (e.g. 'ord-main', 'inscriptions')."""
+    n = (name or "").lower()
+    return any(m in n for m in ORDINAL_MARKERS)
+
+
+def assert_ordinal_wallet(name: str) -> None:
+    if not is_ordinal_wallet(name):
+        raise IsolationError(
+            f"wallet {name!r} is not marked as an ordinal wallet. Name it with 'ord'/'ordinal'/"
+            f"'inscription' and keep it SEPARATE from any wallet holding plain BTC — a normal spend "
+            f"on an inscription wallet can destroy the inscription.")
+
+
+def assert_not_material_funds(balance_sats: Optional[int]) -> None:
+    if balance_sats is not None and balance_sats >= MATERIAL_FUNDS_SATS:
+        raise IsolationError(
+            f"this wallet holds {balance_sats/1e8:.4f} BTC (>= {MATERIAL_FUNDS_SATS/1e8} BTC). The ord "
+            f"docs warn against using ordinals tooling with material funds — move plain BTC to a "
+            f"cardinal wallet first.")
+
+
+@dataclass
+class GuardResult:
+    ok: bool
+    reason: str = ""
+
+
+def guard_mutation(wallet: str, balance_sats: Optional[int] = None,
+                   approve: Optional[Callable[[dict], bool]] = None,
+                   action: str = "inscribe", details: Optional[dict] = None) -> GuardResult:
+    """Fail-closed gate for any ord action that MOVES coins/inscriptions (inscribe/send/etch).
+
+      1) the wallet must be an ordinal wallet (isolation),
+      2) it must not hold material plain funds,
+      3) a human must approve (shown the action + details); default = deny.
+    """
+    try:
+        assert_ordinal_wallet(wallet)
+        assert_not_material_funds(balance_sats)
+    except IsolationError as e:
+        return GuardResult(False, str(e))
+    payload = {"action": action, "wallet": wallet, **(details or {})}
+    if not (approve and approve(payload)):
+        return GuardResult(False, "not approved")
+    return GuardResult(True, "approved")

@@ -35,8 +35,9 @@ non-custodial system. This document records where the parts come from, honestly 
 
 **bankonOS** is the author's sovereign-workstation tooling/design. It **favours Alpine and OpenBSD,
 with Debian compatibility** (the on-disk Ubuntu-22.04 provisioning kit is one deb-compat instance of
-that design, not the whole thing). It is documented here as **lineage/tools context — it is not a
-current public repo** — and BANKON vendors none of it.
+that design, not the whole thing). It is a **private prototype repo** — an early proof-of-concept
+alongside [github.com/bankonvault](https://github.com/bankonvault), also prototype-stage — so it is
+documented here as lineage/context and BANKON vendors none of it.
 
 ## The original web expression (revived)
 

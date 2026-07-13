@@ -53,8 +53,9 @@ verification replaces trust.* **Non-custodial, per-connection client-side keys, 
 ## bankonOS (context, not a code origin)
 **bankonOS** is the author's sovereign-workstation tooling/design — it **favours Alpine and OpenBSD,
 with Debian compatibility** (the on-disk Ubuntu-22.04 provisioning kit is one deb-compat instance of
-it, not the whole design). It is documented here as **lineage/tools context, not a current public
-repo**, and this module vendors none of it.
+it, not the whole design). It is a **private prototype repo** — an early proof-of-concept alongside
+[github.com/bankonvault](https://github.com/bankonvault) (also prototype-stage) — documented here as
+lineage/context; this module vendors none of it.
 
 ## What is deliberately NOT carried over
 No key material, run transcripts, or credential files from any legacy artifact are read into, copied
