@@ -28,6 +28,7 @@ New here? Start with **[../README.md](../README.md)** then **[../USAGE.md](../US
 | [../SECURITY.md](../SECURITY.md) | **Threat model, trust boundaries, disclosure policy** (the GitHub security policy) |
 | [../bankon-vault/README.md](../bankon-vault/README.md) | **bankon-vault** — chain-agnostic vault, BTC signature access + gating, sign-don't-export, ICE frozen storage |
 | [../bankon-ord/README.md](../bankon-ord/README.md) | **bankon-ord** (optional) — ordinals/inscriptions/runes via ordinals/ord, wallet-isolated, mainnet+testnet |
+| [../bankonos/README.md](../bankonos/README.md) | **bankonOS installer** — sovereign workstation, multi-OS (Alpine/OpenBSD favoured, Debian-compatible), modular |
 | [origins.md](origins.md) | **Origins & lineage** — bankonme (founding vision) → … → cypherpunk2048; + [bankonme-archive.txt](bankonme-archive.txt) |
 | [security.md](security.md) | Non-custodial guarantees, auth, backups, offline client |
 | [ICE.md](ICE.md) | **🧊 ICE** — the wall between the network and the wallet (thermal scaling + RF AIRGAP) + the **blackICE** roadmap |
