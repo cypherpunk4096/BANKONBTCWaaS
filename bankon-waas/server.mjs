@@ -223,6 +223,37 @@ app.get('/api/health', async (req, res) => {
   } catch (e) { fail(res, e); }
 });
 
+// --- POST-QUANTUM POC: Falcon (FN-DSA) wallet-creation option (experimental / CP2048-QR Tier-Q) ---
+// Bridges to the bankon-vault pqc_falcon module (Python). HONEST: Bitcoin signing stays secp256k1;
+// this mints a PQC identity key for the quantum-native path. The server NEVER returns the secret key
+// (non-custodial): the /demo endpoint proves keygen+sign+verify and returns the PUBLIC key only.
+import { execFile } from 'node:child_process';
+const VAULT_PY = join(__dir, '..', 'bankon-vault');
+function _pqcPy(code) {
+  return new Promise((resolve) => {
+    execFile('python3', ['-c', `import sys;sys.path.insert(0,${JSON.stringify(VAULT_PY)});` + code],
+      { timeout: 20000 }, (err, stdout) => {
+        try { resolve(JSON.parse(stdout.trim() || '{}')); }
+        catch { resolve({ ok: false, error: (err && err.message) || 'pqc bridge failed' }); }
+      });
+  });
+}
+app.get('/api/pqc/falcon/status', async (req, res) => {
+  ok(res, await _pqcPy('import json;from bankon_vault import pqc_falcon;print(json.dumps(pqc_falcon.status()))'));
+});
+app.post('/api/pqc/falcon/demo', async (req, res) => {
+  const r = await _pqcPy(
+    'import json;from bankon_vault import pqc_falcon as f\n' +
+    'v="Falcon-512"\n' +
+    'st=f.status()\n' +
+    'if not f.available(v):\n print(json.dumps({"ok":False,**st}))\n' +
+    'else:\n kp=f.generate(v);sig=f.sign(kp["secret_key"],b"BANKON PQC POC",v);' +
+    'ver=f.verify(kp["public_key"],b"BANKON PQC POC",sig,v);' +
+    'print(json.dumps({"ok":True,"variant":v,"tier":kp["tier"],"public_key":kp["public_key"][:64]+"…",' +
+    '"public_key_bytes":len(kp["public_key"])//2,"signature_bytes":len(sig)//2,"verified":ver,"note":kp["note"]}))');
+  ok(res, r);
+});
+
 // --- Node intelligence: collect live network into Postgres (pgvector + pgvectorscale) ---
 // Collects from THIS single Bitcoin Core instance (addrman + peers), enriches with GeoIP,
 // tracks uptime/version, embeds for vector search. Needs DATABASE_URL (your pgvectorscale DB).

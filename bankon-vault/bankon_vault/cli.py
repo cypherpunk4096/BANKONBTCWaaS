@@ -63,6 +63,7 @@ def main(argv=None):
     tb.add_argument("--file", default=os.path.expanduser("~/.bankon-vault.tomb")); tb.add_argument("--mount", default=DEFAULT_PATH)
     ce = sub.add_parser("ceremony"); ce.add_argument("--threshold", type=int, default=3); ce.add_argument("--total", type=int, default=5)
     mg = sub.add_parser("migrate"); mg.add_argument("--json"); mg.add_argument("--env"); mg.add_argument("--context", default="imported")
+    fp = sub.add_parser("pqc-falcon"); fp.add_argument("pqc_cmd", choices=["status", "demo"]); fp.add_argument("--variant", default="Falcon-512")
     for name in ("destroy", "uninstall"):                 # shred options mirror shred(1)
         sp = sub.add_parser(name)
         sp.add_argument("--passes", type=int, default=7,
@@ -125,6 +126,19 @@ def main(argv=None):
             print(f"   operator {i}:  {sh}")
         print("\n   Write these down, distribute, and DESTROY this screen. Unlock later with any "
               f"{args.threshold} shares.")
+        return
+
+    if args.cmd == "pqc-falcon":
+        from . import pqc_falcon
+        if args.pqc_cmd == "status":
+            print(json.dumps(pqc_falcon.status(), indent=2)); return
+        if not pqc_falcon.available(args.variant):
+            sys.exit(f"{args.variant} unavailable — {pqc_falcon.status()['note']}")
+        kp = pqc_falcon.generate(args.variant)
+        sig = pqc_falcon.sign(kp["secret_key"], b"BANKON quantum-native POC", args.variant)
+        ok = pqc_falcon.verify(kp["public_key"], b"BANKON quantum-native POC", sig, args.variant)
+        print(json.dumps({"variant": kp["variant"], "tier": kp["tier"], "public_key_bytes": len(kp["public_key"]) // 2,
+                          "signature_bytes": len(sig) // 2, "verified": ok, "note": kp["note"]}, indent=2))
         return
 
     if args.cmd == "migrate":

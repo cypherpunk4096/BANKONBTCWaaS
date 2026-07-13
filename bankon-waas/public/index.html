@@ -114,6 +114,16 @@
     </details>
 
     <p><button id="gen">Generate my wallet</button></p>
+
+    <details style="margin-top:.6rem">
+      <summary>🔬 Post-quantum option (Falcon) — <span class="muted">experimental</span></summary>
+      <p class="muted" style="font-size:.85rem">Bitcoin signatures stay <b>secp256k1</b> (Tier-C — consensus-frozen,
+      classical). This POC mints a <b>Falcon (FN-DSA)</b> post-quantum identity key for the quantum-native
+      path (CP2048-QR Tier-Q; the scheme Algorand went quantum-native with) — crypto-agile, alongside your
+      BTC key, never replacing it. The secret key is never sent to the server.</p>
+      <p><button id="pqcdemo" class="secondary">Run Falcon POC</button> <span id="pqcstat" class="muted"></span></p>
+      <pre id="pqcout" class="muted" style="white-space:pre-wrap;font-size:.8rem"></pre>
+    </details>
   </fieldset>
 
   <fieldset class="private hidden" id="privBox">
@@ -372,6 +382,26 @@
         ? `<span class="ok">Broadcast! txid <code>${r.txid}</code></span>`
         : `<span class="warn">${r.error}</span>`;
     } catch (e) { $('sresult').innerHTML = `<span class="warn">${e.message || e}</span>`; }
+  };
+
+  // Post-quantum (Falcon) POC — honest status + demo (keygen→sign→verify), public key only.
+  (async () => {
+    try {
+      const s = await (await fetch('/api/pqc/falcon/status')).json();
+      const r = s.result || s;
+      $('pqcstat').textContent = r.available ? `backend ready (${(r.variants||[]).join(', ')})`
+                                             : 'backend not installed — POC will report honestly';
+    } catch {}
+  })();
+  const pd = $('pqcdemo'); if (pd) pd.onclick = async () => {
+    $('pqcout').textContent = 'running Falcon POC…';
+    try {
+      const j = (await (await fetch('/api/pqc/falcon/demo', {method:'POST'})).json());
+      const r = j.result || j;
+      $('pqcout').textContent = r.ok
+        ? `✓ ${r.variant} (${r.tier})\n  public key: ${r.public_key} (${r.public_key_bytes} B)\n  signature: ${r.signature_bytes} B · verified: ${r.verified}\n  ${r.note}`
+        : `Falcon backend unavailable — ${r.note || 'install a prebuilt liboqs + liboqs-python'}`;
+    } catch (e) { $('pqcout').textContent = 'error: ' + (e.message || e); }
   };
 </script>
 </body>
