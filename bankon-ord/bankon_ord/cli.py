@@ -13,6 +13,7 @@ import argparse
 import json
 import sys
 
+from .isolation import IsolationError
 from .ord_cli import OrdCli, OrdError
 
 
@@ -26,6 +27,8 @@ def _approve(payload: dict) -> bool:
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="bankon-ord", description="optional ordinals module (wraps ordinals/ord)")
     ap.add_argument("--net", default="mainnet", help="mainnet|testnet|signet|regtest")
+    ap.add_argument("--server-url", default=None,
+                    help="running `ord server` URL (modern ord wallet commands require one)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("preflight")
     for c in ("wallet-balance", "inscriptions", "outputs", "create-wallet", "receive"):
@@ -37,9 +40,18 @@ def main(argv=None):
     snd.add_argument("--wallet", required=True); snd.add_argument("--to", required=True)
     snd.add_argument("--outgoing", required=True); snd.add_argument("--fee-rate", type=float, required=True)
     snd.add_argument("--yes", action="store_true")
+    mnt = sub.add_parser("mint")
+    mnt.add_argument("--wallet", required=True); mnt.add_argument("--rune", required=True)
+    mnt.add_argument("--fee-rate", type=float, required=True); mnt.add_argument("--yes", action="store_true")
+    et = sub.add_parser("etch")
+    et.add_argument("--wallet", required=True); et.add_argument("--rune", required=True)
+    et.add_argument("--fee-rate", type=float, required=True)
+    et.add_argument("--divisibility", type=int, default=0); et.add_argument("--supply", default="0")
+    et.add_argument("--symbol", default="¤"); et.add_argument("--premine", default="0")
+    et.add_argument("--yes", action="store_true")
     args = ap.parse_args(argv)
 
-    ord = OrdCli(args.net)
+    ord = OrdCli(args.net, server_url=args.server_url)
     try:
         if args.cmd == "preflight":
             print(json.dumps(ord.preflight(), indent=2)); return
@@ -61,7 +73,17 @@ def main(argv=None):
             bal = _try_balance(ord, args.wallet)
             print(json.dumps(ord.send_gated(args.wallet, args.to, args.outgoing, args.fee_rate, _approve,
                                             balance_sats=bal, dry_run=not args.yes), indent=2)); return
-    except OrdError as e:
+        if args.cmd == "mint":
+            bal = _try_balance(ord, args.wallet)
+            print(json.dumps(ord.mint_gated(args.wallet, args.rune, args.fee_rate, _approve,
+                                            balance_sats=bal, dry_run=not args.yes), indent=2)); return
+        if args.cmd == "etch":
+            bal = _try_balance(ord, args.wallet)
+            print(json.dumps(ord.etch_gated(args.wallet, args.rune, args.fee_rate, _approve,
+                                            divisibility=args.divisibility, supply=args.supply,
+                                            symbol=args.symbol, premine=args.premine,
+                                            balance_sats=bal, dry_run=not args.yes), indent=2)); return
+    except (OrdError, IsolationError) as e:
         sys.exit(f"ord error: {e}")
 
 
