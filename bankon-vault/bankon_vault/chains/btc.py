@@ -200,9 +200,73 @@ class BitcoinAdapter(ChainAdapter):
                 if ec.PublicKey.from_xonly(data[2:]).schnorr_verify(ec.SchnorrSig.parse(s), h):
                     return address.strip()
                 return None
+            if len(data) == 34 and data[:2] == b"\x00\x20":              # p2wsh — multisig template
+                # witness = [dummy(empty, the CHECKMULTISIG bug), sig_1..sig_m, witness_script].
+                # No script interpreter needed: the standard K-of-N template is parsed and its
+                # CHECKMULTISIG semantics (ORDERED sigs, exactly m, all SIGHASH_ALL) applied here.
+                from embit import finalizer
+                if len(items) < 3 or items[0] != b"":
+                    return None
+                ws_raw = items[-1]
+                if hashlib.sha256(ws_raw).digest() != data[2:]:          # script must own the address
+                    return None
+                m, pubs = finalizer.parse_multisig(Script(ws_raw))
+                sigs = items[1:-1]
+                if len(sigs) != m:
+                    return None
+                h = to_sign.sighash_segwit(0, Script(ws_raw), 0)
+                pi = 0
+                for s in sigs:                                           # ordered, consensus-style
+                    if len(s) < 9 or s[-1] != SIGHASH.ALL:
+                        return None
+                    sig = ec.Signature.parse(s[:-1])
+                    while pi < len(pubs) and not pubs[pi].verify(sig, h):
+                        pi += 1
+                    if pi >= len(pubs):
+                        return None                                      # a sig matched no pubkey
+                    pi += 1
+                return address.strip()
         except Exception:
             return None
         return None
+
+    # ---- BIP-322 for p2wsh multisig: each cosigner contributes a partial sig, then assemble ----
+    def bip322_multisig_partial(self, secret: str, message: str, witness_script_hex: str,
+                                path: Optional[str] = None) -> str:
+        """One cosigner's partial BIP-322 signature over `message` for a p2wsh multisig address
+        (defined by its witness script). Collect >= K of these, then bip322_multisig_assemble."""
+        ws = Script(bytes.fromhex(witness_script_hex))
+        to_sign = _bip322_to_sign(_bip322_to_spend(script.p2wsh(ws), message).txid())
+        h = to_sign.sighash_segwit(0, ws, 0)
+        leaf = self._leaf(secret, path, "wpkh")
+        return (leaf.key.sign(h).serialize() + bytes([SIGHASH.ALL])).hex()
+
+    def bip322_multisig_assemble(self, message: str, witness_script_hex: str,
+                                 partial_sigs_hex: list) -> str:
+        """Assemble cosigners' partial sigs into one BIP-322 signature. Sigs are matched to
+        pubkeys and ORDERED per CHECKMULTISIG; invalid/duplicate sigs are dropped; raises if
+        fewer than K valid signatures remain."""
+        from embit import finalizer
+        ws_raw = bytes.fromhex(witness_script_hex)
+        ws = Script(ws_raw)
+        m, pubs = finalizer.parse_multisig(ws)
+        to_sign = _bip322_to_sign(_bip322_to_spend(script.p2wsh(ws), message).txid())
+        h = to_sign.sighash_segwit(0, ws, 0)
+        remaining = [bytes.fromhex(s) for s in partial_sigs_hex]
+        ordered = []
+        for pub in pubs:                                     # order by pubkey position in the script
+            for s in remaining:
+                try:
+                    if s[-1] == SIGHASH.ALL and pub.verify(ec.Signature.parse(s[:-1]), h):
+                        ordered.append(s)
+                        remaining.remove(s)
+                        break
+                except Exception:
+                    continue
+        if len(ordered) < m:
+            raise ValueError(f"only {len(ordered)} valid signature(s), need {m}")
+        wit = Witness([b""] + ordered[:m] + [ws_raw])
+        return base64.b64encode(wit.serialize()).decode()
 
     def _addr_for_kind(self, pub: ec.PublicKey, kind: str) -> str:
         if kind == "pkh":

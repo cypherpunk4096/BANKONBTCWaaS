@@ -100,8 +100,9 @@ honest about what needs hardware:
   `signmessage`/`verifymessage` in both directions), and **BIP-322 'simple' is shipped** for
   p2wpkh and **taproot key-path** (`sign_message_bip322` / `verify_message_bip322`, byte-exact
   against the spec's `basic-test-vectors.json` — tx hashes, valid sigs, and all error cases).
-  Remaining roadmap: BIP-322 *full* variant and arbitrary-script verification (p2wsh multisig
-  message signing needs a script interpreter).
+  **p2wsh K-of-N multisig** BIP-322 is also shipped (verify against the spec's 3-of-3 vector;
+  partial-sign + assemble for cosigners) — the standard multisig template needs no script
+  interpreter. Remaining roadmap: the BIP-322 *full* variant and truly arbitrary scripts.
 - Retrieved plaintext is returned as a `bytearray` you should `for i: buf[i]=0` after use;
   `gated_sign_psbt` does this for you.
 - Shamir K-of-N split + multi-operator ceremony are **shipped** (`shamir.py`, `ceremony.py`) — or use

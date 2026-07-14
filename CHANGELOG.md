@@ -4,6 +4,24 @@ All notable changes to the BANKON tools monorepo. Component versions are indepen
 **bankon-vault** (`bankon_vault.core.VAULT_VERSION`), **bankon-ord** (`bankon_ord.__version__`),
 **bankonOS installer** (`bankonos/install.sh`).
 
+## 2026-07-13 — bankon-vault 1.5.0
+
+**BIP-322 for p2wsh K-of-N multisig** — closes the "needs a script interpreter" gap for the case
+that matters: the standard multisig template doesn't need one; its CHECKMULTISIG semantics
+(ordered signatures, exactly K, all SIGHASH_ALL, script must hash to the address) are applied
+directly.
+
+- `verify_message_bip322` grows a p2wsh branch — verified against the spec's 3-of-3 vector from
+  `bip-0322/basic-test-vectors.json` (valid → address; wrong message / wrong address → None).
+- **Cosigner flow**: `bip322_multisig_partial()` (each signer contributes one sig over the
+  virtual-tx sighash) + `bip322_multisig_assemble()` (matches sigs to pubkeys, orders them per
+  CHECKMULTISIG, drops junk, refuses below quorum). Round-trip proven with our own 2-of-3:
+  partials supplied in the wrong order assemble correctly and verify through the unified
+  `verify_message` dispatch; under-quorum assembly raises.
+- Remaining (documented): BIP-322 *full* variant and truly arbitrary scripts.
+
+Vault suite: 19 tests; monorepo total 69.
+
 ## 2026-07-13 — bankon-vault 1.4.0 · bankon-ord 0.2.0-alpha
 
 ### bankon-vault 1.4.0 — master re-key / custody rotation

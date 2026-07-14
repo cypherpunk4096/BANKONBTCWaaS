@@ -242,6 +242,50 @@ def test_bip322_sign_roundtrip_and_dispatch():
     assert btc.make_verifier(r["address"])(msg, r["signature"]) == r["address"]
 
 
+def test_bip322_p2wsh_multisig_spec_vector():
+    """The spec's 3-of-3 p2wsh vector (bip-0322/basic-test-vectors.json) — previously skipped as
+    'needs a script interpreter'; the standard multisig template doesn't."""
+    btc = BitcoinAdapter("main")
+    A = "bc1qp0ahvfh83088w49k405szqgg4f3pptr7p2g06tdxfjcd40z4lh4q95lsz9"
+    MSG = "This will be a p2wsh 3-of-3 multisig BIP 322 signed message"
+    SIG = ("BQBHMEQCIFX9aaqPJWq2Ff2kpen5bFDTid+ehgUOpHV0LfjncXy4AiA3GNicF7aKPzdpa9PCpmaYQs3p"
+           "Hd+qbvvhXdxOCKCAMAFIMEUCIQD/ELXg6CNYyUQijCg96JtgvgjZb9dsl1Ctof4QAeyTcQIgVM/1AAbl"
+           "Fl/DCt6A1gJg+T/i2qU5SQD09+chFJzolRwBSDBFAiEAlqRfSFyWNVQhvaCnmeV5tyneiCWMTcFbuujo"
+           "D/pFa3wCIGnZjfQb8NolSYq9asV+ZeBSkCGHJcqnaV4JYS5MYPEGAWlTIQJ1aLEfEi/4p7wcV+XHZCBV"
+           "vGGJZ7L3v+jhH+mZA8lN0yECCovfec+kIdllXpKCgA8RX/HZ2x5yHOtCSKP8/sf6pnwhAwxSng6kCgCX"
+           "XSAmJOOZFdr3vdK3HzGqCFloOHgc5fM6U64=")
+    assert btc.verify_message_bip322(MSG, SIG, A) == A
+    assert btc.verify_message_bip322("This is not the message that was signed", SIG, A) is None
+    assert btc.verify_message_bip322(MSG, SIG,
+                                     "bc1q9vza2e8x573nczrlzms0wvx3gsqjx7vavgkx0l") is None
+
+
+def test_bip322_p2wsh_multisig_partial_and_assemble():
+    """Our own 2-of-3: each cosigner partial-signs, assembly orders per CHECKMULTISIG, and the
+    result verifies through the standard verify path. Under-quorum must refuse to assemble."""
+    from embit import bip32, bip39, script
+    btc = BitcoinAdapter("regtest")
+    msg = "BANKON 2-of-3 quorum message"
+    root = bip32.HDKey.from_seed(bip39.mnemonic_to_seed(MNEM))
+    paths = ["m/84h/1h/0h/0/20", "m/84h/1h/0h/0/21", "m/84h/1h/0h/0/22"]
+    pubs = [root.derive(p).key.get_public_key() for p in paths]
+    ws = script.multisig(2, pubs)
+    addr = script.p2wsh(ws).address(btc.net)
+    # cosigners 0 and 2 sign (deliberately given in the WRONG order — assembly must reorder)
+    s0 = btc.bip322_multisig_partial(MNEM, msg, ws.data.hex(), path=paths[0])
+    s2 = btc.bip322_multisig_partial(MNEM, msg, ws.data.hex(), path=paths[2])
+    sig = btc.bip322_multisig_assemble(msg, ws.data.hex(), [s2, s0])
+    assert btc.verify_message_bip322(msg, sig, addr) == addr
+    assert btc.verify_message(msg, sig, addr) == addr           # unified dispatch handles p2wsh too
+    assert btc.verify_message_bip322("tampered", sig, addr) is None
+    # 1 valid sig for a 2-of-3 → assembly refuses (and a junk sig doesn't count)
+    try:
+        btc.bip322_multisig_assemble(msg, ws.data.hex(), [s0, "00" * 71])
+        assert False, "assembled below quorum"
+    except ValueError:
+        pass
+
+
 def test_rekey_rotates_custody():
     v, salt = _fresh()
     v.store("a", "alpha", context="demo")
