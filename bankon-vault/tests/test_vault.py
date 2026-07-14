@@ -149,6 +149,47 @@ def test_gate_denies_by_default_and_approves_explicitly():
     assert seen["fee_sats"] == 10000                # the approver was shown the decoded tx (100k-90k)
 
 
+def test_bip137_kat_and_core_interop():
+    """Known-answer + external-implementation vectors for BIP-137 recoverable signatures.
+    Both were cross-verified live against Bitcoin Core v31 `signmessage`/`verifymessage`."""
+    btc = BitcoinAdapter("regtest")
+    msg = "BANKON BIP-137 cross-check"
+    # KAT: our deterministic (RFC-6979) signature — Bitcoin Core `verifymessage` returned true.
+    r = btc.sign_message_compact(MNEM, msg, path="m/44h/1h/0h/0/0", kind="pkh")
+    assert r["address"] == "mkpZhYtJu2r87Js3pDiWJDmPte2NRZ8bJV"
+    assert r["signature"] == ("H097d2Hj4qZKXS4Wmp+5svsKgwAwTDGkrEPOL377jlH5FyX0xaI2"
+                              "B9HxYU5Rj1jnG68MsMdCguCGNMRGJIOcofc=")
+    # external vector: a signature PRODUCED BY Bitcoin Core v31 → our recovery must match.
+    core_addr = "mwETGghMEQ8FrSQdEuHBkiqz3qRcTsnywA"
+    core_sig = ("H+bxPxz1HPg5YNu5RmcXuVebL3pk3rzTRzhFCbm5kkUneVIagy3ukGLq7OJls"
+                "OKlSXURXw2bjMM9zcHMq1DcMbI=")
+    assert btc.recover_address(msg, core_sig) == core_addr
+    assert btc.verify_message(msg, core_sig, core_addr) == core_addr
+
+
+def test_bip137_address_pinning_all_kinds_and_fail_closed():
+    btc = BitcoinAdapter("regtest")
+    msg = "gate challenge"
+    for kind in ("pkh", "sh-wpkh", "wpkh"):
+        r = btc.sign_message_compact(MNEM, msg, path="m/84h/1h/0h/0/5", kind=kind)
+        # address-only pinning verifies (no pubkey supplied anywhere)
+        assert btc.verify_message(msg, r["signature"], r["address"]) == r["address"], kind
+        # fail-closed: tampered message, wrong address, malformed signature
+        assert btc.verify_message(msg + "x", r["signature"], r["address"]) is None
+        other = btc.sign_message_compact(MNEM, msg, path="m/84h/1h/0h/0/6", kind=kind)["address"]
+        assert btc.verify_message(msg, r["signature"], other) is None
+        assert btc.verify_message(msg, "AAAA", r["address"]) is None
+    # taproot has no BIP-137 header range → must refuse, not mis-sign
+    try:
+        btc.sign_message_compact(MNEM, msg, kind="tr")
+        assert False, "tr accepted"
+    except ValueError:
+        pass
+    # a BIP-137 verifier plugs straight into the overseer path
+    r = btc.sign_message_compact(MNEM, msg, kind="wpkh")
+    assert btc.make_verifier(r["address"])(msg, r["signature"]) == r["address"]
+
+
 if __name__ == "__main__":
     fns = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
     ok = 0

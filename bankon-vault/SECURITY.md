@@ -85,10 +85,11 @@ honest about what needs hardware:
   vault is *unlocked*, and cold-boot/DMA can read RAM briefly after power-off. Minimise the unlocked
   window (auto-lock), create keys **air-gapped via ICE**, and prefer the Tomb/RAM path for cold keys.
 
-## Known limitations (alpha — honest)
-- **Gating verifies by pinned pubkey**, not address-recovery: BIP-137 recoverable signatures and full
-  **BIP-322** are Step-2 (embit has no recid). Verification against a pinned pubkey is equally sound;
-  it just needs the pubkey, not only the address.
+## Known limitations (honest)
+- **Gating verifies by pinned pubkey OR by address** — **BIP-137 recoverable signatures are shipped**
+  (`sign_message_compact` / `recover_address`, cross-verified against Bitcoin Core v31
+  `signmessage`/`verifymessage` in both directions). Full **BIP-322** (incl. taproot message
+  signing) remains roadmap — BIP-137 covers p2pkh / p2sh-p2wpkh / p2wpkh only.
 - Retrieved plaintext is returned as a `bytearray` you should `for i: buf[i]=0` after use;
   `gated_sign_psbt` does this for you.
 - Shamir K-of-N split + multi-operator ceremony are **shipped** (`shamir.py`, `ceremony.py`) — or use

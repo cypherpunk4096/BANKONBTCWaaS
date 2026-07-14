@@ -4,6 +4,28 @@ All notable changes to the BANKON tools monorepo. Component versions are indepen
 **bankon-vault** (`bankon_vault.core.VAULT_VERSION`), **bankon-ord** (`bankon_ord.__version__`),
 **bankonOS installer** (`bankonos/install.sh`).
 
+## 2026-07-13 — bankon-vault 1.1.0
+
+**BIP-137 recoverable message signatures** — gating can now pin an **address alone**, closing the
+top documented limitation ("verify by pinned pubkey only"). embit's low-level
+`secp256k1.ecdsa_sign_recoverable` / `ecdsa_recover` made this possible without new dependencies.
+
+- `BitcoinAdapter.sign_message_compact(secret, msg, path, kind)` → the 65-byte base64 format
+  Bitcoin Core's `signmessage` emits; header byte carries recid + address type
+  (p2pkh / p2sh-p2wpkh / p2wpkh; taproot correctly refused — that needs BIP-322).
+- `BitcoinAdapter.recover_address(msg, sig)` → recovers the signer's pubkey from the compact
+  signature and derives the header-declared address type.
+- `verify_message(msg, sig, expected)` now dispatches: hex pubkey → raw BSM-ECDSA verify
+  (unchanged); anything else is an ADDRESS and the signature must be BIP-137 compact — the
+  recovered address must match exactly (fail-closed on tamper, wrong address, malformed sig).
+- `make_verifier(pinned)` accepts a pubkey or an address → plugs into `WalletSignatureOverseer`.
+
+**Interoperability proven both directions against Bitcoin Core v31** (throwaway regtest):
+a Core-produced `signmessage` signature recovers to the right address here, and our compact
+signature returns `true` from Core's `verifymessage`. Both vectors are pinned in the test suite
+(`test_bip137_kat_and_core_interop`, `test_bip137_address_pinning_all_kinds_and_fail_closed`).
+Vault suite: 13 tests; monorepo total 54.
+
 ## 2026-07-13 — bankon-vault 1.0.1 · bankon-ord 0.1.1-alpha · bankonOS 2.0.0
 
 Adversarial-audit release. Three independent audit passes over the vault, ord, and shell

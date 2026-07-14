@@ -5,21 +5,29 @@
 #
 # The private key NEVER leaves this module: sign_psbt reconstructs the key from stored material,
 # signs, and drops it. Gating uses a Bitcoin-Signed-Message ECDSA signature verified against the
-# signer's pinned pubkey (self-contained). BIP-137 address-recovery and full BIP-322 are Step-2.
+# signer's pinned pubkey OR — via BIP-137 recoverable signatures — against an ADDRESS alone
+# (the pubkey is recovered from the 65-byte compact signature). Full BIP-322 remains roadmap.
 from __future__ import annotations
 
+import base64
 import hashlib
 from typing import Optional
 
 from embit import bip32, bip39, ec, script, compact
 from embit.networks import NETWORKS
 from embit.psbt import PSBT
+from embit.util import secp256k1 as _secp
 
 from .base import ChainAdapter
 
 # default derivation accounts (BIP-84 native segwit / BIP-86 taproot), receive branch, index 0
 PATHS = {"wpkh": "m/84h/{coin}h/0h/0/{i}", "tr": "m/86h/{coin}h/0h/0/{i}"}
 BSM_MAGIC = b"Bitcoin Signed Message:\n"
+
+# BIP-137 header-byte bases: header = base + recid (0..3). The base declares the address type the
+# signer commits to, so verification derives THAT type from the recovered pubkey and compares.
+BIP137_BASES = {27: ("pkh", False), 31: ("pkh", True), 35: ("sh-wpkh", True), 39: ("wpkh", True)}
+_KIND_TO_BASE = {"pkh": 31, "sh-wpkh": 35, "wpkh": 39}   # we always sign with compressed keys
 
 
 def _bsm_hash(message: str) -> bytes:
@@ -75,29 +83,77 @@ class BitcoinAdapter(ChainAdapter):
                 "pubkey": pub.serialize().hex(), "signature": sig.serialize().hex(),
                 "scheme": "bsm-ecdsa"}
 
+    def sign_message_compact(self, secret: str, message: str, path: Optional[str] = None,
+                             kind: str = "wpkh") -> dict:
+        """BIP-137 recoverable signature — the 65-byte base64 format Bitcoin Core's `signmessage`
+        emits. Verifiable against the ADDRESS alone (no pinned pubkey needed): the header byte
+        carries the recovery id + address type, so any verifier can recover the pubkey."""
+        if kind not in _KIND_TO_BASE:
+            raise ValueError(f"BIP-137 covers pkh/sh-wpkh/wpkh, not {kind!r} (taproot needs BIP-322)")
+        leaf = self._leaf(secret, path, kind)
+        raw = _secp.ecdsa_sign_recoverable(_bsm_hash(message), leaf.key.secret)
+        ser, recid = _secp.ecdsa_recoverable_signature_serialize_compact(raw)
+        sig65 = bytes([_KIND_TO_BASE[kind] + recid]) + ser
+        pub = leaf.key.get_public_key()
+        return {"address": self._addr_for_kind(pub, kind), "pubkey": pub.serialize().hex(),
+                "signature": base64.b64encode(sig65).decode(), "scheme": "bip137"}
+
+    def recover_address(self, message: str, signature) -> Optional[str]:
+        """Recover the signer's address from a BIP-137 compact signature (base64 or hex).
+        Returns the address of the type the header byte declares, or None if malformed."""
+        try:
+            sig65 = _compact_sig_bytes(signature)
+            if sig65 is None:
+                return None
+            base = next((b for b in BIP137_BASES if b <= sig65[0] <= b + 3), None)
+            if base is None:
+                return None
+            kind, compressed = BIP137_BASES[base]
+            rec = _secp.ecdsa_recoverable_signature_parse_compact(sig65[1:], sig65[0] - base)
+            raw_pub = _secp.ecdsa_recover(rec, _bsm_hash(message))
+            flag = _secp.EC_COMPRESSED if compressed else _secp.EC_UNCOMPRESSED
+            pub = ec.PublicKey.parse(_secp.ec_pubkey_serialize(raw_pub, flag))
+            return self._addr_for_kind(pub, kind)
+        except Exception:
+            return None
+
+    def _addr_for_kind(self, pub: ec.PublicKey, kind: str) -> str:
+        if kind == "pkh":
+            return script.p2pkh(pub).address(self.net)
+        if kind == "sh-wpkh":
+            return script.p2sh(script.p2wpkh(pub)).address(self.net)
+        if kind == "tr":
+            return script.p2tr(pub).address(self.net)
+        return script.p2wpkh(pub).address(self.net)
+
     def verify_message(self, message: str, signature, expected) -> Optional[str]:
-        """Verify a BSM-ECDSA signature against a pinned pubkey OR address.
-        `expected` = hex pubkey (33/65B) or a bech32 address (must be a wpkh/tr of the pubkey).
+        """Verify a signed message against a pinned pubkey OR an address.
+        `expected` = hex pubkey (33/65B) → raw BSM-ECDSA verify; anything else is treated as an
+        ADDRESS and the signature must be BIP-137 compact (65B base64/hex) — the pubkey is
+        recovered and the declared-type address must equal `expected` (exact string compare).
         Returns the signer address if valid, else None. Feeds WalletSignatureOverseer(verifier=…)."""
         try:
-            sig = signature if isinstance(signature, ec.Signature) else ec.Signature.parse(_hexbytes(signature))
             h = _bsm_hash(message)
             exp = expected.strip()
             if exp.startswith(("02", "03", "04")) and _is_hex(exp):     # pinned by pubkey
+                sig = signature if isinstance(signature, ec.Signature) else ec.Signature.parse(_hexbytes(signature))
                 pub = ec.PublicKey.parse(bytes.fromhex(exp))
                 if pub.verify(sig, h):
                     return script.p2wpkh(pub).address(self.net)
                 return None
-            # pinned by address: we cannot recover the pubkey (no recid in embit) → require the
-            # caller to also pass the pubkey. Address-only gating is Step-2 (BIP-137 recovery).
-            return None
+            # pinned by ADDRESS: BIP-137 recovery — the recovered pubkey's declared-type address
+            # must match exactly. A wrong recid/type recovers a DIFFERENT pubkey → different
+            # address → None (fail-closed).
+            addr = self.recover_address(message, signature)
+            return addr if addr is not None and addr == exp else None
         except Exception:
             return None
 
-    def make_verifier(self, pubkey_hex: str):
-        """A closure verifier(message, signature)->address for overseer.WalletSignatureOverseer."""
+    def make_verifier(self, pinned: str):
+        """A closure verifier(message, signature)->address for overseer.WalletSignatureOverseer.
+        `pinned` = hex pubkey (raw BSM-ECDSA) or an ADDRESS (BIP-137 compact signatures)."""
         def _v(message, signature):
-            return self.verify_message(message, signature, pubkey_hex)
+            return self.verify_message(message, signature, pinned)
         return _v
 
     # ---- PSBT signing (the key stays inside the module) ----
@@ -188,3 +244,17 @@ def _is_hex(s: str) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _compact_sig_bytes(signature) -> Optional[bytes]:
+    """Coerce a BIP-137 compact signature (bytes / hex / base64) to its 65 raw bytes, else None."""
+    if isinstance(signature, (bytes, bytearray)):
+        return bytes(signature) if len(signature) == 65 else None
+    s = str(signature).strip()
+    if len(s) == 130 and _is_hex(s):
+        return bytes.fromhex(s)
+    try:
+        raw = base64.b64decode(s, validate=True)
+        return raw if len(raw) == 65 else None
+    except Exception:
+        return None

@@ -33,9 +33,9 @@ bankon_vault/
   cli.py         `bankon-vault` command
   chains/
     base.py      ChainAdapter ABC (derive · address · sign_message · verify_message · sign_psbt)
-    btc.py       BitcoinAdapter (embit) — BIP32/39/44/84/86, bech32 P2WPKH + P2TR, PSBT, BSM-ECDSA gating
+    btc.py       BitcoinAdapter (embit) — BIP32/39/44/84/86, bech32 P2WPKH + P2TR, PSBT, BSM-ECDSA + BIP-137 address-recovery gating
 clients/vault-client.mjs   thin JS/HTTP client (WaaS/offline pages → gated signature, never a key)
-tests/         11 tests: HKDF, GCM nonce-uniqueness, AAD binding, wrong-pass, lock, addresses, gating, PSBT
+tests/         13 tests: HKDF, GCM nonce-uniqueness, AAD binding, wrong-pass, lock, addresses, gating, PSBT, BIP-137
 install.sh     one-shot installer (deps → self-check → tests → launcher)
 ```
 
@@ -167,6 +167,6 @@ Shipped: agnostic core, three overseers, BTC adapter (addresses + BSM-ECDSA gati
 sign-don't-export), approval gate, **programmable policy engine** (limits/allow-deny/cooldown/
 timelock/N-of-M + audit), **frozen custody** — GF(256) **Shamir K-of-N operator ceremony** +
 `ShamirOverseer` + **GNU Tomb** LUKS backend — a **legacy-vault migration importer**, loopback
-oracle, JS client, CLI, installer, **31 passing tests** (11 vault · 11 policy · 6 ceremony · 3 multisig). Optional
+oracle, JS client, CLI, installer, **33 passing tests** (13 vault · 11 policy · 6 ceremony · 3 multisig). Optional
 ordinals live in the separate [`bankon-ord`](../bankon-ord/README.md) module. The full stepwise plan
 (vault → ord → policy → frozen hardening) is **complete**. See `LINEAGE.md` and `SECURITY.md`.
