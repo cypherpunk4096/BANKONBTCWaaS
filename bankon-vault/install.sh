@@ -36,6 +36,11 @@ else
   "$PY" -m pip install --user --quiet --upgrade cryptography embit 2>/dev/null \
     || "$PY" -m pip install --user --quiet embit
 fi
+# OPTIONAL post-quantum backends (pure Python, no toolchain) — hybrid ML-KEM custody + ML-DSA
+# quorum activate when present; everything degrades honestly without them (see SECURITY.md).
+"$PY" -m pip install --user --quiet kyber-py dilithium-py 2>/dev/null \
+  || "$PY" -m pip install --user --quiet --break-system-packages kyber-py dilithium-py 2>/dev/null \
+  || say "  (optional PQC backends not installed — classical custody unaffected)"
 # final gate: both must import (cryptography via system OR pip; embit via pip)
 "$PY" -c "import cryptography, embit" 2>/dev/null || {
   echo "dependencies missing. Install per-OS:"

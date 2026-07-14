@@ -64,6 +64,7 @@ def main(argv=None):
     ce = sub.add_parser("ceremony"); ce.add_argument("--threshold", type=int, default=3); ce.add_argument("--total", type=int, default=5)
     mg = sub.add_parser("migrate"); mg.add_argument("--json"); mg.add_argument("--env"); mg.add_argument("--context", default="imported")
     fp = sub.add_parser("pqc-falcon"); fp.add_argument("pqc_cmd", choices=["status", "demo"]); fp.add_argument("--variant", default="Falcon-512")
+    pq = sub.add_parser("pqc"); pq.add_argument("pqc_cmd", choices=["status", "enroll"]); pq.add_argument("--variant", default="ML-KEM-768")
     for name in ("destroy", "uninstall"):                 # shred options mirror shred(1)
         sp = sub.add_parser(name)
         sp.add_argument("--passes", type=int, default=7,
@@ -139,6 +140,25 @@ def main(argv=None):
         ok = pqc_falcon.verify(kp["public_key"], b"BANKON quantum-native POC", sig, args.variant)
         print(json.dumps({"variant": kp["variant"], "tier": kp["tier"], "public_key_bytes": len(kp["public_key"]) // 2,
                           "signature_bytes": len(sig) // 2, "verified": ok, "note": kp["note"]}, indent=2))
+        return
+
+    if args.cmd == "pqc":
+        from . import pqc_hybrid, pqc_mldsa
+        if args.pqc_cmd == "status":
+            print(json.dumps({"hybrid_kem": pqc_hybrid.status(), "mldsa": pqc_mldsa.status()}, indent=2))
+            return
+        # enroll: write PUBLIC artifacts beside the vault, hand the decaps key to the operator
+        if not pqc_hybrid.available():
+            sys.exit(f"no ML-KEM backend — {pqc_hybrid.status()['note']}")
+        info = pqc_hybrid.enroll(args.path, args.variant)
+        print("\n❄  HYBRID-PQC ENROLLED — master will require classical custody AND this ML-KEM key.")
+        print(f"   scheme  : {info['variant']} ({info['backend']})")
+        print(f"   public  : {info['pqc_file']}")
+        print(f"\n   DECAPS KEY (store OFFLINE, like a Shamir share — it is the quantum factor):")
+        print(f"   {info['decaps_key']}\n")
+        print("   Unlock with: HybridPQCOverseer(<inner overseer>, <decaps key>, <vault dir>).")
+        print("   NOTE: enrolling does not re-key an EXISTING vault — rotate/re-init so the master "
+              "actually depends on it.")
         return
 
     if args.cmd == "migrate":

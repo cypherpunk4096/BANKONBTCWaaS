@@ -27,15 +27,19 @@ storage**: it will not thaw to sign unless the host is air-gapped.
 bankon_vault/
   core.py        BankonVault — AES-256-GCM + two-stage HKDF-SHA512, AAD=id, RAM-only master,
                  bytearray zeroization, _secure_write (0600+fsync), inactivity auto-lock
-  overseer.py    custody: PassphraseOverseer · KeyfileOverseer · WalletSignatureOverseer
+  overseer.py    custody: PassphraseOverseer · KeyfileOverseer · WalletSignatureOverseer · HybridPQCOverseer
   policy.py / policy_engine.py  gating: DenyAll · ApprovalGate · PolicyEngine (limits/allow-deny/cooldown/timelock/N-of-M + audit) · gated_sign_psbt
   api.py         VaultOracle — loopback HTTP; returns SIGNED PSBTs only, never key material
   cli.py         `bankon-vault` command
+  pqc_hybrid.py  HybridPQCOverseer — master = HKDF(classical ‖ ML-KEM-768 ss)  [FIPS 203, CP2048-QR]
+  pqc_mldsa.py   ML-DSA signatures — Tier-Q identity + post-quantum PolicyEngine quorum [FIPS 204]
+  pqc_falcon.py  FN-DSA (Falcon) POC via liboqs — the Algorand-style quantum-native path
   chains/
     base.py      ChainAdapter ABC (derive · address · sign_message · verify_message · sign_psbt)
     btc.py       BitcoinAdapter (embit) — BIP32/39/44/84/86, bech32 P2WPKH + P2TR, PSBT, BSM-ECDSA + BIP-137 + BIP-322(simple, incl. taproot) gating
+    pqc.py       MLDSAAdapter — Tier-Q identity/quorum (sign_psbt refuses, honestly: BTC is secp256k1)
 clients/vault-client.mjs   thin JS/HTTP client (WaaS/offline pages → gated signature, never a key)
-tests/         15 tests: HKDF, GCM nonce-uniqueness, AAD binding, wrong-pass, lock, addresses, gating, PSBT, BIP-137, BIP-322
+tests/         41 tests across 5 suites: crypto, gating (BIP-137/322), policy, ceremony, multisig, PQC
 install.sh     one-shot installer (deps → self-check → tests → launcher)
 ```
 
@@ -132,6 +136,7 @@ bankon-vault address  --id btc.seed --kind wpkh   # bc1q… (or --kind tr for bc
 bankon-vault list                              # entries (metadata only — never secrets)
 bankon-vault sign     --id btc.seed --psbt -@unsigned.psbt   # REVIEW & APPROVE → prints signed PSBT
 bankon-vault serve    --port 8099              # loopback signing oracle (returns signed PSBTs only)
+bankon-vault pqc      status | enroll          # hybrid post-quantum custody (ML-KEM, FIPS 203)
 ```
 
 Library:
@@ -167,6 +172,6 @@ Shipped: agnostic core, three overseers, BTC adapter (addresses + BSM-ECDSA gati
 sign-don't-export), approval gate, **programmable policy engine** (limits/allow-deny/cooldown/
 timelock/N-of-M + audit), **frozen custody** — GF(256) **Shamir K-of-N operator ceremony** +
 `ShamirOverseer` + **GNU Tomb** LUKS backend — a **legacy-vault migration importer**, loopback
-oracle, JS client, CLI, installer, **35 passing tests** (15 vault · 11 policy · 6 ceremony · 3 multisig). Optional
+oracle, JS client, CLI, installer, **41 passing tests** (15 vault · 11 policy · 6 ceremony · 3 multisig · 6 pqc). Optional
 ordinals live in the separate [`bankon-ord`](../bankon-ord/README.md) module. The full stepwise plan
 (vault → ord → policy → frozen hardening) is **complete**. See `LINEAGE.md` and `SECURITY.md`.

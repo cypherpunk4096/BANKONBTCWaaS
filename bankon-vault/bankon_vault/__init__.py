@@ -12,10 +12,12 @@ from .overseer import (Overseer, PassphraseOverseer, KeyfileOverseer,
 from .policy import (DenyAll, ApprovalGate, SigningRequest, gated_sign_psbt,
                      PolicyEngine, PolicyConfig, Decision)
 from .ceremony import genesis, reconstruct, ShamirOverseer, Manifest
+from .pqc_hybrid import HybridPQCOverseer
 
 __all__ = ["BankonVault", "VaultEntry", "VaultError", "VaultLocked", "VAULT_VERSION",
            "Overseer", "PassphraseOverseer", "KeyfileOverseer", "WalletSignatureOverseer",
-           "DEFAULT_CHALLENGE", "DenyAll", "ApprovalGate", "SigningRequest", "gated_sign_psbt",
+           "HybridPQCOverseer", "DEFAULT_CHALLENGE",
+           "DenyAll", "ApprovalGate", "SigningRequest", "gated_sign_psbt",
            "PolicyEngine", "PolicyConfig", "Decision",
            "genesis", "reconstruct", "ShamirOverseer", "Manifest"]
 __version__ = VAULT_VERSION

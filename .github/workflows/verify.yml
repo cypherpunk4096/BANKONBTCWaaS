@@ -52,13 +52,13 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: "Install crypto deps (cryptography + embit)"
-        run: python -m pip install --quiet cryptography embit
+      - name: "Install crypto deps (cryptography + embit + pure-Python PQC backends)"
+        run: python -m pip install --quiet cryptography embit kyber-py dilithium-py
 
-      - name: bankon-vault suite (vault · policy · ceremony · multisig)
+      - name: bankon-vault suite (vault · policy · ceremony · multisig · pqc)
         run: |
           set -e
-          for t in test_vault test_policy test_ceremony test_multisig; do
+          for t in test_vault test_policy test_ceremony test_multisig test_pqc; do
             echo "::group::bankon-vault/$t"
             python bankon-vault/tests/$t.py
             echo "::endgroup::"

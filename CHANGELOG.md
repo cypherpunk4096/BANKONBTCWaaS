@@ -4,6 +4,32 @@ All notable changes to the BANKON tools monorepo. Component versions are indepen
 **bankon-vault** (`bankon_vault.core.VAULT_VERSION`), **bankon-ord** (`bankon_ord.__version__`),
 **bankonOS installer** (`bankonos/install.sh`).
 
+## 2026-07-13 — bankon-vault 1.3.0
+
+**CP2048-QR roadmap complete** — the post-quantum items SECURITY.md promised are now code:
+
+- **Hybrid-PQC custody** (`pqc_hybrid.py`, `HybridPQCOverseer`): the vault master becomes
+  `HKDF-SHA512(classical_material ‖ ML-KEM-768 shared secret)` (FIPS 203). Wraps ANY inner
+  overseer; never weaker than the classical layer alone. Enrollment (`bankon-vault pqc enroll`)
+  stores only public artifacts (`.pqc.json`: KEM ciphertext + ungrindable ss-commitment); the
+  decapsulation key goes to the operator, offline. Wrong key fails EARLY at the commitment
+  (defeats ML-KEM implicit rejection); classical-only unlock of a hybrid vault fails; missing
+  `.pqc.json` refuses rather than silently degrading.
+- **ML-DSA (FIPS 204) identity + post-quantum quorum** (`pqc_mldsa.py`):
+  `make_verifier()` plugs into `PolicyEngine(verify_sig=…)` — N-of-M signing approval can be
+  collected from ML-DSA keys, making the *authorization* layer post-quantum while BTC signing
+  stays secp256k1 (consensus-frozen, honestly declared).
+- **Tier-Q chain adapter** (`chains/pqc.py`, `MLDSAAdapter`): PQ identity keys minted/stored/
+  used through the normal chain-agnostic vault flow; `sign_psbt` refuses with the honest reason.
+- Design note recorded: PQC *signatures* (Falcon/ML-DSA) are randomized and cannot replace the
+  deterministic signature-as-IKM trick — a KEM is the correct primitive for PQ custody, which is
+  exactly what the roadmap specified.
+- Backends: pure-Python `kyber-py`/`dilithium-py` (POC-grade, installed opportunistically by
+  install.sh and in CI) or `liboqs`; `bankon-vault pqc status` reports the truth; every module
+  degrades honestly. New `tests/test_pqc.py` (6 tests, self-skipping without backends):
+  hybrid roundtrip, fail-closed matrix, ML-DSA sign/verify/tamper, PQ quorum through the real
+  PolicyEngine, adapter identity + refusal. Monorepo total: 62 tests.
+
 ## 2026-07-13 — bankon-vault 1.2.0
 
 **BIP-322 generic signed messages ('simple' variant)** — message signing/verification for

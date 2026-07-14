@@ -29,7 +29,7 @@ standard. Point-by-point:
 | **Client-side keys** | keys are minted, stored, split and used **locally**; no network is required for any key operation. The oracle binds to loopback only. |
 | **≥112-bit symmetric-equivalent** | exceeded everywhere: **AES-256-GCM** (256-bit), **HKDF-SHA512**, **PBKDF2-HMAC-SHA512 @ 600k**, **GF(2⁸) Shamir**, **secp256k1** (~128-bit). No MD5/SHA-1/DES/ECB; no `random.random` — entropy is `os.urandom` throughout, including Shamir coefficients. |
 | **Verification replaces trust** | AEAD `AAD=entry_id` binds every record; the ceremony **manifest fingerprint** proves a reconstruction is the original; the policy **quorum** verifies each approver signature; migration is **round-trip byte-verified**. |
-| **Crypto-agility (PQC-ready)** | the `Overseer` / `ChainAdapter` abstractions isolate the primitives so they can be swapped. *Honest note:* the signing curve is classical **secp256k1** because **Bitcoin itself is pre-PQC** — a hybrid-PQC overseer (e.g. layering a PQC KEM over the master material) is the roadmap and does not require changing the vault core. |
+| **Crypto-agility (PQC-ready)** | the `Overseer` / `ChainAdapter` abstractions isolate the primitives so they can be swapped — and now they have been: **`HybridPQCOverseer`** layers an **ML-KEM (FIPS 203)** shared secret over the classical master material (`master = HKDF(classical ‖ ML-KEM ss)` — never weaker than the classical layer alone), and **ML-DSA (FIPS 204)** provides Tier-Q identity + post-quantum N-of-M quorum. *Honest note:* the BTC signing curve stays classical **secp256k1** because **Bitcoin itself is pre-PQC** — no vault can change consensus. |
 | **Zeroization** | the master key lives in a `bytearray` and is wiped on `lock()`; retrieved plaintext, the reconstructed Shamir master, and the signing seed are all zeroed after use. |
 
 ## Quantum posture — CP2048-QR (declared honestly)
@@ -42,11 +42,20 @@ their real capability, not the aspirational one.** So, honestly:
 - **Signature layer — Tier-C (classical), by necessity.** BTC signing is **secp256k1 (ECDSA)**, which
   Shor's algorithm breaks — but **Bitcoin itself is pre-PQC**, so no vault can change that today.
   bankon-vault is therefore **Tier-C for BTC signing** and does not pretend otherwise.
-- **Crypto-agile — Tier-A ready.** The `Overseer`/`ChainAdapter`/gate abstractions make the signature
-  scheme **swappable, not hard-wired**, per CP2048-QR — so a PQC signer drops in without touching the
-  core. Roadmap: an **FN-DSA (Falcon) / ML-DSA** overseer+adapter, following **Algorand's Falcon**
-  quantum-native initiative (the first Tier-Q mainnet, Nov 2025); the multi-chain `walletcreator`
-  already carries Algorand keys, so Falcon is the natural next adapter.
+- **Crypto-agile — SHIPPED.** The roadmap items are implemented, not promised:
+  - **Hybrid-PQC custody** (`pqc_hybrid.HybridPQCOverseer`): the vault master becomes
+    `HKDF(classical_material ‖ ML-KEM-768 shared secret)` — an attacker must break BOTH the
+    classical overseer and **ML-KEM (FIPS 203)**. Enrollment stores only public artifacts
+    (`.pqc.json`: KEM ciphertext + an ungrindable ss-commitment); the decapsulation key goes to
+    the operator, offline. A KEM — not a PQC signature — because Falcon/ML-DSA signatures are
+    randomized and cannot serve as deterministic key-derivation IKM.
+  - **ML-DSA (FIPS 204) identity + quorum** (`pqc_mldsa`, `chains/pqc.MLDSAAdapter`): Tier-Q
+    identity keys, and `pqc_mldsa.make_verifier()` plugs into `PolicyEngine(verify_sig=…)` so
+    **N-of-M signing approval is post-quantum** even while the BTC signature stays secp256k1.
+  - **FN-DSA (Falcon) POC** (`pqc_falcon`, liboqs) for the Algorand-style quantum-native path.
+  - Backends: pure-Python `kyber-py`/`dilithium-py` (POC-grade, no C build) or `liboqs`
+    (production-grade); every module **degrades honestly** — `status()` says exactly what is
+    available and the vault stays fully usable classically.
 - **Key custody — conformant.** Client-side keys, **no server escrow, one key per use, open source** —
   exactly CP2048-QR's custody mandate.
 
