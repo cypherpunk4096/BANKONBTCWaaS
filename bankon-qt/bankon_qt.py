@@ -3550,7 +3550,7 @@ class Main(QtWidgets.QMainWindow):
         self.map = NetworkMapTab()
         self.geo = None          # Geo Map is OPTIONAL (toolbar toggle, default OFF) — built lazily so
                                  # its GeoIP lookups + globe spin-timer cost nothing unless enabled.
-        self.ords = None         # Ordinals is OPTIONAL too (same lazy pattern) — read-only bankon-ord panel.
+        self.ords = OrdinalsTab()   # 🜚 Ordinals — a STANDARD tab (idle-free: no timers; work only on click)
         self.oracle = OracleTab()
         self.con = ConsoleTab()
         self.ctl = ControlTab()          # localhost / local-machine client control center
@@ -3558,7 +3558,8 @@ class Main(QtWidgets.QMainWindow):
         self.ice = IceTab()              # 🧊 ICE — network↔wallet wall (CPU + radios)
         for w, name in [(self.ov,"Overview"),(self.node,"Node"),(self.net,"Network"),(self.map,"Net Map"),
                         (self.netlog,"📡 Net Log"),(self.mp,"Mempool"),(self.blk,"Blocks"),(self.oracle,"BTC.oracle"),
-                        (self.idx,"Indexes"),(self.ctl,"🖥 Control"),(self.ice,"🧊 ICE"),(self.con,"RPC Console")]:
+                        (self.ords,"🜚 Ordinals"),(self.idx,"Indexes"),(self.ctl,"🖥 Control"),
+                        (self.ice,"🧊 ICE"),(self.con,"RPC Console")]:
             self.tabs.addTab(w, name)
         self.tabs.currentChanged.connect(self.do_refresh)
 
@@ -3572,10 +3573,6 @@ class Main(QtWidgets.QMainWindow):
         self.geo_chk = QtWidgets.QCheckBox(" 🌍 Geo Map")          # optional GeoIP map tab — default OFF
         self.geo_chk.setToolTip("Show the Geo Map tab (needs geoip/*.mmdb). Off by default.")
         self.geo_chk.toggled.connect(self._toggle_geo); bar.addWidget(self.geo_chk)
-        self.ord_chk = QtWidgets.QCheckBox(" 🜚 Ordinals")         # optional read-only ordinals tab — default OFF
-        self.ord_chk.setToolTip("Show the Ordinals tab (read-only; needs the bankon-ord module — mutations "
-                                "stay in its gated CLI). Off by default.")
-        self.ord_chk.toggled.connect(self._toggle_ords); bar.addWidget(self.ord_chk)
         self.inv_chk = QtWidgets.QCheckBox(" ◐ invert")           # polarity inversion — whole window
         self.inv_chk.setToolTip("Polarity inversion ('reverse video'): invert the entire window's theme.\n"
                                 "Computed from the dark palette — see docs/design.md → Polarity inversion.")
@@ -3634,18 +3631,6 @@ class Main(QtWidgets.QMainWindow):
             i = self.tabs.indexOf(self.geo)
             if i != -1: self.tabs.removeTab(i)
             self.geo.deleteLater(); self.geo = None
-    def _toggle_ords(self, on):
-        # Same lazy build/destroy as Geo Map — "default off = nothing running". Inserted
-        # right before RPC Console so diagnostics stay grouped.
-        if on:
-            if self.ords is None: self.ords = OrdinalsTab()
-            i = self.tabs.indexOf(self.con)
-            self.tabs.insertTab(i if i != -1 else self.tabs.count(), self.ords, "🜚 Ordinals")
-            self.tabs.setCurrentWidget(self.ords)
-        elif self.ords is not None:
-            i = self.tabs.indexOf(self.ords)
-            if i != -1: self.tabs.removeTab(i)
-            self.ords.deleteLater(); self.ords = None
     def on_zmq_block(self, block_hash, seq):
         # push-driven refresh — a new block connected; update the active tab + stamp.
         self.zmq_lbl.setText(f"  ⚡ zmq ● block {block_hash[:10]}…"); self.zmq_lbl.setStyleSheet("color:#16C784")
