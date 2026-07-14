@@ -42,8 +42,8 @@ while [ $# -gt 0 ]; do
     --yes|-y) YES=1; shift ;;
     --quiet|-q) BANKON_LOG=0; shift ;;
     --verbose|-v|--debug) BANKON_LOG=2; shift ;;
-    --log) log_setfile "$2"; shift 2 ;;
-    --log=*) log_setfile "${1#*=}"; shift ;;
+    --log) log_setfile "$2" || true; shift 2 ;;
+    --log=*) log_setfile "${1#*=}" || true; shift ;;
     --version) echo "bankonOS installer $VERSION"; exit 0 ;;
     -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown arg: $1 (try --help)" ;;

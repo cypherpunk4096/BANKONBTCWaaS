@@ -1,0 +1,61 @@
+# Changelog
+
+All notable changes to the BANKON tools monorepo. Component versions are independent:
+**bankon-vault** (`bankon_vault.core.VAULT_VERSION`), **bankon-ord** (`bankon_ord.__version__`),
+**bankonOS installer** (`bankonos/install.sh`).
+
+## 2026-07-13 — bankon-vault 1.0.1 · bankon-ord 0.1.1-alpha · bankonOS 2.0.0
+
+Adversarial-audit release. Three independent audit passes over the vault, ord, and shell
+layers; every confirmed defect fixed **with a regression test**. Full suite green:
+vault 11 · policy 11 · ceremony 6 · multisig 3 · ord 12 · blackICE 9 = **52 tests**,
+plus `deploy.sh --verify` (10 checks) and POSIX `sh -n` across all installers.
+
+### bankon-vault 1.0.1
+
+Security fixes:
+- **CRITICAL — `decode_psbt` hid outputs from the gate** (`chains/btc.py`). Empty PSBT
+  output-metadata objects compare equal, so `tx.outputs.index(o)` collapsed every output
+  onto `vout[0]` — hidden outputs were invisible to policy and human review (consent
+  bypass). Now iterates `tx.tx.vout` by position. Regression: `test_decode_shows_all_outputs`.
+- **HIGH — oracle nonce was not payload-bound** (`api.py`). A challenge nonce could be
+  redeemed against a *different* (entry_id, PSBT) — the binding was claimed in a comment
+  but not implemented. `_NONCES` now stores `(expiry, payload_sha256)`; `/sign` recomputes
+  and constant-time-compares the payload hash; `_prune` updated for the tuple value.
+  Regression: `test_oracle_rejects_payload_swap` (rebinding rejected, happy path works,
+  replay still blocked).
+- `PolicyEngine.max_fee_sats` now **fails closed when the fee is unknown** (`fee=None`
+  previously passed a fee-capped policy).
+- `unlock()` zeroizes + `munlock`s the **old** master key before installing a new one
+  (re-unlock no longer leaked the prior key in RAM or left pages pinned).
+- `destroy(force=True)` Python fallback now chmods read-only files before shredding.
+- `retrieve()` no longer loses a valid decrypt if the post-read metadata save hits a
+  full/read-only disk.
+
+Docs: README/SECURITY updated to state what is actually shipped (PolicyEngine,
+Shamir K-of-N ceremony) and the real test count.
+
+### bankon-ord 0.1.1-alpha
+
+- **Wallet isolation hardened** (`isolation.py`): ordinal markers now match as **token
+  prefixes**, not substrings — `landlord`, `wordpress`, `accord`, `password` no longer
+  qualify as ordinal wallets, while `ordinals`/`inscriptions` plurals still do.
+  Regression: `test_isolation_rejects_cardinal_substrings`.
+- **`guard_mutation` fails closed on unknown balance** (a balance-fetch hiccup can no
+  longer wave a hot wallet through); explicit `allow_unknown_balance=True` to override.
+  Regression: `test_guard_fails_closed_on_unknown_balance`.
+- `ord_cli.py`: `inscription()` no longer calls `list` with a non-outpoint arg; new
+  `output()` method for outpoint lookups.
+
+### bankonOS 2.0.0 (fixes)
+
+- `deploy.sh --help` works (usage() defined before the arg loop, exits 0).
+- `COINS=` values are character-validated (shell-injection rejected).
+- `--log` flag parsing no longer aborts under `set -e` in `deploy.sh` / `install.sh`.
+- Enclave apkovl tar is built with `--numeric-owner --owner=0 --group=0` (was uid 1000).
+- `.gitignore` covers `_stage/`, `_lb/`, `*.apkovl.tar.gz` build artifacts repo-wide.
+
+### Verified not-bugs (audited, confirmed sound)
+
+HKDF salt reuse (correct domain separation), GCM nonce handling, Shamir GF(2⁸) table
+indexing, mlock ctypes usage, testnet cookie subdir, oracle loopback binding.

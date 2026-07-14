@@ -10,6 +10,7 @@
 # ord action, and a "material funds" warning. Reads are always allowed; mutations are gated.
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -22,9 +23,13 @@ class IsolationError(RuntimeError):
 
 
 def is_ordinal_wallet(name: str) -> bool:
-    """An ordinal wallet must DECLARE itself by name (e.g. 'ord-main', 'inscriptions')."""
-    n = (name or "").lower()
-    return any(m in n for m in ORDINAL_MARKERS)
+    """An ordinal wallet must DECLARE itself with a marker as a WHOLE TOKEN (e.g. 'ord-main',
+    'inscriptions', 'my_rune_wallet') — NOT as a substring, or cardinal names like 'landlord',
+    'password', 'my-records' would wrongly qualify and be allowed to inscribe/spend."""
+    tokens = [t for t in re.split(r"[^a-z0-9]+", (name or "").lower()) if t]
+    # a token must START with a marker (handles plurals: ordinals/inscriptions/runes) — so 'landlord',
+    # 'wordpress', 'accord', 'fjord', 'password', 'my-records' (no token begins with a marker) are OUT.
+    return any(tok.startswith(m) for tok in tokens for m in ORDINAL_MARKERS)
 
 
 def assert_ordinal_wallet(name: str) -> None:
@@ -51,13 +56,18 @@ class GuardResult:
 
 def guard_mutation(wallet: str, balance_sats: Optional[int] = None,
                    approve: Optional[Callable[[dict], bool]] = None,
-                   action: str = "inscribe", details: Optional[dict] = None) -> GuardResult:
+                   action: str = "inscribe", details: Optional[dict] = None,
+                   allow_unknown_balance: bool = False) -> GuardResult:
     """Fail-closed gate for any ord action that MOVES coins/inscriptions (inscribe/send/etch).
 
       1) the wallet must be an ordinal wallet (isolation),
-      2) it must not hold material plain funds,
+      2) its balance must be KNOWN and not material — an UNKNOWN balance fails closed (a hiccup in the
+         balance fetch must not let a 5-BTC wallet through), unless allow_unknown_balance is set,
       3) a human must approve (shown the action + details); default = deny.
     """
+    if balance_sats is None and not allow_unknown_balance:
+        return GuardResult(False, "wallet balance is UNKNOWN — refusing (fail-closed). Confirm the "
+                                  "balance, or pass allow_unknown_balance to override deliberately.")
     try:
         assert_ordinal_wallet(wallet)
         assert_not_material_funds(balance_sats)

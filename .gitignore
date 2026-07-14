@@ -53,3 +53,8 @@ bankon-console/.history
 bankonos/enclave/_stage/
 bankonos/enclave/*.apkovl.tar.gz
 bankonos/enclave/iso/
+
+# bankonOS enclave build artifacts (unscoped — a stage dir can appear anywhere)
+**/_stage/
+**/_lb/
+**/*.apkovl.tar.gz

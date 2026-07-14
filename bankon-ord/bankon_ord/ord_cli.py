@@ -156,8 +156,20 @@ class OrdCli:
     def find_sat(self, sat: str):
         return self._run("find", str(sat))
 
+    def output(self, outpoint: str):
+        """Inspect a UTXO by OUTPOINT (txid:vout) — `ord list <outpoint>` (needs --index-sats)."""
+        return self._run("--index-sats", "list", str(outpoint))
+
     def inscription(self, inscription_id: str):
-        return self._run("--index-sats", "list", str(inscription_id))
+        """Look up an inscription by its ID. `ord list` takes an OUTPOINT, not an inscription id;
+        the correct read is the decode path. Falls back to the server API shape if `decode` is absent."""
+        try:
+            return self._run("decode", "--inscription", str(inscription_id))
+        except OrdError:
+            # older/newer ord: query the explorer JSON endpoint via `ord` is not universal — surface
+            # the id for the caller to fetch from the local `ord server` /inscription/<id> if running.
+            return {"inscription_id": str(inscription_id),
+                    "note": "use `ord server` + GET /inscription/<id>, or a newer ord with `decode`"}
 
     def create_ordinal_wallet(self, name: str):
         """Create a dedicated ORDINAL wallet (name is enforced by the isolation guard first)."""

@@ -19,29 +19,29 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 say() { log_info "$@"; }; warn() { log_warn "$@"; }; run() { log_run "$@"; }
 DRY=0; YES=0; PASS=""; VERIFY=0
 
-# first two positionals are OS + ROLE (unless it's a bare flag like --verify/--help)
-OS=""; ROLE=""
-_want_log=0
-for a in "$@"; do
-  if [ "$_want_log" = 1 ]; then log_setfile "$a"; _want_log=0; continue; fi
-  if log_parse_flag "$a"; then continue; elif [ $? = 2 ]; then _want_log=1; continue; fi
-  case "$a" in
-    --dry-run) DRY=1 ;;
-    --yes|-y)  YES=1 ;;
-    --verify)  VERIFY=1 ;;
-    -h|--help) OS=""; ROLE=""; break ;;
-    COINS=*)   PASS="$PASS $a" ;;
-    -*)        die "unknown flag: $a" ;;
-    *) if [ -z "$OS" ]; then OS="$a"; elif [ -z "$ROLE" ]; then ROLE="$a"; else die "unexpected arg: $a"; fi ;;
-  esac
-done
-
 usage() {
   sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
   echo "  --verify              self-test: every os×role path (script exists, POSIX-valid, dispatches)"
   echo "  --quiet|--verbose|--debug   logging level (0/1/2)   --log FILE   append a timestamped audit log"
   exit "${1:-0}"
 }
+
+# first two positionals are OS + ROLE (unless it's a bare flag like --verify/--help)
+OS=""; ROLE=""
+_want_log=0
+for a in "$@"; do
+  if [ "$_want_log" = 1 ]; then log_setfile "$a" || true; _want_log=0; continue; fi
+  if log_parse_flag "$a"; then continue; elif [ $? = 2 ]; then _want_log=1; continue; fi
+  case "$a" in
+    --dry-run) DRY=1 ;;
+    --yes|-y)  YES=1 ;;
+    --verify)  VERIFY=1 ;;
+    -h|--help) usage 0 ;;
+    COINS=*)   case "${a#COINS=}" in *[!A-Za-z0-9\ ,_-]*) die "COINS may only contain letters/digits/space/,/_/- (got '${a#COINS=}')" ;; esac; PASS="$PASS $a" ;;
+    -*)        die "unknown flag: $a" ;;
+    *) if [ -z "$OS" ]; then OS="$a"; elif [ -z "$ROLE" ]; then ROLE="$a"; else die "unexpected arg: $a"; fi ;;
+  esac
+done
 
 # ── --verify: dry-run/validate every OS×role dispatch without touching the system ──
 verify_all() {

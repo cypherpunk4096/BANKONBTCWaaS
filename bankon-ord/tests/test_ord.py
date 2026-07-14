@@ -94,6 +94,20 @@ def test_inscribe_dry_run_is_gated_and_no_broadcast():
         assert "blocked" in str(e)
 
 
+def test_isolation_rejects_cardinal_substrings():
+    # regression: substring match wrongly accepted cardinal names — now token-boundary
+    for cardinal in ("landlord", "password", "wordpress", "my-records", "fjord-savings", "accord"):
+        assert not is_ordinal_wallet(cardinal), f"{cardinal} must NOT be an ordinal wallet"
+    for ordinal in ("ord-main", "inscriptions", "my_rune_wallet", "insc-01", "ordinal-hot"):
+        assert is_ordinal_wallet(ordinal), f"{ordinal} must be an ordinal wallet"
+
+def test_guard_fails_closed_on_unknown_balance():
+    g = guard_mutation("ord-main", balance_sats=None, approve=lambda p: True)
+    assert not g.ok and "UNKNOWN" in g.reason
+    g2 = guard_mutation("ord-main", balance_sats=None, approve=lambda p: True, allow_unknown_balance=True)
+    assert g2.ok   # explicit override works
+
+
 if __name__ == "__main__":
     fns = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
     ok = 0

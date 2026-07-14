@@ -14,13 +14,13 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MAX_BODY = 1 << 20                       # 1 MiB — a PSBT is small; cap the surface
-_NONCES: dict[str, float] = {}           # single-use nonce → expiry
+_NONCES: dict = {}                       # single-use nonce → (expiry_epoch, payload_sha256)
 NONCE_TTL = 120
 
 
 def _prune():
     now = time.time()
-    for n in [k for k, exp in _NONCES.items() if exp < now]:
+    for n in [k for k, rec in _NONCES.items() if rec[0] < now]:
         _NONCES.pop(n, None)
 
 
@@ -41,17 +41,21 @@ class VaultOracle:
     def challenge(self, entry_id: str, psbt_b64: str) -> dict:
         _prune()
         nonce = os.urandom(16).hex()
-        _NONCES[nonce] = time.time() + NONCE_TTL
         ph = self._payload_hash(entry_id, psbt_b64)
+        _NONCES[nonce] = (time.time() + NONCE_TTL, ph)     # BIND the payload to the nonce
         return {"nonce": nonce, "message": f"BANKON-VAULT sign nonce={nonce} payload={ph}",
-                "payload_sha256": ph, "expires_at": _NONCES[nonce]}
+                "payload_sha256": ph, "expires_at": _NONCES[nonce][0]}
 
     def sign(self, nonce: str, entry_id: str, psbt_b64: str) -> dict:
         _prune()
-        exp = _NONCES.pop(nonce, None)               # single-use: consume immediately
-        if not exp or exp < time.time():
+        rec = _NONCES.pop(nonce, None)               # single-use: consume immediately
+        if not rec or rec[0] < time.time():
             raise PermissionError("bad or expired nonce")
-        from .policy import gated_sign_psbt          # server recomputes everything from the payload
+        # payload rebinding guard: the /sign payload MUST match the one the nonce was issued for,
+        # so a stolen/replayed nonce can't be redirected to a different tx (constant-time compare).
+        if not hmac.compare_digest(rec[1], self._payload_hash(entry_id, psbt_b64)):
+            raise PermissionError("payload does not match the challenge nonce")
+        from .policy import gated_sign_psbt
         signed = gated_sign_psbt(self.vault, self.adapter, entry_id, psbt_b64, self.gate, requester="oracle")
         return {"signed_psbt": signed}               # NO key, NO seed — ever
 

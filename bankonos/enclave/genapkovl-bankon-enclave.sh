@@ -71,5 +71,5 @@ makefile root:root 0644 "$tmp/etc/motd" <<'EOF'
   Never bring up networking. See /opt/bankon-vault-enclave/README.
 EOF
 
-tar -c -C "$tmp" etc opt 2>/dev/null | gzip -9n > "$HOSTNAME.apkovl.tar.gz"
+tar --numeric-owner --owner=0 --group=0 -c -C "$tmp" etc opt 2>/dev/null | gzip -9n > "$HOSTNAME.apkovl.tar.gz"
 echo "wrote $HOSTNAME.apkovl.tar.gz"

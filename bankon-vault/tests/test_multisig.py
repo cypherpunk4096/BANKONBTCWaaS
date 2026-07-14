@@ -63,6 +63,29 @@ def test_single_sig_threshold_is_1of1():
     assert btc.threshold(signed) == [(1, 1)] and btc.is_complete(signed)
 
 
+def test_decode_shows_all_outputs():
+    # regression: decode_psbt must not collapse every output onto vout[0]
+    from embit import bip32, bip39, script
+    from embit.psbt import PSBT, DerivationPath
+    from embit.transaction import Transaction, TransactionInput, TransactionOutput
+    btc = BitcoinAdapter("regtest")
+    r = bip32.HDKey.from_seed(bip39.mnemonic_to_seed(A))
+    path = [84 + 0x80000000, 1 + 0x80000000, 0x80000000, 0, 0]
+    leaf = r.derive(path)
+    prev = Transaction(vin=[], vout=[TransactionOutput(20000000, script.p2wpkh(leaf))])
+    a1 = script.p2wpkh(r.derive("m/84h/1h/0h/0/1"))
+    a2 = script.p2wpkh(r.derive("m/84h/1h/0h/0/2"))
+    tx = Transaction(vin=[TransactionInput(bytes.fromhex(prev.txid().hex()), 0)],
+                     vout=[TransactionOutput(1000, a1), TransactionOutput(10000000, a2)])
+    p = PSBT(tx); p.inputs[0].witness_utxo = prev.vout[0]
+    p.inputs[0].bip32_derivations[leaf.key.get_public_key()] = DerivationPath(r.my_fingerprint, path)
+    s = btc.decode_psbt(p.to_base64())
+    assert len(s["outputs"]) == 2, "both outputs must be visible to the gate"
+    assert {o["sats"] for o in s["outputs"]} == {1000, 10000000}
+    assert len({o["address"] for o in s["outputs"]}) == 2   # two DISTINCT addresses
+    assert s["out_sats"] == 10001000
+
+
 if __name__ == "__main__":
     fns = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
     ok = 0

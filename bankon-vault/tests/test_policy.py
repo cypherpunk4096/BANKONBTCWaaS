@@ -143,6 +143,35 @@ def test_engine_as_gate_in_gated_sign():
         assert "policy" in str(e) or "fee" in str(e)
 
 
+def test_oracle_rejects_payload_swap():
+    # a nonce issued for one payload must NOT be redeemable against a different payload (rebinding)
+    from bankon_vault.api import VaultOracle
+    from bankon_vault.policy import ApprovalGate
+    import tempfile, os
+    from bankon_vault import BankonVault, PassphraseOverseer
+    d = tempfile.mkdtemp(); v = BankonVault(d, autolock_sec=0)
+    salt = open(os.path.join(d, ".salt"), "rb").read(); v.unlock(PassphraseOverseer("p", salt))
+    v.store("btc.seed", MNEM, "bitcoin_wallet")
+    orc = VaultOracle(v, BitcoinAdapter("regtest"), ApprovalGate(lambda s: True))
+    psbt = _regtest_psbt()
+    ch = orc.challenge("btc.seed", psbt)                    # nonce bound to (btc.seed, psbt)
+    # redeem the SAME nonce against a different entry_id → different payload hash → must be rejected
+    try:
+        orc.sign(ch["nonce"], "attacker.id", psbt)
+        assert False, "payload rebinding was not blocked"
+    except PermissionError as e:
+        assert "payload" in str(e) or "match" in str(e)
+    # a fresh challenge redeemed against its OWN payload succeeds (the happy path still works)
+    ch2 = orc.challenge("btc.seed", psbt)
+    out = orc.sign(ch2["nonce"], "btc.seed", psbt)
+    assert "signed_psbt" in out and MNEM not in out["signed_psbt"]
+    # and the nonce is single-use — a replay fails
+    try:
+        orc.sign(ch2["nonce"], "btc.seed", psbt); assert False, "nonce reuse not blocked"
+    except PermissionError:
+        pass
+
+
 if __name__ == "__main__":
     fns = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
     ok = 0

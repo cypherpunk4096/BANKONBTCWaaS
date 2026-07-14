@@ -91,8 +91,10 @@ honest about what needs hardware:
   it just needs the pubkey, not only the address.
 - Retrieved plaintext is returned as a `bytearray` you should `for i: buf[i]=0` after use;
   `gated_sign_psbt` does this for you.
-- No Shamir split / multi-operator ceremony yet (Step-4). Single-passphrase or single-signer for now.
-- `Policy` (limits/allowlists/timelocks/N-of-M) is a documented stub that currently fails closed.
+- Shamir K-of-N split + multi-operator ceremony are **shipped** (`shamir.py`, `ceremony.py`) — or use
+  a single passphrase / signer if you don't need quorum custody.
+- `PolicyEngine` (limits/allowlists/timelocks/N-of-M quorum + audit) is **implemented and tested**;
+  it fails closed on unknown fee and on quorum shortfall.
 - The vault does **not** protect a already-compromised host or a keylogged passphrase.
 
 ## Never in the repo

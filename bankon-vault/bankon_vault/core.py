@@ -44,7 +44,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.hashes import SHA512
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-VAULT_VERSION = "1.0.0-alpha"
+VAULT_VERSION = "1.0.1"
 SALT_BYTES = 32          # single per-vault salt, created once, never rotated
 NONCE_BYTES = 12         # AES-GCM 96-bit nonce
 KEY_BYTES = 32           # AES-256
@@ -189,6 +189,10 @@ class BankonVault:
             if isinstance(ikm, (bytearray, memoryview)):
                 _zero(ikm)
         with self._lock:
+            if self._vault_key is not None:               # re-unlock: zero + munlock the OLD key first
+                _zero(self._vault_key)
+                if getattr(self, "_mlocked", False):
+                    _try_munlock(self._vault_key)
             self._vault_key = bytearray(vk)
             self._mlocked = _try_mlock(self._vault_key)   # pin in RAM — never swap the key to disk
             self._touch()
@@ -251,7 +255,10 @@ class BankonVault:
             k = self._entry_key(entry_id)
             pt = AESGCM(k).decrypt(bytes.fromhex(e.nonce), bytes.fromhex(e.ct), entry_id.encode())
             e.access_count += 1
-            self._save_entries()
+            try:                              # persisting the access-count is best-effort — a full or
+                self._save_entries()          # read-only disk must NEVER cost us a valid decrypt
+            except OSError:
+                pass
             self._touch()
             return bytearray(pt)
 
@@ -311,6 +318,9 @@ class BankonVault:
                     if shred_bin:
                         subprocess.run([shred_bin, *opts, p], check=False, capture_output=True)
                     else:                                   # fallback: overwrite N× (+ zero), then unlink
+                        if force:                           # honor -f: a 0400 key file must still be overwritten
+                            try: os.chmod(p, 0o600)
+                            except OSError: pass
                         sz = os.path.getsize(p)
                         with open(p, "r+b") as f:
                             for _ in range(shred_passes):

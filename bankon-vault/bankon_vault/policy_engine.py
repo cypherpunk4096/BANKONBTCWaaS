@@ -103,9 +103,13 @@ class PolicyEngine:
         fails: list[str] = []
         now = int(time.time())
 
-        # spend limits
-        if self.cfg.max_fee_sats is not None and (s.get("fee_sats") or 0) > self.cfg.max_fee_sats:
-            fails.append(f"fee {s.get('fee_sats')} > max_fee {self.cfg.max_fee_sats}")
+        # spend limits — fail CLOSED on an unknown fee (a PSBT without input amounts can't be capped)
+        if self.cfg.max_fee_sats is not None:
+            fee = s.get("fee_sats")
+            if fee is None:
+                fails.append("fee unknown (PSBT lacks input amounts) — cannot enforce max_fee")
+            elif fee > self.cfg.max_fee_sats:
+                fails.append(f"fee {fee} > max_fee {self.cfg.max_fee_sats}")
         outs = s.get("outputs", [])
         if self.cfg.max_output_sats is not None:
             for o in outs:

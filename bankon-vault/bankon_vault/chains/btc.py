@@ -152,12 +152,12 @@ class BitcoinAdapter(ChainAdapter):
         return tx.serialize().hex()
 
     def decode_psbt(self, psbt_b64: str) -> dict:
-        """Human-readable summary for the per-sign approval gate: inputs, outputs, amounts, fee."""
+        """Human-readable summary for the per-sign approval gate: inputs, outputs, amounts, fee.
+        Iterate the TX vouts BY POSITION — PSBT output-metadata objects compare equal when empty, so
+        `tx.outputs.index(o)` collapses every output onto vout[0], hiding real outputs from the gate."""
         tx = PSBT.from_base64(psbt_b64.strip())
         outs, out_total = [], 0
-        for o in tx.outputs:
-            vout = tx.tx.vout[tx.outputs.index(o)]
-            addr = None
+        for vout in tx.tx.vout:
             try:
                 addr = vout.script_pubkey.address(self.net)
             except Exception:

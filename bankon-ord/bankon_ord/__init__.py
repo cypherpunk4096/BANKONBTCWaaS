@@ -13,4 +13,4 @@ from .isolation import is_ordinal_wallet, assert_ordinal_wallet, guard_mutation,
 
 __all__ = ["OrdCli", "NetConfig", "NETWORKS", "resolve_network", "OrdError", "MIN_ORD",
            "is_ordinal_wallet", "assert_ordinal_wallet", "guard_mutation", "IsolationError"]
-__version__ = "0.1.0-alpha"
+__version__ = "0.1.1-alpha"

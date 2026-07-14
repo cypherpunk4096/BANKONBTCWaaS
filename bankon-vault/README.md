@@ -28,7 +28,7 @@ bankon_vault/
   core.py        BankonVault — AES-256-GCM + two-stage HKDF-SHA512, AAD=id, RAM-only master,
                  bytearray zeroization, _secure_write (0600+fsync), inactivity auto-lock
   overseer.py    custody: PassphraseOverseer · KeyfileOverseer · WalletSignatureOverseer
-  policy.py      gating: DenyAll (default) · ApprovalGate (alpha) · Policy (Step-3 stub) · gated_sign_psbt
+  policy.py / policy_engine.py  gating: DenyAll · ApprovalGate · PolicyEngine (limits/allow-deny/cooldown/timelock/N-of-M + audit) · gated_sign_psbt
   api.py         VaultOracle — loopback HTTP; returns SIGNED PSBTs only, never key material
   cli.py         `bankon-vault` command
   chains/
@@ -167,6 +167,6 @@ Shipped: agnostic core, three overseers, BTC adapter (addresses + BSM-ECDSA gati
 sign-don't-export), approval gate, **programmable policy engine** (limits/allow-deny/cooldown/
 timelock/N-of-M + audit), **frozen custody** — GF(256) **Shamir K-of-N operator ceremony** +
 `ShamirOverseer` + **GNU Tomb** LUKS backend — a **legacy-vault migration importer**, loopback
-oracle, JS client, CLI, installer, **27 passing tests** (11 vault + 10 policy + 6 ceremony). Optional
+oracle, JS client, CLI, installer, **31 passing tests** (11 vault · 11 policy · 6 ceremony · 3 multisig). Optional
 ordinals live in the separate [`bankon-ord`](../bankon-ord/README.md) module. The full stepwise plan
 (vault → ord → policy → frozen hardening) is **complete**. See `LINEAGE.md` and `SECURITY.md`.
