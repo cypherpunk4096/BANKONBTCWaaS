@@ -4,6 +4,28 @@ All notable changes to the BANKON tools monorepo. Component versions are indepen
 **bankon-vault** (`bankon_vault.core.VAULT_VERSION`), **bankon-ord** (`bankon_ord.__version__`),
 **bankonOS installer** (`bankonos/install.sh`).
 
+## 2026-07-14 — bankon-ord 0.3.0-alpha: LIVE inscribe/send verified + deploy choice
+
+The last feasible ledger item for ord — **the live mutation flow, executed for real** (regtest:
+reproducible, zero sync, and it ran BESIDE the live mainnet node without touching it — separate
+ports and a /tmp datadir; the external-drive blockchain was never involved).
+
+- **Live integration test** (`tests/test_live_regtest.py`, self-skipping without ord/bitcoind):
+  throwaway regtest bitcoind → `ord server` → create ordinal wallet → fund →
+  **`inscribe_gated(dry_run=False)`** → confirm → list → **`send_gated(dry_run=False)`** →
+  confirm → cardinal-wallet refusal verified **on the live path**. First live run:
+  inscription `32a60420…272f111bi0`, send txid `c66b6e67…2b2bfa77` — the whole gated write
+  path is real now, not just dry-run.
+- **`OrdCli(server_url=…)`**: modern ord (≥ 0.18) wallet commands need a running `ord server`;
+  wallet subcommands now splice `--server-url` automatically.
+- **Deploy choice in install.sh**: `ORD_SOURCE=source | binary | fork | auto`. Auto prefers a
+  **source build** when cargo exists, because the official prebuilt is linked against
+  glibc ≥ 2.38 and simply won't run on stable hosts (verified: it hard-fails on this
+  glibc-2.35 machine; the cargo build of ord 0.27.1 runs perfectly). The binary path checks
+  the host glibc BEFORE installing and says why it refuses.
+- Bug found BY the live test: `_core_ok` ignored the `BANKON_BTC_DATADIR` override that the
+  rest of the module honors — preflight reported an unreachable Core on custom datadirs. Fixed.
+
 ## 2026-07-14 — bankon-vault 1.7.0
 
 **BIP-322 spec coverage complete: 10/10 generated full-variant types** — the two time-lock

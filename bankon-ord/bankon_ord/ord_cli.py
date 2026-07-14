@@ -74,12 +74,15 @@ class OrdError(RuntimeError):
 
 class OrdCli:
     def __init__(self, network: str = "mainnet", ord_bin: str = "ord",
-                 index_dir: Optional[str] = None, rpc_cookie: Optional[str] = None):
+                 index_dir: Optional[str] = None, rpc_cookie: Optional[str] = None,
+                 server_url: Optional[str] = None):
         self.net = resolve_network(network)
         self.ord_bin = shutil.which(ord_bin) or ord_bin
         # keep each network's ord index separate (ord indexes are chain-specific)
         self.index_dir = index_dir or os.path.expanduser(f"~/.bankon-ord/{self.net.name}")
         self.rpc_cookie = rpc_cookie or self.net.cookie
+        # modern ord (>= 0.18) wallet commands talk to a RUNNING `ord server`; point them at it.
+        self.server_url = server_url
 
     # ---- availability / preflight ----
     def available(self) -> bool:
@@ -128,6 +131,9 @@ class OrdCli:
     def _run(self, *sub, timeout: int = 120, want_json: bool = True):
         if not self.available():
             raise OrdError("`ord` is not installed — run bankon-ord/install.sh (or set ord_bin)")
+        sub = list(sub)
+        if self.server_url and sub and sub[0] == "wallet":       # wallet cmds need the ord server
+            sub[1:1] = ["--server-url", self.server_url]
         cmd = self._base() + list(sub)
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         if p.returncode != 0:
@@ -276,6 +282,7 @@ def _core_ok(net: NetConfig):
     """(reachable, version_int) via bitcoin-cli against this network — read-only."""
     btc = os.path.join(os.environ.get("BANKON_BTC_BIN", os.path.expanduser("~/bitcoin-31.0/bin")), "bitcoin-cli")
     flag = {"mainnet": [], "testnet": ["-testnet"], "signet": ["-signet"], "regtest": ["-regtest"]}[net.name]
+    flag = [f"-datadir={net.datadir}"] + flag        # honor BANKON_BTC_DATADIR, like everything else
     try:
         out = subprocess.run([btc, *flag, "-getinfo"], capture_output=True, text=True, timeout=8)
         if out.returncode != 0:

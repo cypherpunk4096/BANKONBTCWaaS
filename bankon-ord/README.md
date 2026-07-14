@@ -36,10 +36,12 @@ the inscribed sat away as ordinary change and **destroy the inscription**. So th
 - The `ord` binary (installer below). Runes + modern wallet need ord ≥ 0.18; **inscribing needs
   Bitcoin Core ≥ 28** and **`txindex=1`**. Reads work without inscribing capability.
 
-## Install
+## Install — deploy from source and/or binary, your choice
 ```bash
-bash bankon-ord/install.sh            # auto: official prebuilt → your fork (bankonvault/ord) → crate
-ORD_SOURCE=fork bash bankon-ord/install.sh   # force-build github.com/bankonvault/ord
+bash bankon-ord/install.sh                     # auto: SOURCE build if cargo exists, else prebuilt
+ORD_SOURCE=source bash bankon-ord/install.sh   # cargo build (recommended — always matches your glibc)
+ORD_SOURCE=binary bash bankon-ord/install.sh   # official prebuilt (needs glibc >= 2.38 — checked)
+ORD_SOURCE=fork   bash bankon-ord/install.sh   # cargo build of github.com/bankonvault/ord
 ```
 The installer runs the test suite and a mainnet+testnet preflight, then drops a `bankon-ord` launcher.
 (Your own fork [`bankonvault/ord`](https://github.com/bankonvault/ord) — *"rare and exotic sats"* — is
@@ -68,6 +70,9 @@ ord.inscribe_gated("ord-test", "art.png", 5, approve=confirm, dry_run=True)
 ## Status
 **Alpha (Step 2).** Read ops + preflight + wallet isolation + gated (dry-run) inscribe/send across
 mainnet/testnet/signet/regtest, **gated rune etch/mint** (validated names, reviewable batchfile);
-14 passing tests (no `ord` needed to test), and an **optional read-only Qt panel**
-(bankon-qt toolbar → 🜚 Ordinals: preflight + wallet balance/inscriptions/outputs; mutations
-stay in this module's gated CLI). Next: live inscribe/send flow verified on testnet.
+14 unit tests (no `ord` needed), an **optional read-only Qt panel** (bankon-qt toolbar →
+🜚 Ordinals), and a **LIVE regtest integration test** (`tests/test_live_regtest.py`,
+self-skipping): real `ord` + throwaway regtest node → create ordinal wallet → fund →
+**inscribe_gated live** → list → **send_gated live**, with the cardinal-wallet refusal
+verified on the live path too. Installer offers a **deploy choice**: `ORD_SOURCE=source`
+(cargo, recommended — prebuilt needs glibc ≥ 2.38) | `binary` | `fork` | `auto`.
