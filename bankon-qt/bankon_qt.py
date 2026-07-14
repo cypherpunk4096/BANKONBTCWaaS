@@ -1137,6 +1137,10 @@ class NetworkMapTab(QtWidgets.QWidget):
         self.speed = QtWidgets.QLabel(""); self.speed.setStyleSheet("font-family:monospace;font-weight:700")
         self.speed.setToolTip("Live node throughput (getnettotals) — orange = data in, green = data out")
         top.addWidget(self.speed)
+        self.layoutbtn = QtWidgets.QPushButton("▲ Pyramid")
+        self.layoutbtn.setToolTip("Switch topology: radial sphere ↔ pyramid (BANKON node at the apex, "
+                                  "busiest peers in the top tiers, addrman cloud as the base)")
+        self.layoutbtn.clicked.connect(self._toggle_layout); top.addWidget(self.layoutbtn)
         top.addWidget(QtWidgets.QLabel("max nodes"))
         self.maxnodes = QtWidgets.QSpinBox(); self.maxnodes.setRange(0, 50000); self.maxnodes.setSingleStep(500)
         self.maxnodes.setValue(5000); self.maxnodes.setToolTip("Max known nodes to fetch/draw (+/- or type)")
@@ -1217,6 +1221,12 @@ class NetworkMapTab(QtWidgets.QWidget):
         self._sel = None         # currently-selected peer dict
         self._phase = 0.0
         self._atimer = QtCore.QTimer(self); self._atimer.timeout.connect(self._pulse); self._atimer.start(60)
+    def _toggle_layout(self):
+        self._layout = "pyramid" if getattr(self, "_layout", "radial") == "radial" else "radial"
+        self.layoutbtn.setText("◉ Radial" if self._layout == "pyramid" else "▲ Pyramid")
+        self._user_zoom = False                      # re-fit to the new shape
+        self._redraw()
+
     def _build_diag(self):
         w = QtWidgets.QWidget(); w.setMinimumWidth(260)
         d = QtWidgets.QVBoxLayout(w); d.setContentsMargins(10, 4, 4, 4)
@@ -1447,6 +1457,35 @@ class NetworkMapTab(QtWidgets.QWidget):
             if getattr(self, "_cloud_items", None):
                 self._cloud_rot = getattr(self, "_cloud_rot", 0.0) + 0.010
                 self._layout_cloud()
+            # PACKET FLOW in the 3D view too — along the one REAL link (us ↔ the explored peer),
+            # driven by that peer's live measured B/s. orange = data INTO the BANKON node
+            # (peer→us), green = data OUT (us→peer). Gossip-cluster lines carry no dots: honest.
+            ax, ay = getattr(self, "_explore_anchor", (None, None))
+            if ax is not None:
+                self._phase += 0.05
+                ri, ro = self._rates.get((self._explore or {}).get("addr") or "", (0.0, 0.0))
+                pin, pout = self._flow_frac(ri), self._flow_frac(ro)
+                ORANGE = QtGui.QColor("#F7931A"); GREEN = QtGui.QColor("#16C784")
+                if pin > 0:            # centre (peer) → BANKON anchor
+                    npk = 1 + int(round(2 * pin)); spd = 0.6 + 2.4 * pin; rad = 2.0 + 3.0 * pin
+                    for j in range(npk):
+                        t = (self._phase * spd + j / npk) % 1.0
+                        self._anim.append(self.scene.addEllipse(ax * t - rad, ay * t - rad, 2 * rad, 2 * rad,
+                                                                QtGui.QPen(QtCore.Qt.NoPen), QtGui.QBrush(ORANGE)))
+                if pout > 0:           # BANKON anchor → centre (peer)
+                    npk = 1 + int(round(2 * pout)); spd = 0.6 + 2.4 * pout; rad = 2.0 + 3.0 * pout
+                    for j in range(npk):
+                        t = (self._phase * spd + j / npk + 0.5 / max(1, npk)) % 1.0
+                        self._anim.append(self.scene.addEllipse(ax * (1 - t) - rad, ay * (1 - t) - rad,
+                                                                2 * rad, 2 * rad,
+                                                                QtGui.QPen(QtCore.Qt.NoPen), QtGui.QBrush(GREEN)))
+                lbl = getattr(self, "_explore_ratelbl", None)
+                if lbl is not None:
+                    try:
+                        lbl.setText(f"▼ {self._rate_s(ri)}   ▲ {self._rate_s(ro)}"
+                                    if (ri or ro) else "link idle")
+                    except RuntimeError:
+                        pass                                     # scene rebuilt under us
             return
         if not self._links and not self._sel: return
         self._phase += 0.05                                        # unbounded so per-link speeds stay smooth
@@ -1454,19 +1493,21 @@ class NetworkMapTab(QtWidgets.QWidget):
         ORANGE = QtGui.QColor("#F7931A"); GREEN = QtGui.QColor("#16C784")
         # Packets = ACTUAL traffic measured between the last two peer polls (B/s deltas).
         # A direction with zero live traffic shows no dots — the map only flows when data flows.
+        c0x, c0y = getattr(self, "_c0", (0.0, 0.0))
         for k, (x, y, pin, pout) in enumerate(self._links):
+            dx, dy = x - c0x, y - c0y
             if pin > 0:    # real incoming data — bitcoin orange, external peer → BANKON node
                 npk = 1 + int(round(2 * pin)); spd = 0.6 + 2.4 * pin; rad = 2.0 + 3.0 * pin
                 for j in range(npk):
                     t = (self._phase * spd + j / npk + k * 0.13) % 1.0
-                    px, py = x * (1.0 - t), y * (1.0 - t)
+                    px, py = c0x + dx * (1.0 - t), c0y + dy * (1.0 - t)
                     self._anim.append(self.scene.addEllipse(px - rad, py - rad, 2 * rad, 2 * rad,
                                                             QtGui.QPen(QtCore.Qt.NoPen), QtGui.QBrush(ORANGE)))
             if pout > 0:   # real outgoing data — candle green, BANKON node → external peer
                 npk = 1 + int(round(2 * pout)); spd = 0.6 + 2.4 * pout; rad = 2.0 + 3.0 * pout
                 for j in range(npk):
                     t = (self._phase * spd + j / npk + k * 0.17) % 1.0
-                    px, py = x * t, y * t
+                    px, py = c0x + dx * t, c0y + dy * t
                     self._anim.append(self.scene.addEllipse(px - rad, py - rad, 2 * rad, 2 * rad,
                                                             QtGui.QPen(QtCore.Qt.NoPen), QtGui.QBrush(GREEN)))
         if self._sel:                                              # pulsing selection halo
@@ -1563,12 +1604,34 @@ class NetworkMapTab(QtWidgets.QWidget):
         elif not off and self.downpanel.isVisible():
             self.downpanel.hide()
     def _bankon_name(self):
+        """The centre node's ACCURATE display name. Priority: (1) Core's own advertised
+        localaddresses; (2) the address our peers report they see us as (addrlocal majority —
+        the real outside view); (3) honest 'not publicly reachable'."""
         la = (self._ni or {}).get("localaddresses") or []
         if la:
-            addr = f"{la[0].get('address','')}:{la[0].get('port','')}"
-        else:
-            addr = ((self._ni or {}).get("subversion", "") or "").strip("/") or "node"
-        return "bankon:" + addr
+            return f"₿ANKON node\n{la[0].get('address', '')}:{la[0].get('port', '')}"
+        from collections import Counter
+        seen = Counter((p.get("addrlocal") or "").rsplit(":", 1)[0].strip("[]")
+                       for p in (self._peers or []) if p.get("addrlocal"))
+        if seen:
+            ip, votes = seen.most_common(1)[0]
+            return f"₿ANKON node\n{ip}  (as {votes} peer{'s' if votes != 1 else ''} see us)"
+        sub = ((self._ni or {}).get("subversion", "") or "").strip("/")
+        return f"₿ANKON node\n{sub or 'local'} · not publicly reachable"
+
+    @staticmethod
+    def _flow_frac(bps):
+        # ABSOLUTE flow scale (log): 0 at idle → 1 at ~1 MB/s. Packet density/speed now correlate
+        # with the real byte rate on that link — not with "share of the busiest peer", which made
+        # one hot peer hide everyone else's live traffic (and a lone idle peer look maxed out).
+        import math
+        return 0.0 if bps <= 0 else min(1.0, math.log10(1.0 + bps) / 6.0)
+
+    @staticmethod
+    def _rate_s(bps):
+        if bps >= 1048576: return f"{bps / 1048576:.1f} MB/s"
+        if bps >= 1024: return f"{bps / 1024:.1f} KB/s"
+        return f"{bps:.0f} B/s"
     @staticmethod
     def _traffic_color(frac):
         # EtherApe-style spectrum: blue (idle) → green (busy) → orange (hot)
@@ -1585,6 +1648,19 @@ class NetworkMapTab(QtWidgets.QWidget):
             t = self.scene.addText((p.get("addr") or "?") + "\n" + (p.get("subver") or "").replace("/", ""))
             t.setDefaultTextColor(QtGui.QColor("#F7931A")); t.setScale(0.85)
             t.setPos(-t.boundingRect().width() * 0.85 / 2, 30)
+            # our node anchors the ONE link in this view that is real measured traffic (the live
+            # peer connection) — the cluster lines are gossip-inferred and stay flow-free, honestly.
+            ax, ay = -285, 225
+            self._explore_anchor = (ax, ay)
+            self.scene.addLine(ax, ay, 0, 0, QtGui.QPen(QtGui.QColor(247, 147, 26, 60), 1.4))
+            self.scene.addEllipse(ax - 13, ay - 13, 26, 26,
+                                  QtGui.QPen(QtGui.QColor("#F7931A"), 2.5), QtGui.QBrush(QtGui.QColor("#1a1200")))
+            at = self.scene.addSimpleText("₿ANKON node")
+            at.setBrush(QtGui.QColor("#F7931A")); at.setScale(0.8)
+            at.setPos(ax - at.boundingRect().width() * 0.8 / 2, ay + 16)
+            self._explore_ratelbl = self.scene.addSimpleText("")
+            self._explore_ratelbl.setBrush(QtGui.QColor("#8aa0b4")); self._explore_ratelbl.setScale(0.72)
+            self._explore_ratelbl.setPos(ax * 0.5 - 40, ay * 0.5 + 8)
             # honest label: Core doesn't expose a remote node's peer list — this is its gossip cluster
             self.info.setText(f"Explore — network neighbourhood of {p.get('addr')} · {len(self._cloud)} known nodes "
                               f"near it (same AS / prefix, from our addrman gossip; peers' own connection lists are "
@@ -1603,39 +1679,90 @@ class NetworkMapTab(QtWidgets.QWidget):
                 self.view.fitInView(QtCore.QRectF(-300, -260, 600, 520), QtCore.Qt.KeepAspectRatio)
             return
         peers = self._peers or []; stale = self._pstale; n = max(1, len(peers)); R = 250
+        pyramid = getattr(self, "_layout", "radial") == "pyramid"
+        # centre of the topology: origin for radial; the PYRAMID APEX (top) in pyramid mode
+        c0x, c0y = (0.0, -300.0) if pyramid else (0.0, 0.0)
+        self._c0 = (c0x, c0y)
+        # peer positions per layout: radial ring, or pyramid tiers (widening rows below the apex,
+        # busiest peers nearest the top so rank-in-the-pyramid means something)
+        pos = []
+        if pyramid:
+            order = sorted(range(len(peers)),
+                           key=lambda i: -(peers[i].get('bytesrecv', 0) + peers[i].get('bytessent', 0)))
+            row, row_len, placed, k = 0, 2, 0, 0
+            slots = []
+            while k < len(peers):
+                take = min(row_len, len(peers) - k)
+                for j in range(take):
+                    w = 150 * (row + 1)
+                    xx = -w / 2 + (j + 0.5) * (w / take) if take > 1 else 0.0
+                    slots.append((xx, c0y + 150 + row * 130))
+                k += take; row += 1; row_len += 2
+            pos = [None] * len(peers)
+            for rank, idx in enumerate(order):
+                pos[idx] = slots[rank]
+        else:
+            for i in range(len(peers)):
+                ang = 2 * math.pi * i / n
+                pos.append((R * math.cos(ang), R * math.sin(ang)))
         # faint outer cloud = every node our addrman knows (the "all nodes" backdrop)
         if self._known:
             step = max(1, len(self._known) // 240)
             CR = 360
             for i, _nd in enumerate(self._known[::step]):
-                ang = 2 * math.pi * (i * 0.61803398875 % 1.0)   # golden-angle scatter
-                rr = CR + (i % 7) * 6
-                cx, cy = rr * math.cos(ang), rr * math.sin(ang)
+                if pyramid:      # the wider network forms the pyramid's BASE layer
+                    gx = (i * 0.61803398875 % 1.0)
+                    cx = -430 + 860 * gx
+                    cy = c0y + 170 + (len(pos) and max(py for _px, py in pos) - c0y or 300) + 60 + (i % 7) * 12
+                else:
+                    ang = 2 * math.pi * (i * 0.61803398875 % 1.0)   # golden-angle scatter
+                    rr = CR + (i % 7) * 6
+                    cx, cy = rr * math.cos(ang), rr * math.sin(ang)
                 self.scene.addEllipse(cx - 1.3, cy - 1.3, 2.6, 2.6, QtGui.QPen(QtCore.Qt.NoPen), QtGui.QBrush(QtGui.QColor(90, 150, 180, 90)))
-        # centre = our node
-        self.scene.addEllipse(-30, -30, 60, 60, QtGui.QPen(QtGui.QColor("#F7931A"), 3), QtGui.QBrush(QtGui.QColor("#1a1200")))
+        # our node — accurate name + LIVE aggregate throughput (getnettotals deltas): the orange ▼
+        # figure is exactly what flows INTO this node, green ▲ exactly what leaves. At the pyramid
+        # APEX in pyramid mode, centre otherwise.
+        self.scene.addEllipse(c0x - 30, c0y - 30, 60, 60, QtGui.QPen(QtGui.QColor("#F7931A"), 3), QtGui.QBrush(QtGui.QColor("#1a1200")))
         t = self.scene.addText(self._bankon_name()); t.setDefaultTextColor(QtGui.QColor("#F7931A"))
-        t.setScale(0.95); t.setPos(-t.boundingRect().width() * 0.95 / 2, 32)
+        t.setScale(0.95)
+        t.setPos(c0x - t.boundingRect().width() * 0.95 / 2, c0y - 30 - t.boundingRect().height() * 0.95 if pyramid else c0y + 32)
+        tin, tout = self._tot_rate or (0.0, 0.0)
+        ry = (c0y + 34) if pyramid else (c0y + 32 + t.boundingRect().height() * 0.95)
+        ti = self.scene.addSimpleText(f"▼ in  {self._rate_s(tin)}")
+        ti.setBrush(QtGui.QColor("#F7931A")); ti.setScale(0.85)
+        ti.setPos(c0x - ti.boundingRect().width() * 0.85 - 4, ry)
+        to = self.scene.addSimpleText(f"▲ out {self._rate_s(tout)}")
+        to.setBrush(QtGui.QColor("#16C784")); to.setScale(0.85); to.setPos(c0x + 4, ry)
         maxt = max([(p.get('bytessent', 0) + p.get('bytesrecv', 0)) for p in peers] or [1]) or 1
         maxr = max([p.get('bytesrecv', 0) for p in peers] or [1]) or 1
         maxs = max([p.get('bytessent', 0) for p in peers] or [1]) or 1
-        maxri = max([r[0] for r in self._rates.values()] or [0]) or 1
-        maxro = max([r[1] for r in self._rates.values()] or [0]) or 1
         for i, p in enumerate(peers):
-            ang = 2 * math.pi * i / n
-            x, y = R * math.cos(ang), R * math.sin(ang)
+            x, y = pos[i]
+            dx, dy = x - c0x, y - c0y
+            dl = math.hypot(dx, dy) or 1.0
             traf = p.get('bytessent', 0) + p.get('bytesrecv', 0); frac = traf / maxt
             col = self._traffic_color(frac)
             inbound = p.get('inbound')
             # directional lanes: IN data = bitcoin orange, OUT data = candle green (width ∝ share)
             fin = p.get('bytesrecv', 0) / maxr; fout = p.get('bytessent', 0) / maxs
-            ox, oy = -math.sin(ang) * 2.2, math.cos(ang) * 2.2
-            self.scene.addLine(ox, oy, x + ox, y + oy, QtGui.QPen(QtGui.QColor(247, 147, 26, 190), 1 + 5 * fin))
-            self.scene.addLine(-ox, -oy, x - ox, y - oy, QtGui.QPen(QtGui.QColor(22, 199, 132, 190), 1 + 5 * fout))
-            # packets carry only ACTUAL live traffic: per-direction B/s measured between polls
+            ox, oy = -dy / dl * 2.2, dx / dl * 2.2                  # perpendicular lane offset
+            self.scene.addLine(c0x + ox, c0y + oy, x + ox, y + oy, QtGui.QPen(QtGui.QColor(247, 147, 26, 190), 1 + 5 * fin))
+            self.scene.addLine(c0x - ox, c0y - oy, x - ox, y - oy, QtGui.QPen(QtGui.QColor(22, 199, 132, 190), 1 + 5 * fout))
+            # packets carry only ACTUAL live traffic: per-direction B/s measured between polls,
+            # on an ABSOLUTE log scale — dot density/speed correlate with this link's real rate.
             ri, ro = self._rates.get(p.get("addr"), (0.0, 0.0))
-            pin = (ri / maxri) if ri > 0 else 0.0    # incoming from this external node right now
-            pout = (ro / maxro) if ro > 0 else 0.0   # outgoing from BANKON node right now
+            pin = self._flow_frac(ri)                # incoming from this external node right now
+            pout = self._flow_frac(ro)               # outgoing from BANKON node right now
+            # live per-link rate labels on active links (midpoint, direction-coloured)
+            mx, my = c0x + dx * 0.55, c0y + dy * 0.55
+            if ri >= 256:
+                lr = self.scene.addSimpleText("▼ " + self._rate_s(ri))
+                lr.setBrush(QtGui.QColor("#F7931A")); lr.setScale(0.68)
+                lr.setPos(mx + ox * 4 - 20, my + oy * 4 - 12)
+            if ro >= 256:
+                ls = self.scene.addSimpleText("▲ " + self._rate_s(ro))
+                ls.setBrush(QtGui.QColor("#16C784")); ls.setScale(0.68)
+                ls.setPos(mx - ox * 4 - 20, my - oy * 4 + 4)
             r = 8 + 10 * frac
             selected = bool(self._sel) and p.get("addr") == self._sel.get("addr")
             promoted = bool(p.get("addnode"))
@@ -1646,7 +1773,10 @@ class NetworkMapTab(QtWidgets.QWidget):
             self._hits.append((x, y, r, p)); self._links.append((x, y, pin, pout))
             lbl = self.scene.addText(p.get('addr', '')[:24] + "\n" + p.get('subver', '').replace('/', ''))
             lbl.setDefaultTextColor(QtGui.QColor("#FFD37A") if selected else QtGui.QColor("#d6e3ef")); lbl.setScale(0.75)
-            lbl.setPos(x + (12 if math.cos(ang) >= 0 else -110), y - 8)
+            if pyramid:
+                lbl.setPos(x - lbl.boundingRect().width() * 0.75 / 2, y + r + 2)
+            else:
+                lbl.setPos(x + (12 if dx >= 0 else -110), y - 8)
         # Log-based connection ACTIVITY ring — shows the node dialing peers even when getpeerinfo is
         # RPC-choked, so the map is never empty during IBD. connected=green · failed=red · inbound=blue.
         acts = [e for e in (self._act or []) if e.get("kind") in ("connected", "failed", "inbound", "disconnect")]
@@ -1654,8 +1784,9 @@ class NetworkMapTab(QtWidgets.QWidget):
             AC = {"connected": "#16C784", "failed": "#f85149", "inbound": "#00BFFF", "disconnect": "#F7931A"}
             for i, e in enumerate(acts[-40:]):
                 ang = 2 * math.pi * (i * 0.61803398875 % 1.0); rr = 150 + (i % 6) * 10
-                x, y = rr * math.cos(ang), rr * math.sin(ang); col = QtGui.QColor(AC.get(e.get("kind"), "#8aa0b4"))
-                self.scene.addLine(0, 0, x, y, QtGui.QPen(QtGui.QColor(col.red(), col.green(), col.blue(), 70), 1))
+                c0x, c0y = getattr(self, "_c0", (0.0, 0.0))
+                x, y = c0x + rr * math.cos(ang), c0y + rr * math.sin(ang); col = QtGui.QColor(AC.get(e.get("kind"), "#8aa0b4"))
+                self.scene.addLine(c0x, c0y, x, y, QtGui.QPen(QtGui.QColor(col.red(), col.green(), col.blue(), 70), 1))
                 self.scene.addEllipse(x - 4, y - 4, 8, 8, QtGui.QPen(QtCore.Qt.NoPen), QtGui.QBrush(col))
                 lab = e.get("addr") or (("peer=" + e["peer"]) if e.get("peer") else "")
                 if lab:
