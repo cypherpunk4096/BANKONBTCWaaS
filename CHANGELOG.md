@@ -4,6 +4,35 @@ All notable changes to the BANKON tools monorepo. Component versions are indepen
 **bankon-vault** (`bankon_vault.core.VAULT_VERSION`), **bankon-ord** (`bankon_ord.__version__`),
 **bankonOS installer** (`bankonos/install.sh`).
 
+## 2026-07-13 — bankon-vault 1.4.0 · bankon-ord 0.2.0-alpha
+
+### bankon-vault 1.4.0 — master re-key / custody rotation
+
+`BankonVault.rekey(new_overseer)` — rotate the vault master to ANY new overseer, **two-phase and
+verified**: every entry is decrypted, re-encrypted under the new key, and round-trip byte-compared
+*in memory*; only then is the store written (atomic write-tmp→fsync→rename) and the RAM key
+swapped. A failure at any point — bad evidence, same-master no-op, verification mismatch, disk
+refusal — leaves the vault exactly as it was, old custody intact.
+
+This completes the hybrid-PQC story: `bankon-vault pqc enroll` then **`bankon-vault rekey
+--hybrid`** migrates an *existing* classical vault into ML-KEM hybrid custody (previously enroll
+only worked for new vaults). Plain `rekey` rotates to a new passphrase. Tests: rotation works and
+old custody stops decrypting; fail-closed matrix (same master, locked vault) leaves everything
+readable; enroll→rekey→hybrid-unlock proven end-to-end (`test_rekey_into_hybrid_custody`).
+
+### bankon-ord 0.2.0-alpha — gated rune etch/mint
+
+- `OrdCli.mint_gated()` (`ord wallet mint`) and `OrdCli.etch_gated()` (modern batchfile etching
+  via `ord wallet batch` — the YAML is generated and, in dry-run, returned verbatim so a human
+  reviews EXACTLY what would be etched before a sat moves). Both run the same fail-closed
+  `guard_mutation` gates as inscribe/send: ordinal wallet only, no material funds, known balance,
+  human approval; `divisibility` bounded to the runes consensus range (0–38).
+- `validate_rune_name()`: A–Z with `•` spacers (`.` accepted as alias), 1–26 letters, no
+  leading/trailing/double spacers — typos and shell-adjacent garbage are rejected before any fee
+  is spent.
+
+Monorepo: 67 tests green (44 vault-module · 14 ord · 9 blackICE).
+
 ## 2026-07-13 — bankon-vault 1.3.0
 
 **CP2048-QR roadmap complete** — the post-quantum items SECURITY.md promised are now code:

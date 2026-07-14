@@ -48,6 +48,21 @@ def assert_not_material_funds(balance_sats: Optional[int]) -> None:
             f"cardinal wallet first.")
 
 
+def validate_rune_name(name: str) -> str:
+    """A rune name is A–Z with optional '•' spacers (no leading/trailing/double spacer), 1–26
+    letters. Validating here keeps shell-adjacent garbage out of the `ord` argv and catches typos
+    BEFORE a fee is spent. Returns the normalized (uppercased) name."""
+    s = (name or "").strip().upper().replace(".", "•")        # accept '.' as a spacer alias
+    if not s:
+        raise IsolationError("rune name is empty")
+    if s[0] == "•" or s[-1] == "•" or "••" in s:
+        raise IsolationError(f"rune name {name!r}: spacers (•) cannot lead, trail, or double up")
+    letters = s.replace("•", "")
+    if not letters.isalpha() or not letters.isascii() or not (1 <= len(letters) <= 26):
+        raise IsolationError(f"rune name {name!r}: must be 1–26 letters A–Z (spacers • allowed between)")
+    return s
+
+
 @dataclass
 class GuardResult:
     ok: bool

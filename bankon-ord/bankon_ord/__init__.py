@@ -9,8 +9,10 @@ Isolated + optional: install only if you want ordinals. Ordinal vs cardinal wall
 separated (see isolation.py). Not affiliated with ordinals/ord; wraps its CLI (CC0).
 """
 from .ord_cli import OrdCli, NetConfig, NETWORKS, resolve_network, OrdError, MIN_ORD
-from .isolation import is_ordinal_wallet, assert_ordinal_wallet, guard_mutation, IsolationError
+from .isolation import (is_ordinal_wallet, assert_ordinal_wallet, guard_mutation,
+                        validate_rune_name, IsolationError)
 
 __all__ = ["OrdCli", "NetConfig", "NETWORKS", "resolve_network", "OrdError", "MIN_ORD",
-           "is_ordinal_wallet", "assert_ordinal_wallet", "guard_mutation", "IsolationError"]
-__version__ = "0.1.1-alpha"
+           "is_ordinal_wallet", "assert_ordinal_wallet", "guard_mutation", "validate_rune_name",
+           "IsolationError"]
+__version__ = "0.2.0-alpha"

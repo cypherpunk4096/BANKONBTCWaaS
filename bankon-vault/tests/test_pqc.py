@@ -129,6 +129,32 @@ def test_tier_q_adapter_identity_and_honest_refusal():
     v.lock()
 
 
+def test_rekey_into_hybrid_custody():
+    """The full enroll→rekey story: an EXISTING classical vault adopts hybrid-PQC custody."""
+    if not KEM:
+        return _skip("ML-KEM")
+    d = tempfile.mkdtemp()
+    v = BankonVault(d, autolock_sec=0)
+    salt = open(os.path.join(d, ".salt"), "rb").read()
+    v.unlock(PassphraseOverseer("pp", salt))
+    v.store("btc.seed", "classical secret")
+    info = pqc_hybrid.enroll(d)                       # enroll while unlocked classically
+    n = v.rekey(HybridPQCOverseer(PassphraseOverseer("pp", salt), info["decaps_key"], d))
+    assert n == 1
+    v.lock()
+    # classical-only can no longer read it …
+    v.unlock(PassphraseOverseer("pp", salt))
+    try:
+        assert v.retrieve_str("btc.seed") != "classical secret"
+    except Exception:
+        pass
+    v.lock()
+    # … hybrid custody can
+    v.unlock(HybridPQCOverseer(PassphraseOverseer("pp", salt), info["decaps_key"], d))
+    assert v.retrieve_str("btc.seed") == "classical secret"
+    v.lock()
+
+
 def test_status_reports_are_honest():
     # these must never raise, whatever is (not) installed
     for mod in (pqc_hybrid, pqc_mldsa):

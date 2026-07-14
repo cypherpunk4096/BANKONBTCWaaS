@@ -108,6 +108,55 @@ def test_guard_fails_closed_on_unknown_balance():
     assert g2.ok   # explicit override works
 
 
+def test_rune_name_validation():
+    from bankon_ord import validate_rune_name
+    assert validate_rune_name("uncommon.goods") == "UNCOMMON•GOODS"      # '.' spacer alias, upcased
+    assert validate_rune_name("UNCOMMON•GOODS") == "UNCOMMON•GOODS"
+    assert validate_rune_name("z") == "Z"
+    for bad in ("", "•LEAD", "TRAIL•", "DOU••BLE", "HAS1DIGIT", "BAD-CHAR", "É",
+                "A" * 27, "$(rm -rf)"):
+        try:
+            validate_rune_name(bad)
+            assert False, f"accepted invalid rune name {bad!r}"
+        except IsolationError:
+            pass
+
+
+def test_runes_mint_and_etch_gated_dry_run():
+    o = OrdCli("regtest")
+    # mint: gated + argv built correctly, never touches the binary in dry_run
+    r = o.mint_gated("ord-runes", "uncommon.goods", 2, approve=lambda p: True,
+                     balance_sats=0, dry_run=True)
+    assert r["gated"] and "--rune" in r["would_run"] and "UNCOMMON•GOODS" in r["would_run"]
+    # etch: dry_run surfaces the EXACT batchfile for human review
+    e = o.etch_gated("ord-runes", "uncommon.goods", 2, approve=lambda p: True,
+                     divisibility=2, supply="1000", symbol="¢", premine="100",
+                     balance_sats=0, dry_run=True)
+    assert e["gated"] and "rune: UNCOMMON•GOODS" in e["batchfile"] \
+        and "divisibility: 2" in e["batchfile"] and "premine: 100" in e["batchfile"]
+    # the same fail-closed gates as inscribe/send apply
+    for kw in (dict(balance_sats=MATERIAL_FUNDS_SATS),                 # material funds
+               dict(balance_sats=None),                                # unknown balance
+               dict(balance_sats=0, approve=lambda p: False)):         # human said no
+        try:
+            o.mint_gated("ord-runes", "GOODRUNE", 2,
+                         approve=kw.pop("approve", lambda p: True), dry_run=True, **kw)
+            assert False, f"mint gate leaked: {kw}"
+        except OrdError:
+            pass
+    try:                                                               # cardinal wallet refused
+        o.etch_gated("savings", "GOODRUNE", 2, approve=lambda p: True, balance_sats=0)
+        assert False, "etch on a cardinal wallet was allowed"
+    except OrdError:
+        pass
+    try:                                                               # consensus bound enforced
+        o.etch_gated("ord-runes", "GOODRUNE", 2, approve=lambda p: True,
+                     divisibility=39, balance_sats=0)
+        assert False, "divisibility 39 accepted"
+    except OrdError:
+        pass
+
+
 if __name__ == "__main__":
     fns = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
     ok = 0

@@ -67,5 +67,6 @@ ord.inscribe_gated("ord-test", "art.png", 5, approve=confirm, dry_run=True)
 
 ## Status
 **Alpha (Step 2).** Read ops + preflight + wallet isolation + gated (dry-run) inscribe/send across
-mainnet/testnet/signet/regtest; 10 passing tests (no `ord` needed to test). Next: live inscribe/send
-flow verified on testnet, rune etch/mint, and an optional Qt panel.
+mainnet/testnet/signet/regtest, **gated rune etch/mint** (validated names, reviewable batchfile);
+14 passing tests (no `ord` needed to test). Next: live inscribe/send
+flow verified on testnet and an optional Qt panel.

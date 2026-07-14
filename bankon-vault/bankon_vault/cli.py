@@ -65,6 +65,8 @@ def main(argv=None):
     mg = sub.add_parser("migrate"); mg.add_argument("--json"); mg.add_argument("--env"); mg.add_argument("--context", default="imported")
     fp = sub.add_parser("pqc-falcon"); fp.add_argument("pqc_cmd", choices=["status", "demo"]); fp.add_argument("--variant", default="Falcon-512")
     pq = sub.add_parser("pqc"); pq.add_argument("pqc_cmd", choices=["status", "enroll"]); pq.add_argument("--variant", default="ML-KEM-768")
+    rk = sub.add_parser("rekey"); rk.add_argument("--hybrid", action="store_true",
+                                                  help="rekey into hybrid-PQC custody (needs `pqc enroll` first; prompts for the decaps key)")
     for name in ("destroy", "uninstall"):                 # shred options mirror shred(1)
         sp = sub.add_parser(name)
         sp.add_argument("--passes", type=int, default=7,
@@ -140,6 +142,26 @@ def main(argv=None):
         ok = pqc_falcon.verify(kp["public_key"], b"BANKON quantum-native POC", sig, args.variant)
         print(json.dumps({"variant": kp["variant"], "tier": kp["tier"], "public_key_bytes": len(kp["public_key"]) // 2,
                           "signature_bytes": len(sig) // 2, "verified": ok, "note": kp["note"]}, indent=2))
+        return
+
+    if args.cmd == "rekey":
+        v = _open(args.path)                                  # unlock with the CURRENT passphrase
+        salt = open(v.salt_file, "rb").read()
+        new_pp = getpass.getpass("NEW passphrase: ")
+        if getpass.getpass("confirm NEW passphrase: ") != new_pp:
+            sys.exit("passphrases differ — vault unchanged")
+        new_ov = PassphraseOverseer(new_pp, salt)
+        if args.hybrid:
+            from . import pqc_hybrid
+            from .pqc_hybrid import HybridPQCOverseer
+            if not os.path.exists(os.path.join(args.path, pqc_hybrid.PQC_FILE)):
+                sys.exit("no .pqc.json — run `bankon-vault pqc enroll` first")
+            dk = getpass.getpass("ML-KEM decaps key (hex): ").strip()
+            new_ov = HybridPQCOverseer(new_ov, dk, args.path)
+        n = v.rekey(new_ov)
+        v.lock()
+        mode = "HYBRID-PQC (classical + ML-KEM)" if args.hybrid else "new passphrase"
+        print(f"🔁 rekeyed {n} entr{'y' if n == 1 else 'ies'} → {mode}. Old custody no longer opens this vault.")
         return
 
     if args.cmd == "pqc":

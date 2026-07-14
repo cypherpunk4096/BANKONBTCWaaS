@@ -44,7 +44,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.hashes import SHA512
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-VAULT_VERSION = "1.3.0"
+VAULT_VERSION = "1.4.0"
 SALT_BYTES = 32          # single per-vault salt, created once, never rotated
 NONCE_BYTES = 12         # AES-GCM 96-bit nonce
 KEY_BYTES = 32           # AES-256
@@ -209,6 +209,59 @@ class BankonVault:
             if self._timer is not None:
                 self._timer.cancel()
                 self._timer = None
+
+    def rekey(self, new_overseer, challenge: str = "", evidence=None) -> int:
+        """Rotate the vault master to a NEW overseer — two-phase and VERIFIED, so a failure at any
+        point leaves the vault exactly as it was (old custody keeps working).
+
+        Phase 1 (memory only): every entry is decrypted with the current key, re-encrypted under
+        the new key, and round-trip verified byte-for-byte. Phase 2: the re-encrypted store is
+        written atomically (_secure_write's write-tmp→fsync→rename), THEN the in-RAM key is
+        swapped. This is how an existing vault adopts hybrid-PQC custody after `pqc enroll`:
+        unlock classically, then rekey(HybridPQCOverseer(inner, decaps_key, dir)).
+        Returns the number of re-encrypted entries."""
+        with self._lock:
+            if self._vault_key is None:
+                raise VaultLocked("unlock with the CURRENT overseer before rekeying")
+            if not new_overseer.verify_evidence(evidence, challenge):
+                raise VaultError("new overseer evidence rejected — vault unchanged")
+            ikm = new_overseer.produce_raw_key(challenge, evidence)
+            try:
+                new_vk = _hkdf(bytes(ikm), self._salt, MASTER_INFO, KEY_BYTES)
+            finally:
+                if isinstance(ikm, (bytearray, memoryview)):
+                    _zero(ikm)
+            if new_vk == bytes(self._vault_key):
+                raise VaultError("new overseer derives the SAME master — nothing to rotate")
+            # phase 1 — re-encrypt in memory, verifying every entry before anything touches disk
+            now = time.time()
+            new_entries = {}
+            for eid, e in self._entries.items():
+                k_old = self._entry_key(eid)
+                pt = AESGCM(k_old).decrypt(bytes.fromhex(e.nonce), bytes.fromhex(e.ct), eid.encode())
+                k_new = _hkdf(new_vk, self._salt, f"bankon-vault-entry:{eid}".encode(), KEY_BYTES)
+                nonce = os.urandom(NONCE_BYTES)
+                ct = AESGCM(k_new).encrypt(nonce, pt, eid.encode())
+                if AESGCM(k_new).decrypt(nonce, ct, eid.encode()) != pt:      # round-trip proof
+                    raise VaultError(f"rekey verification failed for {eid!r} — vault unchanged")
+                new_entries[eid] = VaultEntry(id=eid, nonce=nonce.hex(), ct=ct.hex(),
+                                              context=e.context, created_at=e.created_at,
+                                              updated_at=now, access_count=e.access_count)
+            # phase 2 — atomic swap on disk first; only then install the new key in RAM
+            old_entries = self._entries
+            self._entries = new_entries
+            try:
+                self._save_entries()
+            except BaseException:
+                self._entries = old_entries                   # disk refused → old custody intact
+                raise
+            _zero(self._vault_key)
+            if getattr(self, "_mlocked", False):
+                _try_munlock(self._vault_key)
+            self._vault_key = bytearray(new_vk)
+            self._mlocked = _try_mlock(self._vault_key)
+            self._touch()
+            return len(new_entries)
 
     def _touch(self) -> None:
         self._last_use = time.time()

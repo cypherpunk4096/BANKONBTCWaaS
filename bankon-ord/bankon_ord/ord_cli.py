@@ -213,6 +213,64 @@ class OrdCli:
         return self._run("wallet", "--name", wallet, "send", "--fee-rate", str(fee_rate),
                          address, outgoing, timeout=300)
 
+    # ---- runes (etch / mint) — same fail-closed gate as inscribe/send ----
+    def mint_gated(self, wallet: str, rune: str, fee_rate: float, approve, *,
+                   balance_sats: Optional[int] = None, dry_run: bool = True):
+        """Mint an open-minting rune (`ord wallet mint`). Gated: ordinal wallet only, no material
+        funds, human approval. The rune must already be etched with open terms."""
+        from .isolation import guard_mutation, validate_rune_name
+        rune = validate_rune_name(rune)
+        g = guard_mutation(wallet, balance_sats, approve, action="mint",
+                           details={"rune": rune, "fee_rate": fee_rate, "network": self.net.name})
+        if not g.ok:
+            raise OrdError(f"mint blocked: {g.reason}")
+        if dry_run:
+            return {"gated": True, "would_run": ["wallet", "--name", wallet, "mint",
+                                                 "--fee-rate", str(fee_rate), "--rune", rune]}
+        return self._run("wallet", "--name", wallet, "mint", "--fee-rate", str(fee_rate),
+                         "--rune", rune, timeout=300)
+
+    def etch_gated(self, wallet: str, rune: str, fee_rate: float, approve, *,
+                   divisibility: int = 0, supply: str = "0", symbol: str = "¤",
+                   premine: str = "0", balance_sats: Optional[int] = None, dry_run: bool = True):
+        """Etch (create) a rune. Modern ord etches via `wallet batch` with a YAML batchfile — this
+        builds a minimal one. Gated like every mutation; dry_run returns the batchfile content so
+        a human can review EXACTLY what would be etched before running live."""
+        from .isolation import guard_mutation, validate_rune_name
+        rune = validate_rune_name(rune)
+        if not (0 <= int(divisibility) <= 38):                 # runes consensus bound
+            raise OrdError("divisibility must be 0..38")
+        g = guard_mutation(wallet, balance_sats, approve, action="etch",
+                           details={"rune": rune, "divisibility": divisibility, "supply": supply,
+                                    "symbol": symbol, "premine": premine,
+                                    "fee_rate": fee_rate, "network": self.net.name})
+        if not g.ok:
+            raise OrdError(f"etch blocked: {g.reason}")
+        batch = ("mode: separate-outputs\n"
+                 "etching:\n"
+                 f"  rune: {rune}\n"
+                 f"  divisibility: {int(divisibility)}\n"
+                 f"  supply: {supply}\n"
+                 f"  symbol: {symbol}\n"
+                 f"  premine: {premine}\n"
+                 "inscriptions: []\n")
+        if dry_run:
+            return {"gated": True, "batchfile": batch,
+                    "would_run": ["wallet", "--name", wallet, "batch",
+                                  "--fee-rate", str(fee_rate), "--batch", "<batchfile>"]}
+        import tempfile
+        fd, path = tempfile.mkstemp(suffix=".yaml", prefix="bankon-ord-etch-")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(batch)
+            return self._run("wallet", "--name", wallet, "batch", "--fee-rate", str(fee_rate),
+                             "--batch", path, timeout=600)
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
 
 def _core_ok(net: NetConfig):
     """(reachable, version_int) via bitcoin-cli against this network — read-only."""

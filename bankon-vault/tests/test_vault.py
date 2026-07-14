@@ -242,6 +242,50 @@ def test_bip322_sign_roundtrip_and_dispatch():
     assert btc.make_verifier(r["address"])(msg, r["signature"]) == r["address"]
 
 
+def test_rekey_rotates_custody():
+    v, salt = _fresh()
+    v.store("a", "alpha", context="demo")
+    v.store("b", "beta", context="demo")
+    n = v.rekey(PassphraseOverseer("NEW-pass", salt))
+    assert n == 2
+    # still readable in-session, and after a lock/unlock with the NEW custody
+    assert v.retrieve_str("a") == "alpha"
+    v.lock()
+    v.unlock(PassphraseOverseer("NEW-pass", salt))
+    assert v.retrieve_str("b") == "beta"
+    v.lock()
+    # the OLD passphrase must no longer decrypt anything
+    v.unlock(PassphraseOverseer("test-pass", salt))
+    try:
+        v.retrieve("a")
+        assert False, "old custody still decrypts after rekey"
+    except Exception:
+        pass
+    v.lock()
+
+
+def test_rekey_fails_closed():
+    v, salt = _fresh()
+    v.store("k", "keep me")
+    # same overseer → same master → refused, vault untouched
+    try:
+        v.rekey(PassphraseOverseer("test-pass", salt))
+        assert False, "rekey to the SAME master was allowed"
+    except Exception:
+        pass
+    assert v.retrieve_str("k") == "keep me"          # unchanged
+    # locked vault → refused
+    v.lock()
+    try:
+        v.rekey(PassphraseOverseer("other", salt))
+        assert False, "rekey on a locked vault was allowed"
+    except Exception:
+        pass
+    v.unlock(PassphraseOverseer("test-pass", salt))  # old custody still opens it
+    assert v.retrieve_str("k") == "keep me"
+    v.lock()
+
+
 if __name__ == "__main__":
     fns = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
     ok = 0
