@@ -88,8 +88,11 @@ honest about what needs hardware:
 ## Known limitations (honest)
 - **Gating verifies by pinned pubkey OR by address** — **BIP-137 recoverable signatures are shipped**
   (`sign_message_compact` / `recover_address`, cross-verified against Bitcoin Core v31
-  `signmessage`/`verifymessage` in both directions). Full **BIP-322** (incl. taproot message
-  signing) remains roadmap — BIP-137 covers p2pkh / p2sh-p2wpkh / p2wpkh only.
+  `signmessage`/`verifymessage` in both directions), and **BIP-322 'simple' is shipped** for
+  p2wpkh and **taproot key-path** (`sign_message_bip322` / `verify_message_bip322`, byte-exact
+  against the spec's `basic-test-vectors.json` — tx hashes, valid sigs, and all error cases).
+  Remaining roadmap: BIP-322 *full* variant and arbitrary-script verification (p2wsh multisig
+  message signing needs a script interpreter).
 - Retrieved plaintext is returned as a `bytearray` you should `for i: buf[i]=0` after use;
   `gated_sign_psbt` does this for you.
 - Shamir K-of-N split + multi-operator ceremony are **shipped** (`shamir.py`, `ceremony.py`) — or use

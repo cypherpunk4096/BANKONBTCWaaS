@@ -190,6 +190,58 @@ def test_bip137_address_pinning_all_kinds_and_fail_closed():
     assert btc.make_verifier(r["address"])(msg, r["signature"]) == r["address"]
 
 
+def test_bip322_spec_vectors():
+    """BIP-322 'simple' vectors pinned from bitcoin/bips bip-0322/basic-test-vectors.json."""
+    from bankon_vault.chains.btc import _bip322_to_spend, _bip322_to_sign
+    from embit.script import address_to_scriptpubkey
+    from embit import hashes
+    btc = BitcoinAdapter("main")
+    A = "bc1q9vza2e8x573nczrlzms0wvx3gsqjx7vavgkx0l"
+    # tagged message hash + virtual tx ids are byte-exact per spec
+    assert hashes.tagged_hash("BIP0322-signed-message", b"").hex() == \
+        "c90c269c4f8fcbe6880f72a721ddfbf1914268a794cbb21cfafee13770ae19f1"
+    spend = _bip322_to_spend(address_to_scriptpubkey(A), "Hello World")
+    assert spend.txid().hex() == "b79d196740ad5217771c1098fc4a4b51e0535c32236c71f1ea4d61a2d603352b"
+    assert _bip322_to_sign(spend.txid()).txid().hex() == \
+        "88737ae86f2077145f93cc4b153ae9a1cb8d56afa511988c149c5c8c9d93bddf"
+    # spec p2wpkh signatures verify; wrong message / wrong address fail closed
+    sig_empty = ("AkcwRAIgM2gBAQqvZX15ZiysmKmQpDrG83avLIT492QBzLnQIxYCIBaTpOaD20qRlEylyxFSeEA2"
+                 "ba9YOixpX8z46TSDtS40ASECx/EgAxlkQpQ9hYjgGu6EBCPMVPwVIVJqO4XCsMvViHI=")
+    assert btc.verify_message_bip322("", sig_empty, A) == A
+    assert btc.verify_message_bip322("Wrong message that was not signed", sig_empty, A) is None
+    assert btc.verify_message_bip322("", sig_empty,
+                                     "bc1qp0ahvfh83088w49k405szqgg4f3pptr7p2g0f0") is None
+    # spec p2tr key-path signature (the address type BIP-137 cannot cover)
+    T = "bc1pss0zhytly75awhm6x2hhvd5lnzv3vssgrf9axfheq8ldyzn88ges79fler"
+    sig_tr = ("AUCJYOwOjxYAvatTAGYaVlNXBVyFuc4MwNQkOuK2tl8xhfKDONd0NjfYyNSYcRqeCp8hsAnCEPHA"
+              "VEkO9h6vbQ/R")
+    assert btc.verify_message_bip322("No prefix fallback", sig_tr, T) == T
+    assert btc.verify_message_bip322("tampered", sig_tr, T) is None
+    # malformed inputs fail closed, never raise
+    assert btc.verify_message_bip322("", "not-valid-base64!!!", A) is None
+    assert btc.verify_message_bip322("", "AA==", A) is None          # empty witness stack
+
+
+def test_bip322_sign_roundtrip_and_dispatch():
+    btc = BitcoinAdapter("regtest")
+    msg = "BANKON taproot gate"
+    # taproot — the whole point of BIP-322 here
+    r = btc.sign_message_bip322(MNEM, msg, kind="tr")
+    assert r["address"].startswith("bcrt1p") and r["scheme"] == "bip322-simple"
+    assert btc.verify_message_bip322(msg, r["signature"], r["address"]) == r["address"]
+    # native segwit roundtrip
+    w = btc.sign_message_bip322(MNEM, msg, kind="wpkh")
+    assert btc.verify_message_bip322(msg, w["signature"], w["address"]) == w["address"]
+    # the unified verify_message dispatch routes an address + witness sig to BIP-322 …
+    assert btc.verify_message(msg, r["signature"], r["address"]) == r["address"]
+    assert btc.verify_message(msg + "x", r["signature"], r["address"]) is None
+    # … while BIP-137 compact sigs still take the recovery path (no regression)
+    c = btc.sign_message_compact(MNEM, msg, kind="wpkh")
+    assert btc.verify_message(msg, c["signature"], c["address"]) == c["address"]
+    # a BIP-322 verifier feeds the overseer path, taproot included
+    assert btc.make_verifier(r["address"])(msg, r["signature"]) == r["address"]
+
+
 if __name__ == "__main__":
     fns = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
     ok = 0

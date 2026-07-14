@@ -4,6 +4,28 @@ All notable changes to the BANKON tools monorepo. Component versions are indepen
 **bankon-vault** (`bankon_vault.core.VAULT_VERSION`), **bankon-ord** (`bankon_ord.__version__`),
 **bankonOS installer** (`bankonos/install.sh`).
 
+## 2026-07-13 — bankon-vault 1.2.0
+
+**BIP-322 generic signed messages ('simple' variant)** — message signing/verification for
+**taproot key-path** and native segwit, the address types BIP-137 cannot cover. The message is
+committed to the spec's virtual `to_spend`/`to_sign` transaction pair; the signature is the
+serialized witness stack.
+
+- `BitcoinAdapter.sign_message_bip322(secret, msg, path, kind)` — `wpkh` (BIP-143 ECDSA + pubkey
+  witness) and `tr` (BIP-341 key-path Schnorr, SIGHASH_DEFAULT, taproot-tweaked key).
+- `BitcoinAdapter.verify_message_bip322(msg, sig, address)` — p2wpkh (pubkey must hash to the
+  address) and p2tr key-path (64- or 65-byte Schnorr); every malformed input returns None.
+- `verify_message` dispatch: pinned pubkey → BSM-ECDSA; address + 65-byte compact → BIP-137
+  recovery; address + anything else → BIP-322. `make_verifier` therefore gates on taproot
+  addresses with zero call-site changes.
+
+**Byte-exact against the spec** (`bitcoin/bips` `bip-0322/basic-test-vectors.json`): tagged
+message hash, `to_spend`/`to_sign` txids, all p2wpkh + p2tr valid signatures verify, and all
+error vectors (bad base64, empty witness, wrong message, wrong address) are rejected — pinned in
+`test_bip322_spec_vectors` / `test_bip322_sign_roundtrip_and_dispatch`. Vault suite: 15 tests;
+monorepo total 56. Remaining roadmap: BIP-322 *full* variant / arbitrary-script (p2wsh multisig)
+verification.
+
 ## 2026-07-13 — bankon-vault 1.1.0
 
 **BIP-137 recoverable message signatures** — gating can now pin an **address alone**, closing the

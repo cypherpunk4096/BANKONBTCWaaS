@@ -13,9 +13,11 @@ import base64
 import hashlib
 from typing import Optional
 
-from embit import bip32, bip39, ec, script, compact
+from embit import bip32, bip39, ec, hashes, script, compact
 from embit.networks import NETWORKS
 from embit.psbt import PSBT
+from embit.script import Script, Witness
+from embit.transaction import Transaction, TransactionInput, TransactionOutput, SIGHASH
 from embit.util import secp256k1 as _secp
 
 from .base import ChainAdapter
@@ -35,6 +37,27 @@ def _bsm_hash(message: str) -> bytes:
     msg = message.encode()
     data = compact.to_bytes(len(BSM_MAGIC)) + BSM_MAGIC + compact.to_bytes(len(msg)) + msg
     return hashlib.sha256(hashlib.sha256(data).digest()).digest()
+
+
+# ---- BIP-322 generic signed messages (the "simple" variant) ----
+# The message is committed to a pair of virtual transactions: `to_spend` locks a zero-value output
+# to the signer's scriptPubKey with the tagged message hash in its scriptSig; `to_sign` spends it.
+# The signature IS the serialized witness stack of that spend — so any address type Bitcoin can
+# spend can sign a message, including taproot (which BIP-137 cannot cover). Construction verified
+# byte-exact against the BIP-322 spec's basic-test-vectors.json (tx hashes + all simple/error cases).
+
+def _bip322_to_spend(spk: Script, message: str) -> Transaction:
+    mh = hashes.tagged_hash("BIP0322-signed-message", message.encode())
+    return Transaction(version=0,
+                       vin=[TransactionInput(b"\x00" * 32, 0xFFFFFFFF,
+                                             script_sig=Script(b"\x00\x20" + mh), sequence=0)],
+                       vout=[TransactionOutput(0, spk)], locktime=0)
+
+
+def _bip322_to_sign(spend_txid: bytes) -> Transaction:
+    return Transaction(version=0,
+                       vin=[TransactionInput(spend_txid, 0, sequence=0)],
+                       vout=[TransactionOutput(0, Script(b"\x6a"))], locktime=0)   # OP_RETURN
 
 
 class BitcoinAdapter(ChainAdapter):
@@ -117,6 +140,70 @@ class BitcoinAdapter(ChainAdapter):
         except Exception:
             return None
 
+    def sign_message_bip322(self, secret: str, message: str, path: Optional[str] = None,
+                            kind: str = "wpkh") -> dict:
+        """BIP-322 'simple' signature — covers TAPROOT (key-path) as well as native segwit.
+        The signature is the base64 witness stack of the virtual to_sign transaction."""
+        leaf = self._leaf(secret, path, kind)
+        if kind == "tr":
+            spk = script.p2tr(leaf)
+            to_sign = _bip322_to_sign(_bip322_to_spend(spk, message).txid())
+            h = to_sign.sighash_taproot(0, [spk], [0])          # SIGHASH_DEFAULT → 64-byte sig
+            wit = Witness([leaf.key.taproot_tweak(b"").schnorr_sign(h).serialize()])
+        elif kind == "wpkh":
+            spk = script.p2wpkh(leaf)
+            to_sign = _bip322_to_sign(_bip322_to_spend(spk, message).txid())
+            h = to_sign.sighash_segwit(0, script.p2pkh_from_p2wpkh(spk), 0)
+            wit = Witness([leaf.key.sign(h).serialize() + bytes([SIGHASH.ALL]),
+                           leaf.key.get_public_key().sec()])
+        else:
+            raise ValueError(f"BIP-322 simple supports wpkh/tr here, not {kind!r}")
+        return {"address": spk.address(self.net),
+                "signature": base64.b64encode(wit.serialize()).decode(), "scheme": "bip322-simple"}
+
+    def verify_message_bip322(self, message: str, signature, address: str) -> Optional[str]:
+        """Verify a BIP-322 'simple' signature against an address (p2wpkh or p2tr key-path).
+        Returns the address if valid, else None — every malformed input fails closed."""
+        try:
+            raw = signature if isinstance(signature, (bytes, bytearray)) else \
+                base64.b64decode(str(signature).strip(), validate=True)
+            wit = Witness.parse(bytes(raw))
+            spk = script.address_to_scriptpubkey(address.strip())
+        except Exception:
+            return None
+        to_sign = _bip322_to_sign(_bip322_to_spend(spk, message).txid())
+        data, items = spk.data, wit.items
+        try:
+            if len(data) == 22 and data[:2] == b"\x00\x14":              # p2wpkh
+                if len(items) != 2:
+                    return None
+                sig_all, pub = items
+                if len(sig_all) < 9 or sig_all[-1] != SIGHASH.ALL:
+                    return None
+                if hashes.hash160(pub) != data[2:]:                      # pubkey must own the address
+                    return None
+                h = to_sign.sighash_segwit(0, script.p2pkh_from_p2wpkh(spk), 0)
+                if ec.PublicKey.parse(pub).verify(ec.Signature.parse(sig_all[:-1]), h):
+                    return address.strip()
+                return None
+            if len(data) == 34 and data[:2] == b"\x51\x20":              # p2tr key-path
+                if len(items) != 1:
+                    return None
+                s = items[0]
+                if len(s) == 65 and s[64] == SIGHASH.ALL:
+                    h = to_sign.sighash_taproot(0, [spk], [0], sighash=SIGHASH.ALL)
+                    s = s[:64]
+                elif len(s) == 64:
+                    h = to_sign.sighash_taproot(0, [spk], [0])
+                else:
+                    return None
+                if ec.PublicKey.from_xonly(data[2:]).schnorr_verify(ec.SchnorrSig.parse(s), h):
+                    return address.strip()
+                return None
+        except Exception:
+            return None
+        return None
+
     def _addr_for_kind(self, pub: ec.PublicKey, kind: str) -> str:
         if kind == "pkh":
             return script.p2pkh(pub).address(self.net)
@@ -129,8 +216,8 @@ class BitcoinAdapter(ChainAdapter):
     def verify_message(self, message: str, signature, expected) -> Optional[str]:
         """Verify a signed message against a pinned pubkey OR an address.
         `expected` = hex pubkey (33/65B) → raw BSM-ECDSA verify; anything else is treated as an
-        ADDRESS and the signature must be BIP-137 compact (65B base64/hex) — the pubkey is
-        recovered and the declared-type address must equal `expected` (exact string compare).
+        ADDRESS: BIP-137 compact (65B) → pubkey recovery + exact address compare, any other
+        signature → BIP-322 'simple' witness verify (incl. taproot key-path).
         Returns the signer address if valid, else None. Feeds WalletSignatureOverseer(verifier=…)."""
         try:
             h = _bsm_hash(message)
@@ -141,11 +228,13 @@ class BitcoinAdapter(ChainAdapter):
                 if pub.verify(sig, h):
                     return script.p2wpkh(pub).address(self.net)
                 return None
-            # pinned by ADDRESS: BIP-137 recovery — the recovered pubkey's declared-type address
-            # must match exactly. A wrong recid/type recovers a DIFFERENT pubkey → different
-            # address → None (fail-closed).
-            addr = self.recover_address(message, signature)
-            return addr if addr is not None and addr == exp else None
+            # pinned by ADDRESS: a 65-byte compact signature is BIP-137 (recover the pubkey; the
+            # declared-type address must match exactly); anything else is tried as a BIP-322
+            # 'simple' witness (covers taproot). Both fail closed.
+            if _compact_sig_bytes(signature) is not None:
+                addr = self.recover_address(message, signature)
+                return addr if addr is not None and addr == exp else None
+            return self.verify_message_bip322(message, signature, exp)
         except Exception:
             return None
 
