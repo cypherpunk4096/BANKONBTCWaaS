@@ -101,13 +101,14 @@
   <div class="panel" id="p-oracle"></div>
   <div class="panel" id="p-wallets"></div>
   <div class="panel" id="p-create"></div>
+  <div class="panel" id="p-ordinals"></div>
   <div class="panel" id="p-reference"></div>
   <div class="panel" id="p-node"></div>
   <div class="panel" id="p-console"></div>
   <div class="panel" id="p-monitor"></div>
 </main>
 <script type="module">
-const TABS=[['overview','Overview'],['node','Node'],['blocks','Blocks'],['mempool','Mempool'],['network','Network'],['indexes','Indexes'],['oracle','BTC.oracle'],['wallets','Wallets'],['create','Create Wallet'],['reference','Reference'],['console','RPC Console'],['monitor','Monitor']];
+const TABS=[['overview','Overview'],['node','Node'],['blocks','Blocks'],['mempool','Mempool'],['network','Network'],['indexes','Indexes'],['oracle','BTC.oracle'],['wallets','Wallets'],['create','Create Wallet'],['ordinals','🜚 Ordinals'],['reference','Reference'],['console','RPC Console'],['monitor','Monitor']];
 const $=s=>document.querySelector(s); let cur='overview', level=0, timer=null;
 let lastSyncHeight=null;   // for "+N blocks since last refresh"
 const IDX={tip:0,t:0,tx:0,rate:0,spin:0,first:0,txt:''};   // Indexes "crunching" state
@@ -598,6 +599,121 @@ const RENDER={
         ${card('Legacy','1… · maximum compatibility',1)}
       </div>
       <p class="muted">After creation the wallet appears under the <b>Wallets</b> tab here, tracked watch-only.</p>`;
+  },
+  async ordinals(){
+    const el=$('#p-ordinals'); if(el.dataset.init){return;} el.dataset.init=1;
+    el.innerHTML=`<h3>🜚 Ordinals <span class="muted">inscriptions · runes · sat hunting — via the isolated bankon-ord module</span></h3>
+      <p class="muted">Reads are always safe. <b>Every mutation is two-step:</b> a dry-run first (you see the exact
+      command / batchfile and the gate's verdict), then an explicit <b>⚠ broadcast</b>. Gates: ordinal-wallet
+      isolation · material-funds refusal (≥0.1 BTC) · unknown balance fails closed. Mutations need a running
+      <code>ord server</code> (set its URL below).</p>
+      <div class="row" style="margin-bottom:8px">
+        net <select id="onet"><option>mainnet</option><option>testnet</option><option>signet</option><option>regtest</option></select>
+        &nbsp;ord server <input id="osrv" placeholder="http://127.0.0.1:8080 (for wallet ops)" style="flex:1"/>
+        <button id="opre">▶ Diagnostics</button>
+      </div>
+      <div id="odiag"><p class="muted">run ▶ Diagnostics for the readiness report</p></div>
+
+      <details open><summary>👁 View existing — wallet, inscriptions, outputs, lookups</summary><div class="body">
+        <div class="row"><input id="ow" placeholder="wallet name (must declare: ord-main / inscriptions / …)" style="flex:1"/>
+          <span id="obadge" class="pill">—</span><button id="oview">Inspect wallet</button></div>
+        <div class="row" style="margin-top:6px">
+          <input id="oid" placeholder="inscription id (…i0)" style="flex:1"/><button id="olook">View inscription</button>
+          <input id="oout" placeholder="outpoint txid:vout" style="flex:1"/><button id="ooutb">View output</button>
+          <input id="osat" placeholder="sat (number / name / degree)" style="flex:1"/><button id="osatb">Find sat</button></div>
+        <div id="oviewout"></div>
+      </div></details>
+
+      <details open><summary>✚ Create — wallet · inscribe · etch/mint runes</summary><div class="body">
+        <div class="row"><input id="ocw" placeholder="new ORDINAL wallet name (e.g. ord-main)" style="flex:1"/>
+          <button id="ocreate">Create wallet</button><button id="orecv">Receive address</button></div>
+        <div class="row" style="margin-top:6px"><b style="min-width:70px">inscribe</b>
+          <input id="oif" placeholder="file path on this host" style="flex:1.4"/>
+          <input id="oifr" type="number" step="0.1" placeholder="fee sat/vB" style="width:110px"/>
+          <button data-mut="inscribe" class="omut">Dry-run</button></div>
+        <div class="row" style="margin-top:6px"><b style="min-width:70px">etch</b>
+          <input id="oer" placeholder="RUNE•NAME" style="flex:1"/>
+          <input id="oed" type="number" placeholder="div 0-38" style="width:90px"/>
+          <input id="oes" placeholder="supply" style="width:90px"/>
+          <input id="oep" placeholder="premine" style="width:90px"/>
+          <input id="oesym" placeholder="¤" style="width:50px"/>
+          <input id="oefr" type="number" step="0.1" placeholder="fee" style="width:80px"/>
+          <button data-mut="etch" class="omut">Dry-run</button></div>
+        <div class="row" style="margin-top:6px"><b style="min-width:70px">mint</b>
+          <input id="omr" placeholder="RUNE•NAME (open terms)" style="flex:1"/>
+          <input id="omfr" type="number" step="0.1" placeholder="fee" style="width:80px"/>
+          <button data-mut="mint" class="omut">Dry-run</button></div>
+      </div></details>
+
+      <details open><summary>➤ Handle — send an inscription / rune amount</summary><div class="body">
+        <div class="row"><input id="osto" placeholder="destination address" style="flex:1.2"/>
+          <input id="osout" placeholder="outgoing: inscription id · sat · '10 RUNE'" style="flex:1"/>
+          <input id="osfr" type="number" step="0.1" placeholder="fee" style="width:80px"/>
+          <button data-mut="send" class="omut">Dry-run</button></div>
+      </div></details>
+
+      <div id="oconfirm"></div>
+      <h4 style="margin:14px 0 4px">📜 Feedback log <span class="muted">every call, verdicts, timing, raw JSON</span></h4>
+      <div id="olog" class="scroll" style="max-height:340px;overflow:auto"></div>`;
+
+    const V=id=>el.querySelector('#'+id).value.trim();
+    const bridge=async(body)=>{const t0=performance.now();
+      const r=await fetch('/api/ord',{method:'POST',headers:{'content-type':'application/json'},
+        body:JSON.stringify({net:V('onet'),server_url:V('osrv')||null,...body})}).then(r=>r.json()).catch(e=>({ok:false,error:String(e)}));
+      log(body.op+(body.confirm?' ⚠LIVE':''),r,performance.now()-t0); return r;};
+    const log=(op,r,ms)=>{const d=document.createElement('details');
+      d.innerHTML=`<summary><span style="color:${r.ok?'var(--cash,#16C784)':'#f85149'}">${r.ok?'✓':'✗'}</span>
+        <b>${esc(op)}</b> · ${new Date().toLocaleTimeString()} · ${r.elapsed_ms??ms|0} ms
+        ${r.error?` — <span class="err">${esc(String(r.error).slice(0,120))}</span>`:''}</summary>
+        <pre>${esc(JSON.stringify(r,null,2))}</pre>`;
+      el.querySelector('#olog').prepend(d);};
+
+    el.querySelector('#opre').onclick=async()=>{const o=el.querySelector('#odiag');o.innerHTML='<p class="muted">probing…</p>';
+      const r=await bridge({op:'status'});if(!r.ok){o.innerHTML=`<p class="err">${esc(r.error)}</p>`;return;}
+      const p=r.preflight||{};const y=v=>v?'<span style="color:var(--cash,#16C784)">yes</span>':'<span class="err">no</span>';
+      o.innerHTML=`<div class="cards">${card('module',esc(r.module_version||'—'))}
+        ${card('ord installed',y(p.ord_installed)+' '+esc(p.ord_version||''))}
+        ${card('Core reachable',y(p.core_reachable)+' v'+esc(p.core_version??'—'))}
+        ${card('cookie',y(p.cookie_present))}${card('inscribe capable',y(p.inscribe_capable))}
+        ${card('network',esc(p.network||'—'),1)}${card('ord server',esc(r.server_url||'—'),1)}</div>
+        ${(p.notes||[]).map(n=>`<p class="muted">• ${esc(n)}</p>`).join('')}
+        ${acc('guardrails in force',false,(r.guardrails||[]).map(g=>`<p>• ${esc(g)}</p>`).join(''))}`;};
+
+    el.querySelector('#ow').oninput=()=>{const w=V('ow');const b=el.querySelector('#obadge');
+      const ok=/(^|[^a-z0-9])(ord|insc|rune)/i.test(' '+w.toLowerCase().replace(/[^a-z0-9]+/g,' '));
+      b.textContent=w?(ok?'🜚 ordinal':'⛔ cardinal'):'—';b.style.color=ok?'#16C784':'#f85149';};
+    el.querySelector('#oview').onclick=async()=>{const r=await bridge({op:'wallet',wallet:V('ow')});
+      const o=el.querySelector('#oviewout');if(!r.ok){o.innerHTML=`<p class="err">${esc(r.error)}</p>`;return;}
+      const ins=Array.isArray(r.inscriptions)?r.inscriptions:[];
+      o.innerHTML=`<p>${esc(r.isolation||'')}</p><div class="cards">${Object.entries(r.balance&&!r.balance.error?r.balance:{}).map(([k,v])=>card(k,esc(v),1)).join('')||card('balance',esc(JSON.stringify(r.balance)),1)}</div>
+        ${acc(`inscriptions · ${ins.length}`,true,ins.map(i=>`<p><code>${esc(i.inscription||i.id||JSON.stringify(i))}</code></p>`).join('')||'<p class="muted">none</p>')}
+        ${acc('outputs',false,`<pre>${esc(JSON.stringify(r.outputs,null,2))}</pre>`)}`;};
+    el.querySelector('#olook').onclick=()=>bridge({op:'inscription',id:V('oid')});
+    el.querySelector('#ooutb').onclick=()=>bridge({op:'output',outpoint:V('oout')});
+    el.querySelector('#osatb').onclick=()=>bridge({op:'sat',sat:V('osat')});
+    el.querySelector('#ocreate').onclick=()=>bridge({op:'create_wallet',wallet:V('ocw')||V('ow')});
+    el.querySelector('#orecv').onclick=()=>bridge({op:'receive',wallet:V('ocw')||V('ow')});
+
+    const mutBody={inscribe:()=>({op:'inscribe',wallet:V('ow'),file:V('oif'),fee_rate:V('oifr')}),
+      etch:()=>({op:'etch',wallet:V('ow'),rune:V('oer'),divisibility:V('oed')||0,supply:V('oes')||'0',
+                 premine:V('oep')||'0',symbol:V('oesym')||'¤',fee_rate:V('oefr')}),
+      mint:()=>({op:'mint',wallet:V('ow'),rune:V('omr'),fee_rate:V('omfr')}),
+      send:()=>({op:'send',wallet:V('ow'),to:V('osto'),outgoing:V('osout'),fee_rate:V('osfr')})};
+    el.querySelectorAll('.omut').forEach(b=>b.onclick=async()=>{
+      const kind=b.dataset.mut,body=mutBody[kind]();
+      const r=await bridge(body);                                   // step 1: dry-run
+      const c=el.querySelector('#oconfirm');
+      if(!r.ok){c.innerHTML=`<p class="err">✗ ${esc(kind)} refused: ${esc(r.error)}</p>`;return;}
+      c.innerHTML=`<div style="border:1px solid #b8860b;border-radius:6px;padding:10px;margin-top:8px;background:#1a1408">
+        <b>⚠ ${esc(kind)} dry-run passed the gate — review, then broadcast for real:</b>
+        <pre>${esc(JSON.stringify(r.result,null,2))}</pre>
+        <button id="ogo">⚠ BROADCAST ${esc(kind)} (irreversible — spends a fee)</button>
+        <button id="ono">cancel</button></div>`;
+      c.querySelector('#ono').onclick=()=>c.innerHTML='';
+      c.querySelector('#ogo').onclick=async()=>{c.querySelector('#ogo').disabled=true;
+        const live=await bridge({...body,confirm:true,approved:true});   // step 2: LIVE
+        c.innerHTML=live.ok?`<p style="color:var(--cash,#16C784)">✓ ${esc(kind)} broadcast — receipt in the feedback log</p>`
+                           :`<p class="err">✗ live ${esc(kind)} failed: ${esc(live.error)}</p>`;};});
   },
   async reference(){
     const el=$('#p-reference');

@@ -4,6 +4,29 @@ All notable changes to the BANKON tools monorepo. Component versions are indepen
 **bankon-vault** (`bankon_vault.core.VAULT_VERSION`), **bankon-ord** (`bankon_ord.__version__`),
 **bankonOS installer** (`bankonos/install.sh`).
 
+## 2026-07-14 — BANKON Console: 🜚 Ordinals tab (full interaction) + bankon-ord webbridge
+
+The web Console (:8090) gains a complete **🜚 Ordinals** tab — handling, creation and viewing of
+existing, with extensive feedback throughout:
+
+- **Diagnostics**: readiness cards (module version, ord installed/version, Core
+  reachable/version, cookie, inscribe-capable, network, ord-server URL) + the ord docs' notes +
+  the guardrail list in force. Verified live against the mainnet node: ord 0.27.1, Core v31,
+  inscribe-capable.
+- **Viewing existing**: wallet inspector (live ordinal/cardinal isolation badge while typing,
+  balance cards, inscriptions list, outputs) + inscription-id / outpoint / sat lookups.
+- **Creation & handling**: create wallet, receive, inscribe, rune etch (dry-run returns the
+  batchfile verbatim for review), rune mint, send. **Every mutation is two-step**: dry-run
+  (gate verdict + exact command shown) → explicit "⚠ BROADCAST (irreversible — spends a fee)"
+  click. The same fail-closed gates as the CLI: ordinal-wallet isolation, ≥0.1 BTC refusal,
+  unknown balance fails closed.
+- **Extensive feedback**: a timestamped log records every call — ✓/✗, elapsed ms, error reason,
+  expandable raw JSON receipt (live receipts echo the gate payload and balance seen).
+- Plumbing: `POST /api/ord` (loopback console, optional token auth, 180 s cap) spawns
+  `bankon_ord/webbridge.py` — one JSON request on stdin → one JSON reply on stdout, so Node
+  never links Python and the module stays isolated. Bridge + endpoint + UI all smoke-tested
+  over HTTP (status, gate refusal, dry-run etch batchfile) before the live console restart.
+
 ## 2026-07-14 — bankon-ord 0.3.0-alpha: LIVE inscribe/send verified + deploy choice
 
 The last feasible ledger item for ord — **the live mutation flow, executed for real** (regtest:

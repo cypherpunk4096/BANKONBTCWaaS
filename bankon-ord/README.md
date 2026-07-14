@@ -88,6 +88,14 @@ o.etch_gated("ord-runes", "UNCOMMON.GOODS", 2, approve=confirm, divisibility=2,
 wallet balance/inscriptions/outputs with a live ordinal/cardinal isolation badge; mutations stay
 in this gated CLI by design).
 
+**Web Console tab** — <http://127.0.0.1:8090> → **🜚 Ordinals**: full interaction with extensive
+feedback. Diagnostics (readiness cards + guardrails), viewing of existing (wallet inspector with
+isolation badge, inscriptions, outputs, inscription/outpoint/sat lookups), creation (wallet ·
+receive · inscribe · etch · mint) and handling (send) — **every mutation is two-step**: a dry-run
+shows the exact command/batchfile and the gate's verdict, then an explicit ⚠ broadcast click.
+A timestamped feedback log keeps every call, verdict, timing and raw JSON. Server side:
+`POST /api/ord` → `bankon_ord/webbridge.py` (stdin/stdout JSON — same fail-closed gates as the CLI).
+
 **Live end-to-end proof** — `python3 bankon-ord/tests/test_live_regtest.py` (needs `ord` +
 `bitcoind`; self-skips otherwise): throwaway regtest node → create → fund → inscribe LIVE →
 send LIVE → gates verified on the live path. Isolated datadir + regtest ports — safe to run

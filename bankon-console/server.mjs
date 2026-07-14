@@ -1142,6 +1142,30 @@ app.get('/api/indexinfo', (req, res) => {
   res.json({ ok: !!v, indexes: v || {}, sizes: _idxSizes, cached: true });
 });
 
+// ---- 🜚 Ordinals — bridge to the isolated bankon-ord Python module ----------------------------
+// One POST → one bridge process (stdin JSON → stdout JSON), so Node never links Python and the
+// module keeps its own fail-closed gates: ordinal/cardinal isolation, material-funds refusal,
+// unknown-balance refusal, and DRY-RUN unless the request carries confirm+approved (the browser's
+// explicit second click). Reads are always safe; the receipt echoes guard context + timing.
+const ORD_DIR = join(__dir, '..', 'bankon-ord');
+app.post('/api/ord', (req, res) => {
+  if (!existsSync(join(ORD_DIR, 'bankon_ord', 'webbridge.py')))
+    return res.json({ ok: false, error: 'bankon-ord module not found beside the console' });
+  const py = spawn('python3', ['-m', 'bankon_ord.webbridge'], { cwd: ORD_DIR });
+  let out = '', err = '';
+  const t = setTimeout(() => { try { py.kill('SIGKILL'); } catch {} }, 180_000);   // inscribes can be slow
+  py.stdout.on('data', d => out += d);
+  py.stderr.on('data', d => err += d);
+  py.on('error', e => { clearTimeout(t); res.json({ ok: false, error: String(e.message) }); });
+  py.on('close', (code) => {
+    clearTimeout(t);
+    if (res.headersSent) return;
+    try { res.json(JSON.parse(out)); }
+    catch { res.json({ ok: false, error: (err || out || `bridge exited ${code}`).slice(0, 600) }); }
+  });
+  py.stdin.end(JSON.stringify(req.body || {}));
+});
+
 // Export the ONE piece of index-like data another node can actually consume: a UTXO snapshot
 // (dumptxoutset "latest"). The raw txindex/coinstatsindex LevelDBs are node-local (txindex maps
 // txid → byte offset in THIS node's blk*.dat, unique per node) and cannot be shared; a UTXO
