@@ -12,17 +12,24 @@
 # Components:  base · dev · bitcoin · bankon · ai · harden        (see component_* functions)
 set -eu
 
+# 3-level logging (shared lib if reachable; inline fallback keeps the script standalone)
+_ld="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo .)"
+for _p in "$_ld/lib/log.sh" "$_ld/../lib/log.sh" "$_ld/../../lib/log.sh"; do [ -r "$_p" ] && { . "$_p"; break; }; done
+if ! command -v log_info >/dev/null 2>&1; then
+  : "${BANKON_LOG:=1}"
+  log_info(){ [ "${BANKON_LOG:-1}" -ge 1 ] && printf "\033[38;5;208m▸ %s\033[0m\n" "$*"; return 0; }
+  log_warn(){ printf "WARN: %s\n" "$*" >&2; }
+  die(){ printf "ERROR: %s\n" "$*" >&2; exit 1; }
+  log_debug(){ [ "${BANKON_LOG:-1}" -ge 2 ] && printf "  · %s\n" "$*" >&2; return 0; }
+  log_run(){ [ "${DRY:-0}" = 1 ] && { printf "   [dry-run] %s\n" "$*"; return 0; }; eval "$@"; }
+fi
+say(){ log_info "$@"; }; warn(){ log_warn "$@"; }; run(){ log_run "$@"; }
 VERSION="2.0.0"
 DRY=0; YES=0; ONLY=""; OS_FORCE=""
 BANKON_DIR="${BANKON_DIR:-$HOME/bankon-tools}"
 
 # ── tiny UI ──────────────────────────────────────────────────────────────────
-esc() { printf '\033[38;5;208m'; }; rst() { printf '\033[0m'; }
-say()  { esc; printf '▸ %s\n' "$*"; rst; }
-warn() { printf 'WARN: %s\n' "$*" >&2; }
-die()  { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
-run()  { if [ "$DRY" = 1 ]; then printf '   [dry-run] %s\n' "$*"; else eval "$@"; fi; }
 
 # ── args ─────────────────────────────────────────────────────────────────────
 while [ $# -gt 0 ]; do
@@ -33,6 +40,10 @@ while [ $# -gt 0 ]; do
     --os=*) OS_FORCE="${1#*=}"; shift ;;
     --dry-run) DRY=1; shift ;;
     --yes|-y) YES=1; shift ;;
+    --quiet|-q) BANKON_LOG=0; shift ;;
+    --verbose|-v|--debug) BANKON_LOG=2; shift ;;
+    --log) log_setfile "$2"; shift 2 ;;
+    --log=*) log_setfile "${1#*=}"; shift ;;
     --version) echo "bankonOS installer $VERSION"; exit 0 ;;
     -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown arg: $1 (try --help)" ;;
@@ -212,5 +223,5 @@ for c in $SEL; do
   case " $ALL " in *" $c "*) "component_$c" ;; *) warn "unknown component '$c' — skipped" ;; esac
 done
 
-esc; printf '\n✓ bankonOS provisioning complete (%s). Sovereign, verifiable, yours.\n' "$SEL"; rst
+say "✓ bankonOS provisioning complete ($SEL). Sovereign, verifiable, yours."
 [ "$DRY" = 1 ] && say "(dry-run — nothing was changed)"

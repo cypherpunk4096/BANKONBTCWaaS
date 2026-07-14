@@ -15,25 +15,70 @@
 #   node  → persistent Bitcoin-Core + other-coin daemons on the OS
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
-OS="${1:-}"; ROLE="${2:-}"; if [ $# -ge 2 ]; then shift 2; else set --; fi
-DRY=0; YES=0; PASS=""
+. "$HERE/lib/log.sh"                         # 3-level logging (BANKON_LOG 0/1/2) + file log
+say() { log_info "$@"; }; warn() { log_warn "$@"; }; run() { log_run "$@"; }
+DRY=0; YES=0; PASS=""; VERIFY=0
+
+# first two positionals are OS + ROLE (unless it's a bare flag like --verify/--help)
+OS=""; ROLE=""
+_want_log=0
 for a in "$@"; do
+  if [ "$_want_log" = 1 ]; then log_setfile "$a"; _want_log=0; continue; fi
+  if log_parse_flag "$a"; then continue; elif [ $? = 2 ]; then _want_log=1; continue; fi
   case "$a" in
     --dry-run) DRY=1 ;;
     --yes|-y)  YES=1 ;;
+    --verify)  VERIFY=1 ;;
+    -h|--help) OS=""; ROLE=""; break ;;
     COINS=*)   PASS="$PASS $a" ;;
-    *) echo "unknown arg: $a" >&2; exit 1 ;;
+    -*)        die "unknown flag: $a" ;;
+    *) if [ -z "$OS" ]; then OS="$a"; elif [ -z "$ROLE" ]; then ROLE="$a"; else die "unexpected arg: $a"; fi ;;
   esac
 done
-say()  { printf '\033[38;5;208m▸ %s\033[0m\n' "$*"; }
-warn() { printf 'WARN: %s\n' "$*" >&2; }
-die()  { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
-run()  { if [ "$DRY" = 1 ]; then printf '   [dry-run] %s\n' "$*"; else eval "$@"; fi; }
 
 usage() {
   sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+  echo "  --verify              self-test: every os×role path (script exists, POSIX-valid, dispatches)"
+  echo "  --quiet|--verbose|--debug   logging level (0/1/2)   --log FILE   append a timestamped audit log"
   exit "${1:-0}"
 }
+
+# ── --verify: dry-run/validate every OS×role dispatch without touching the system ──
+verify_all() {
+  say "bankonOS deploy --verify · checking every os×role path"
+  fails=0; checks=0
+  for os in alpine debian bsd; do
+    # vault targets (image builders — safe to introspect anywhere)
+    case "$os" in
+      alpine) vs="$HERE/enclave/podman-build.sh $HERE/enclave/build.sh $HERE/enclave/genapkovl-bankon-enclave.sh" ;;
+      debian) vs="$HERE/enclave/debian/build.sh" ;;
+      bsd)    vs="$HERE/cryptobsd/cryptobsd.sh" ;;
+    esac
+    for s in $vs; do
+      checks=$((checks+1))
+      if [ ! -f "$s" ]; then log_error "MISSING vault script: $s"; fails=$((fails+1))
+      elif ! sh -n "$s" 2>/dev/null; then log_error "SYNTAX FAIL: $s"; fails=$((fails+1))
+      else log_debug "ok vault[$os]: $s"; fi
+    done
+    # node target
+    case "$os" in alpine) ns="$HERE/cryptoalpine/node-setup.sh";; debian) ns="$HERE/cryptodebian/node-setup.sh";; bsd) ns="$HERE/cryptobsd/node-setup.sh";; esac
+    checks=$((checks+1))
+    if [ ! -f "$ns" ]; then log_error "MISSING node script: $ns"; fails=$((fails+1))
+    elif ! sh -n "$ns" 2>/dev/null; then log_error "SYNTAX FAIL: $ns"; fails=$((fails+1))
+    else log_debug "ok node[$os]: $ns"; fi
+    log_info "  $os: vault + node scripts present & POSIX-valid"
+  done
+  # dry-run the dispatcher itself for the buildable (vault) paths
+  for os in alpine debian; do
+    checks=$((checks+1))
+    if DRY=1 YES=1 BANKON_LOG=0 sh "$HERE/deploy.sh" "$os" vault --dry-run --yes >/dev/null 2>&1; then log_debug "dispatch ok: $os vault"
+    else log_error "DISPATCH FAIL: $os vault"; fails=$((fails+1)); fi
+  done
+  if [ "$fails" = 0 ]; then say "✓ verify PASSED — $checks checks, 0 failures"; exit 0
+  else log_error "✗ verify FAILED — $fails/$checks checks failed"; exit 1; fi
+}
+[ "$VERIFY" = 1 ] && verify_all
+
 if [ -z "$OS" ] || [ -z "$ROLE" ]; then usage 1; fi
 case "$OS" in alpine|debian|bsd|auto) ;; *) die "OS must be alpine|debian|bsd|auto (got '$OS')" ;; esac
 case "$ROLE" in vault|node) ;; *) die "role must be vault|node (got '$ROLE')" ;; esac

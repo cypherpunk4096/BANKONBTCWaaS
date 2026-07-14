@@ -7,11 +7,21 @@
 #   COINS="bitcoin" sudo sh node-setup.sh      # default: bitcoin. Bitcoin Core uses BANKON's verified
 #                                              # install-core when the repo is present (no distro pkg needed).
 set -eu
+# 3-level logging (shared lib if reachable; inline fallback keeps the script standalone)
+_ld="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo .)"
+for _p in "$_ld/lib/log.sh" "$_ld/../lib/log.sh" "$_ld/../../lib/log.sh"; do [ -r "$_p" ] && { . "$_p"; break; }; done
+if ! command -v log_info >/dev/null 2>&1; then
+  : "${BANKON_LOG:=1}"
+  log_info(){ [ "${BANKON_LOG:-1}" -ge 1 ] && printf "\033[38;5;208m▸ %s\033[0m\n" "$*"; return 0; }
+  log_warn(){ printf "WARN: %s\n" "$*" >&2; }
+  die(){ printf "ERROR: %s\n" "$*" >&2; exit 1; }
+  log_debug(){ [ "${BANKON_LOG:-1}" -ge 2 ] && printf "  · %s\n" "$*" >&2; return 0; }
+  log_run(){ [ "${DRY:-0}" = 1 ] && { printf "   [dry-run] %s\n" "$*"; return 0; }; eval "$@"; }
+fi
+say(){ log_info "$@"; }; warn(){ log_warn "$@"; }; run(){ log_run "$@"; }
 COINS="${COINS:-bitcoin}"
 BTC_HOME="${BTC_HOME:-/var/lib/bitcoind}"
 BANKON_DIR="${BANKON_DIR:-$HOME/bankon-tools}"
-say()  { printf '\033[38;5;208m▸ %s\033[0m\n' "$*"; }
-warn() { printf 'WARN: %s\n' "$*" >&2; }
 command -v apt-get >/dev/null || { echo "cryptoDebian node runs on Debian/Ubuntu (bankonDebian base)"; exit 1; }
 SUDO=""; [ "$(id -u)" != 0 ] && SUDO=sudo
 
