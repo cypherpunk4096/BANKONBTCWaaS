@@ -2104,7 +2104,12 @@ class GeoMapTab(QtWidgets.QWidget):
         top.addWidget(self.spin_slider)
         reset = QtWidgets.QPushButton("⟲"); reset.setFixedWidth(34); reset.setToolTip("Reset view (tilt + zoom)")
         reset.clicked.connect(self.globe.reset_view); top.addWidget(reset)
-        self.allnodes = QtWidgets.QCheckBox("all nodes"); self.allnodes.setToolTip("Off = connected peers only · On = whole addrman network")
+        self.connected = QtWidgets.QCheckBox("connected"); self.connected.setChecked(True)   # ON by default
+        self.connected.setToolTip("Plot every CONNECTED peer at its actual location (arcs + live packet flow); "
+                                  "peers with no geo data (Tor/unmapped) are listed honestly, never dropped")
+        self.connected.toggled.connect(lambda _: self._redraw()); top.addWidget(self.connected)
+        self.allnodes = QtWidgets.QCheckBox("🌐 all known"); self.allnodes.setToolTip(
+            "GLOBAL view — additionally plot the whole addrman network (every node this node knows about)")
         self.allnodes.toggled.connect(lambda _: self.refresh()); top.addWidget(self.allnodes)
         self.toggle = QtWidgets.QPushButton("🗺 Flat map"); self.toggle.setToolTip("Switch spinning globe / flat map")
         self.toggle.clicked.connect(self._toggle); top.addWidget(self.toggle)
@@ -2223,6 +2228,13 @@ class GeoMapTab(QtWidgets.QWidget):
         for a in la:
             g = geolocate(a.get("address", ""))
             if g: return g["lat"], g["lon"]
+        # not publicly reachable → locate by the address our peers report they see us as
+        from collections import Counter
+        seen = Counter((p.get("addrlocal") or "").rsplit(":", 1)[0].strip("[]")
+                       for p in (self._peers or []) if p.get("addrlocal"))
+        for ip, _n in seen.most_common(3):
+            g = geolocate(ip)
+            if g: return g["lat"], g["lon"]
         return None
     def _build_bg(self):
         """World + graticule + the whole known network as a dim density layer (one pixmap)."""
@@ -2262,8 +2274,9 @@ class GeoMapTab(QtWidgets.QWidget):
             self._build_bg()
         self.scene.addPixmap(self._bg)
         my = self._my_latlon()
+        show_conn = self.connected.isChecked() if hasattr(self, "connected") else True
         # great-circle arcs from our node to each connected peer (inferred edges)
-        if my:
+        if my and show_conn:
             mx, my_y = self.proj(my[1], my[0])
             arc_pen = QtGui.QPen(QtGui.QColor(247, 147, 26, 120), 1.0)
             self._flows = []
@@ -2289,12 +2302,17 @@ class GeoMapTab(QtWidgets.QWidget):
             mk = self.scene.addEllipse(mx - 6, my_y - 6, 12, 12, QtGui.QPen(QtGui.QColor("#F7931A"), 2), QtGui.QBrush(QtGui.QColor("#1a1200")))
             _nc = nearest_city(my[0], my[1])
             mk.setToolTip(f"bankon: this node · nearest city: {_nc[0]}, {_nc[1]} (~{_nc[2]:.0f} km)")
-        # connected peers on top, coloured by traffic/direction, ASN in tooltip
+        # connected peers on top, coloured by traffic/direction, ASN in tooltip.
+        # EVERY connected peer is accounted for: located ones at their true position, the rest
+        # (Tor / I2P / unmapped IPs) in an honest strip — never silently dropped.
         cc, asncc, located, gpeers = Counter(), Counter(), 0, []
-        for p in self._peers:
+        unlocated = []
+        for p in (self._peers if show_conn else []):
             ip = p.get("addr", "").rsplit(":", 1)[0].strip("[]")
             g = geolocate(ip)
-            if not g: continue
+            if not g:
+                unlocated.append(p)
+                continue
             located += 1; cc[g["iso"]] += 1
             an = asn_lookup(ip) or {}
             if an.get("org"): asncc[an["org"][:22]] += 1
@@ -2307,6 +2325,21 @@ class GeoMapTab(QtWidgets.QWidget):
             d = self.scene.addEllipse(x - r, y - r, 2 * r, 2 * r, QtGui.QPen(QtGui.QColor("#eef3f8"), 1), QtGui.QBrush(col))
             _pc = nearest_city(g["lat"], g["lon"])
             d.setToolTip(f"{p.get('addr')}  ·  {flag(g['iso'])} {g['country']}  ·  near {_pc[0]} (~{_pc[2]:.0f} km)  ·  AS{an.get('asn','?')} {an.get('org','')}  ·  {(traf/1048576):.1f} MiB  ·  {'in' if inbound else 'out'}")
+        if unlocated:
+            uy = self.H - 16
+            lab = self.scene.addSimpleText(f"⚫ no geo data ({len(unlocated)}): tor / unmapped —")
+            lab.setBrush(QtGui.QColor("#8aa0b4")); lab.setPos(8, uy - 4)
+            ux = 8 + lab.boundingRect().width() + 10
+            for p in unlocated[:12]:
+                d = self.scene.addEllipse(ux, uy, 8, 8, QtGui.QPen(QtGui.QColor("#5a6b7b"), 1),
+                                          QtGui.QBrush(QtGui.QColor("#22303c")))
+                d.setToolTip(f"{p.get('addr')} · no geolocation (Tor/I2P/unmapped) · "
+                             f"{((p.get('bytessent',0)+p.get('bytesrecv',0))/1048576):.1f} MiB · "
+                             f"{'in' if p.get('inbound') else 'out'}")
+                ux += 14
+            if len(unlocated) > 12:
+                more = self.scene.addSimpleText(f"+{len(unlocated) - 12}")
+                more.setBrush(QtGui.QColor("#8aa0b4")); more.setPos(ux + 2, uy - 4)
         # Log-based connection ACTIVITY — geolocate recent connect/fail events when the peer RPC is
         # choked, so the geo map / globe isn't empty during IBD. connected=green · failed=red · inbound=blue.
         act_plotted = 0
@@ -2330,9 +2363,11 @@ class GeoMapTab(QtWidgets.QWidget):
             self.info.setText(f"Geo map — peer RPC busy (IBD); plotting {act_plotted} geolocated connection events from the log · "
                               "geo approximate (EPSG:4326)" + ("" if HAVE_GEOIP else "  (GeoIP DB missing)"))
         else:
+            _unl = len(unlocated)
             self.info.setText(
-                f"Network ~{len(self._net):,} known nodes (addrman @ {net_when}) · "
-                f"{located}/{len(self._peers)} connected peers · {len(cc)} countries · "
+                (f"Network ~{len(self._net):,} known nodes (addrman @ {net_when}) · " if self._net else "") +
+                f"connected: {located} located" + (f" + {_unl} no-geo (tor/unmapped)" if _unl else "") +
+                f" of {len(self._peers)} · {len(cc)} countries · orange dots = data IN · green = data OUT · "
                 "arcs inferred · geo approximate (EPSG:4326)" + ("" if HAVE_GEOIP else "  (GeoIP DB missing)"))
         top_c = "  ".join(f"{flag(iso)} {iso} {n}" for iso, n in cc.most_common(12))
         top_a = "  ·  ".join(f"{o} {n}" for o, n in asncc.most_common(4))
