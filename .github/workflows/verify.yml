@@ -1,0 +1,71 @@
+name: verify
+
+# Keeps the whole bankonOS family + the vault/ord suites green on every push and PR.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  posix:
+    name: POSIX shell + deploy --verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install a strict POSIX shell (dash) + shellcheck
+        run: sudo apt-get update -y && sudo apt-get install -y dash shellcheck
+
+      - name: POSIX syntax sweep (dash -n) on every shell script
+        run: |
+          set -eu
+          fail=0
+          # all bankonOS scripts + the module installers
+          for f in $(find bankonos -name '*.sh') \
+                   bankon-vault/install.sh bankon-vault/uninstall.sh \
+                   bankon-ord/install.sh bankon-waas/db/install-pgvectorscale.sh; do
+            [ -f "$f" ] || continue
+            if dash -n "$f"; then echo "  ok  $f"; else echo "  FAIL $f"; fail=1; fi
+          done
+          exit $fail
+
+      - name: shellcheck (advisory — dash -n is the hard gate)
+        continue-on-error: true
+        run: |
+          find bankonos -name '*.sh' -print0 | xargs -0 shellcheck -S error || true
+
+      - name: bankonOS deploy --verify (every os x role path)
+        run: sh bankonos/deploy.sh --verify
+
+      - name: deploy --verify with an audit log (quiet console, full file trail)
+        run: |
+          sh bankonos/deploy.sh --verify --quiet --log verify.log
+          echo "----- audit log -----"; cat verify.log
+
+  tests:
+    name: bankon-vault + bankon-ord tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install crypto deps (system-style: cryptography + embit)
+        run: python -m pip install --quiet cryptography embit
+
+      - name: bankon-vault suite (vault · policy · ceremony · multisig)
+        run: |
+          set -e
+          for t in test_vault test_policy test_ceremony test_multisig; do
+            echo "::group::bankon-vault/$t"
+            python bankon-vault/tests/$t.py
+            echo "::endgroup::"
+          done
+
+      - name: bankon-ord suite (network resolution · isolation · gating — no ord binary needed)
+        run: |
+          echo "::group::bankon-ord/test_ord"
+          python bankon-ord/tests/test_ord.py
+          echo "::endgroup::"
