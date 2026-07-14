@@ -44,7 +44,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.hashes import SHA512
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-VAULT_VERSION = "1.5.0"
+VAULT_VERSION = "1.6.0"
 SALT_BYTES = 32          # single per-vault salt, created once, never rotated
 NONCE_BYTES = 12         # AES-GCM 96-bit nonce
 KEY_BYTES = 32           # AES-256

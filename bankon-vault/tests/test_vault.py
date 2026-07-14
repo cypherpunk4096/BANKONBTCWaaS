@@ -286,6 +286,44 @@ def test_bip322_p2wsh_multisig_partial_and_assemble():
         pass
 
 
+def test_bip322_full_variant_spec_vectors():
+    """BIP-322 FULL variant — payload is the whole to_sign tx. Vectors pinned from the spec's
+    generated-test-vectors.json (btcd implementation). Covers legacy p2pkh, p2sh-p2wpkh and
+    legacy p2sh multisig — types that have no witness-only 'simple' form."""
+    btc = BitcoinAdapter("main")
+    # p2pkh (legacy scriptSig; tx has version 2, locktime 2016 — full allows both)
+    assert btc.verify_message_bip322_full(
+        "MOISC5NCQ42ADH2SUXLELUJOWH",
+        "AgAAAAGn3Z6t/gsHNyHdgZTOVro0Hej+qbd/ilU1ACalKoHX3gAAAABqRzBEAiB+8t/tm8Jm6zYv9JGZZVlA"
+        "Ujmqg7ZglIA39U+bim8EKQIgDv3E5cHOagN+xYgN3ZQjTYlAJp/WyslwJWuFP1TmM3IBIQJcPK2h9SY+Ki1o"
+        "ussvHnMdFAhJgsYBFPl+rNcMv9P1ROAHAAABAAAAAAAAAAABauAHAAA=",
+        "13vU5PUSuArDXJdCWZvUFEbgJ2wcmtSJWn") == "13vU5PUSuArDXJdCWZvUFEbgJ2wcmtSJWn"
+    # wrong message → refused
+    assert btc.verify_message_bip322_full(
+        "TAMPERED",
+        "AgAAAAGn3Z6t/gsHNyHdgZTOVro0Hej+qbd/ilU1ACalKoHX3gAAAABqRzBEAiB+8t/tm8Jm6zYv9JGZZVlA"
+        "Ujmqg7ZglIA39U+bim8EKQIgDv3E5cHOagN+xYgN3ZQjTYlAJp/WyslwJWuFP1TmM3IBIQJcPK2h9SY+Ki1o"
+        "ussvHnMdFAhJgsYBFPl+rNcMv9P1ROAHAAABAAAAAAAAAAABauAHAAA=",
+        "13vU5PUSuArDXJdCWZvUFEbgJ2wcmtSJWn") is None
+    # malformed payloads fail closed, never raise
+    assert btc.verify_message_bip322_full("x", "not-base64!!!", "13vU5PUSuArDXJdCWZvUFEbgJ2wcmtSJWn") is None
+    assert btc.verify_message_bip322_full("x", "AAAA", "13vU5PUSuArDXJdCWZvUFEbgJ2wcmtSJWn") is None
+
+
+def test_bip322_full_sign_roundtrip_and_dispatch():
+    btc = BitcoinAdapter("regtest")
+    msg = "BANKON full-variant message"
+    for kind in ("wpkh", "tr"):
+        r = btc.sign_message_bip322(MNEM, msg, kind=kind, variant="full")
+        assert r["scheme"] == "bip322-full"
+        assert btc.verify_message_bip322_full(msg, r["signature"], r["address"]) == r["address"]
+        # the unified dispatch also accepts full-variant payloads (simple → full fallback)
+        assert btc.verify_message(msg, r["signature"], r["address"]) == r["address"]
+        assert btc.verify_message_bip322_full(msg + "x", r["signature"], r["address"]) is None
+        # a full payload is NOT a valid simple payload for the same message
+        assert btc.verify_message_bip322(msg, r["signature"], r["address"]) is None
+
+
 def test_rekey_rotates_custody():
     v, salt = _fresh()
     v.store("a", "alpha", context="demo")

@@ -4,6 +4,26 @@ All notable changes to the BANKON tools monorepo. Component versions are indepen
 **bankon-vault** (`bankon_vault.core.VAULT_VERSION`), **bankon-ord** (`bankon_ord.__version__`),
 **bankonOS installer** (`bankonos/install.sh`).
 
+## 2026-07-14 — bankon-vault 1.6.0
+
+**BIP-322 FULL variant** — the payload is the complete `to_sign` transaction (any
+version/locktime/sequence), whose single input must spend the virtual `to_spend` for
+(message, address).
+
+- `verify_message_bip322_full()`: **8 of the spec's 10 generated full-variant types verify** —
+  p2pkh (legacy scriptSig + legacy sighash), p2wpkh, p2sh-p2wpkh, p2tr key-path,
+  p2wsh K-of-N, p2sh-p2wsh K-of-N, and legacy p2sh K-of-N multisig. All **28 error vectors**
+  from `generated-test-vectors.json` rejected; the 4 simple-variant generated vectors still
+  verify (regression). Honest refusals, stated in SECURITY.md: time-locked scripts (arbitrary
+  script evaluation) and proof-of-funds payloads with extra inputs (need UTXO-set context).
+- `sign_message_bip322(variant="full")` — emit the full-variant payload for wpkh/tr.
+- Internals: the simple/full paths now share one `_bip322_verify_input()` (the sighash is
+  computed over the *provided* tx in full mode, the canonical one in simple mode); new
+  fail-closed scriptSig push parser (`_script_pushes` — any non-push opcode → None).
+- Unified `verify_message` dispatch: address + witness payload → simple, then full fallback.
+
+Vault suite: 21 tests; monorepo total 71.
+
 ## 2026-07-13 — bankon-qt: optional 🜚 Ordinals tab (ord 0.2.1-alpha)
 
 The ord README's "optional Qt panel" item, delivered inside the read-only contract:

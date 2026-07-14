@@ -141,9 +141,12 @@ class BitcoinAdapter(ChainAdapter):
             return None
 
     def sign_message_bip322(self, secret: str, message: str, path: Optional[str] = None,
-                            kind: str = "wpkh") -> dict:
-        """BIP-322 'simple' signature — covers TAPROOT (key-path) as well as native segwit.
-        The signature is the base64 witness stack of the virtual to_sign transaction."""
+                            kind: str = "wpkh", variant: str = "simple") -> dict:
+        """BIP-322 signature — covers TAPROOT (key-path) as well as native segwit.
+        variant='simple' → the base64 witness stack; variant='full' → the base64 of the whole
+        to_sign transaction (what btcd-style verifiers of the full variant expect)."""
+        if variant not in ("simple", "full"):
+            raise ValueError("variant must be 'simple' or 'full'")
         leaf = self._leaf(secret, path, kind)
         if kind == "tr":
             spk = script.p2tr(leaf)
@@ -157,13 +160,18 @@ class BitcoinAdapter(ChainAdapter):
             wit = Witness([leaf.key.sign(h).serialize() + bytes([SIGHASH.ALL]),
                            leaf.key.get_public_key().sec()])
         else:
-            raise ValueError(f"BIP-322 simple supports wpkh/tr here, not {kind!r}")
+            raise ValueError(f"BIP-322 supports wpkh/tr here, not {kind!r}")
+        if variant == "full":
+            to_sign.vin[0].witness = wit
+            payload = to_sign.serialize()
+        else:
+            payload = wit.serialize()
         return {"address": spk.address(self.net),
-                "signature": base64.b64encode(wit.serialize()).decode(), "scheme": "bip322-simple"}
+                "signature": base64.b64encode(payload).decode(), "scheme": f"bip322-{variant}"}
 
     def verify_message_bip322(self, message: str, signature, address: str) -> Optional[str]:
-        """Verify a BIP-322 'simple' signature against an address (p2wpkh or p2tr key-path).
-        Returns the address if valid, else None — every malformed input fails closed."""
+        """Verify a BIP-322 'simple' signature against an address (p2wpkh, p2tr key-path, or
+        p2wsh K-of-N). Returns the address if valid, else None — malformed input fails closed."""
         try:
             raw = signature if isinstance(signature, (bytes, bytearray)) else \
                 base64.b64decode(str(signature).strip(), validate=True)
@@ -172,8 +180,87 @@ class BitcoinAdapter(ChainAdapter):
         except Exception:
             return None
         to_sign = _bip322_to_sign(_bip322_to_spend(spk, message).txid())
-        data, items = spk.data, wit.items
+        return self._bip322_verify_input(to_sign, spk, None, wit.items, address.strip())
+
+    def verify_message_bip322_full(self, message: str, signature, address: str) -> Optional[str]:
+        """Verify a BIP-322 'FULL' signature: the payload is the complete to_sign TRANSACTION
+        (any version/locktime/sequence — timelocked signatures are legal), whose single input
+        must spend the virtual to_spend for (message, address). Adds legacy p2pkh and
+        p2sh-p2wpkh to the covered types (they have no witness-only 'simple' form).
+        Proof-of-funds payloads (extra inputs) need UTXO-set context → refused honestly."""
         try:
+            raw = signature if isinstance(signature, (bytes, bytearray)) else \
+                base64.b64decode(str(signature).strip(), validate=True)
+            tx = Transaction.parse(bytes(raw))
+            spk = script.address_to_scriptpubkey(address.strip())
+        except Exception:
+            return None
+        try:
+            if len(tx.vin) != 1:                                         # proof-of-funds → out of scope
+                return None
+            spend = _bip322_to_spend(spk, message)
+            if tx.vin[0].txid != spend.txid() or tx.vin[0].vout != 0:    # must spend OUR to_spend
+                return None
+            if not tx.vout or tx.vout[0].value != 0 or tx.vout[0].script_pubkey.data[:1] != b"\x6a":
+                return None                                              # canonical OP_RETURN output
+            items = tx.vin[0].witness.items if tx.vin[0].witness else []
+            return self._bip322_verify_input(tx, spk, tx.vin[0].script_sig, items, address.strip())
+        except Exception:
+            return None
+
+    def _bip322_verify_input(self, to_sign, spk, script_sig, items, address) -> Optional[str]:
+        """Validate input 0 of `to_sign` against the to_spend output script `spk`. Shared by the
+        simple (canonical tx, witness only) and full (provided tx, may have scriptSig) variants."""
+        data = spk.data
+        try:
+            if len(data) == 25 and data[:3] == b"\x76\xa9\x14":          # p2pkh (full variant only)
+                pushes = _script_pushes(script_sig.data if script_sig else b"")
+                if pushes is None or len(pushes) != 2 or items:
+                    return None
+                sig_all, pub = pushes
+                if len(sig_all) < 9 or sig_all[-1] != SIGHASH.ALL:
+                    return None
+                if hashes.hash160(pub) != data[3:23]:
+                    return None
+                h = to_sign.sighash_legacy(0, spk)
+                if ec.PublicKey.parse(pub).verify(ec.Signature.parse(sig_all[:-1]), h):
+                    return address
+                return None
+            if len(data) == 23 and data[:2] == b"\xa9\x14":              # p2sh
+                pushes = _script_pushes(script_sig.data if script_sig else b"")
+                if not pushes:
+                    return None
+                redeem = pushes[-1]                                      # redeem is the LAST push
+                if hashes.hash160(redeem) != data[2:22]:                 # redeem must own the address
+                    return None
+                if len(redeem) == 22 and redeem[:2] == b"\x00\x14":      # p2sh-p2wpkh → segwit rules
+                    if len(pushes) != 1:
+                        return None
+                    return self._bip322_verify_input(to_sign, Script(redeem), None, items, address)
+                if len(redeem) == 34 and redeem[:2] == b"\x00\x20":      # p2sh-p2wsh → p2wsh rules
+                    if len(pushes) != 1:
+                        return None
+                    return self._bip322_verify_input(to_sign, Script(redeem), None, items, address)
+                # legacy p2sh K-of-N multisig: scriptSig = OP_0 <sig..sig> <redeem>, no witness
+                from embit import finalizer
+                if items or len(pushes) < 3 or pushes[0] != b"":
+                    return None
+                m, pubs = finalizer.parse_multisig(Script(redeem))
+                sigs = pushes[1:-1]
+                if len(sigs) != m:
+                    return None
+                h = to_sign.sighash_legacy(0, Script(redeem))
+                pi = 0
+                for s in sigs:                                           # ordered, consensus-style
+                    if len(s) < 9 or s[-1] != SIGHASH.ALL:
+                        return None
+                    sig = ec.Signature.parse(s[:-1])
+                    while pi < len(pubs) and not pubs[pi].verify(sig, h):
+                        pi += 1
+                    if pi >= len(pubs):
+                        return None
+                    pi += 1
+                return address
             if len(data) == 22 and data[:2] == b"\x00\x14":              # p2wpkh
                 if len(items) != 2:
                     return None
@@ -184,7 +271,7 @@ class BitcoinAdapter(ChainAdapter):
                     return None
                 h = to_sign.sighash_segwit(0, script.p2pkh_from_p2wpkh(spk), 0)
                 if ec.PublicKey.parse(pub).verify(ec.Signature.parse(sig_all[:-1]), h):
-                    return address.strip()
+                    return address
                 return None
             if len(data) == 34 and data[:2] == b"\x51\x20":              # p2tr key-path
                 if len(items) != 1:
@@ -198,7 +285,7 @@ class BitcoinAdapter(ChainAdapter):
                 else:
                     return None
                 if ec.PublicKey.from_xonly(data[2:]).schnorr_verify(ec.SchnorrSig.parse(s), h):
-                    return address.strip()
+                    return address
                 return None
             if len(data) == 34 and data[:2] == b"\x00\x20":              # p2wsh — multisig template
                 # witness = [dummy(empty, the CHECKMULTISIG bug), sig_1..sig_m, witness_script].
@@ -225,7 +312,7 @@ class BitcoinAdapter(ChainAdapter):
                     if pi >= len(pubs):
                         return None                                      # a sig matched no pubkey
                     pi += 1
-                return address.strip()
+                return address
         except Exception:
             return None
         return None
@@ -298,7 +385,8 @@ class BitcoinAdapter(ChainAdapter):
             if _compact_sig_bytes(signature) is not None:
                 addr = self.recover_address(message, signature)
                 return addr if addr is not None and addr == exp else None
-            return self.verify_message_bip322(message, signature, exp)
+            return (self.verify_message_bip322(message, signature, exp)
+                    or self.verify_message_bip322_full(message, signature, exp))
         except Exception:
             return None
 
@@ -397,6 +485,31 @@ def _is_hex(s: str) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _script_pushes(data: bytes) -> Optional[list]:
+    """Parse a script that consists ONLY of data pushes (a scriptSig for p2pkh / p2sh spends).
+    Returns the pushed items, or None if any non-push opcode appears (fail-closed)."""
+    out, i, n = [], 0, len(data)
+    while i < n:
+        op = data[i]
+        i += 1
+        if op == 0x00:                                    # OP_0 — the CHECKMULTISIG dummy
+            out.append(b"")
+            continue
+        if 1 <= op <= 75:
+            ln = op
+        elif op == 0x4c and i < n:                        # OP_PUSHDATA1
+            ln = data[i]; i += 1
+        elif op == 0x4d and i + 1 < n:                    # OP_PUSHDATA2
+            ln = int.from_bytes(data[i:i + 2], "little"); i += 2
+        else:
+            return None
+        if i + ln > n:
+            return None
+        out.append(data[i:i + ln])
+        i += ln
+    return out
 
 
 def _compact_sig_bytes(signature) -> Optional[bytes]:
