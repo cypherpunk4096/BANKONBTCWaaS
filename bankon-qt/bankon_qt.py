@@ -3342,6 +3342,11 @@ class OrdinalsTab(QtWidgets.QWidget):
         note.setWordWrap(True); note.setStyleSheet("color:#8aa0b4"); v.addWidget(note)
         self.wname.textChanged.connect(self._iso_badge)
 
+    def refresh(self):
+        # participate quietly in the central refresh loop — ordinals work only on explicit clicks
+        # (preflight spawns a subprocess; polling it every tick would be waste, not diagnostics).
+        pass
+
     # ---- shared webbridge (subprocess; identical gating/receipts to the web Console) ----
     def _bridge(self, body, on_done):
         import subprocess
