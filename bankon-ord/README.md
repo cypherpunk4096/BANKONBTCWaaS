@@ -68,5 +68,6 @@ ord.inscribe_gated("ord-test", "art.png", 5, approve=confirm, dry_run=True)
 ## Status
 **Alpha (Step 2).** Read ops + preflight + wallet isolation + gated (dry-run) inscribe/send across
 mainnet/testnet/signet/regtest, **gated rune etch/mint** (validated names, reviewable batchfile);
-14 passing tests (no `ord` needed to test). Next: live inscribe/send
-flow verified on testnet and an optional Qt panel.
+14 passing tests (no `ord` needed to test), and an **optional read-only Qt panel**
+(bankon-qt toolbar → 🜚 Ordinals: preflight + wallet balance/inscriptions/outputs; mutations
+stay in this module's gated CLI). Next: live inscribe/send flow verified on testnet.

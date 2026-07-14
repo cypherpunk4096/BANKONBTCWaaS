@@ -3265,6 +3265,90 @@ class NetLogTab(QtWidgets.QWidget):
                           f"parsed live from debug.log")
 
 
+class OrdinalsTab(QtWidgets.QWidget):
+    """🜚 Ordinals — OPTIONAL read-only panel over the bankon-ord module (which wraps the `ord`
+    CLI). Honors the Qt read-only contract: preflight, wallet balance, inscriptions and outputs
+    only — every mutating action (inscribe/send/etch/mint) stays in the GATED bankon-ord CLI.
+    Degrades honestly: no module → says so; no `ord` binary → the preflight report says so."""
+    def __init__(self):
+        super().__init__(); v = QtWidgets.QVBoxLayout(self)
+        h = QtWidgets.QLabel("🜚 Ordinals — read-only (inscriptions · runes · sat hunting)")
+        h.setStyleSheet("font-weight:700;font-size:15px;color:#F7931A"); v.addWidget(h)
+        top = QtWidgets.QHBoxLayout()
+        top.addWidget(QtWidgets.QLabel("network:"))
+        self.netbox = QtWidgets.QComboBox(); self.netbox.addItems(["mainnet", "testnet", "signet", "regtest"])
+        top.addWidget(self.netbox)
+        pf = QtWidgets.QPushButton("▶ preflight"); pf.setToolTip("Honest readiness report — never mutates")
+        pf.clicked.connect(self.preflight); top.addWidget(pf)
+        self.status = QtWidgets.QLabel("—"); top.addWidget(self.status); top.addStretch(1)
+        v.addLayout(top)
+        wl = QtWidgets.QHBoxLayout()
+        wl.addWidget(QtWidgets.QLabel("wallet:"))
+        self.wname = QtWidgets.QLineEdit(); self.wname.setPlaceholderText("ord wallet name (e.g. ord-main)")
+        wl.addWidget(self.wname, 1)
+        self.iso = QtWidgets.QLabel(""); wl.addWidget(self.iso)
+        for label, meth in [("balance", "wallet_balance"), ("inscriptions", "wallet_inscriptions"),
+                            ("outputs", "wallet_outputs")]:
+            b = QtWidgets.QPushButton(label); b.clicked.connect(lambda _, m=meth: self.inspect(m))
+            wl.addWidget(b)
+        v.addLayout(wl)
+        self.out = QtWidgets.QPlainTextEdit(); self.out.setReadOnly(True)
+        self.out.setStyleSheet("font-family:monospace"); v.addWidget(self.out, 1)
+        note = QtWidgets.QLabel("Read-only by contract — inscribe/send/etch/mint run only through the gated "
+                                "bankon-ord CLI (ordinal-wallet isolation · material-funds guard · human approval).")
+        note.setWordWrap(True); note.setStyleSheet("color:#8aa0b4"); v.addWidget(note)
+        self.wname.textChanged.connect(self._iso_badge)
+
+    def _ord(self):
+        """Lazy import of the sibling bankon-ord module; None (with an honest status) if absent."""
+        try:
+            import sys as _s
+            p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bankon-ord")
+            if p not in _s.path: _s.path.insert(0, p)
+            from bankon_ord import OrdCli
+            return OrdCli(self.netbox.currentText())
+        except Exception as e:
+            self.status.setText(f"bankon-ord module unavailable: {e}")
+            return None
+
+    def _iso_badge(self, name):
+        try:
+            import sys as _s
+            p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bankon-ord")
+            if p not in _s.path: _s.path.insert(0, p)
+            from bankon_ord import is_ordinal_wallet
+            ok = is_ordinal_wallet(name)
+            self.iso.setText("🜚 ordinal" if ok else "⛔ cardinal")
+            self.iso.setStyleSheet("color:%s;font-weight:700" % ("#16C784" if ok else "#f85149"))
+        except Exception:
+            self.iso.setText("")
+
+    def preflight(self):
+        o = self._ord()
+        if o is None: return
+        self.status.setText("… preflight")
+        spawn_fn(o.preflight,
+                 on_done=lambda r: (self.out.setPlainText(json.dumps(r, indent=2, default=str)),
+                                    self.status.setText("● ord ready" if r.get("ord_installed")
+                                                        else "○ ord binary not installed (see report)")),
+                 on_fail=lambda e: self.status.setText(f"preflight failed: {e}"))
+
+    def inspect(self, method):
+        o = self._ord()
+        if o is None: return
+        name = self.wname.text().strip()
+        if not name:
+            self.status.setText("enter a wallet name"); return
+        self.status.setText(f"… {method}")
+        fn = getattr(o, method)
+        spawn_fn(lambda: fn(name),
+                 on_done=lambda r: (self.out.setPlainText(json.dumps(r, indent=2, default=str)),
+                                    self.status.setText(f"● {method} ok")),
+                 on_fail=lambda e: (self.out.setPlainText(str(e)),
+                                    self.status.setText(f"○ {method} failed (is `ord` installed & the "
+                                                        f"{self.netbox.currentText()} node running?)")))
+
+
 class IceTab(QtWidgets.QWidget):
     """🧊 ICE — the wall between the network and the wallet. CPU temperature plus the
     radio (RF) kill switch. AIRGAP severs every RF path (Bluetooth/Wi-Fi/WWAN/NFC).
@@ -3361,6 +3445,7 @@ class Main(QtWidgets.QMainWindow):
         self.map = NetworkMapTab()
         self.geo = None          # Geo Map is OPTIONAL (toolbar toggle, default OFF) — built lazily so
                                  # its GeoIP lookups + globe spin-timer cost nothing unless enabled.
+        self.ords = None         # Ordinals is OPTIONAL too (same lazy pattern) — read-only bankon-ord panel.
         self.oracle = OracleTab()
         self.con = ConsoleTab()
         self.ctl = ControlTab()          # localhost / local-machine client control center
@@ -3382,6 +3467,10 @@ class Main(QtWidgets.QMainWindow):
         self.geo_chk = QtWidgets.QCheckBox(" 🌍 Geo Map")          # optional GeoIP map tab — default OFF
         self.geo_chk.setToolTip("Show the Geo Map tab (needs geoip/*.mmdb). Off by default.")
         self.geo_chk.toggled.connect(self._toggle_geo); bar.addWidget(self.geo_chk)
+        self.ord_chk = QtWidgets.QCheckBox(" 🜚 Ordinals")         # optional read-only ordinals tab — default OFF
+        self.ord_chk.setToolTip("Show the Ordinals tab (read-only; needs the bankon-ord module — mutations "
+                                "stay in its gated CLI). Off by default.")
+        self.ord_chk.toggled.connect(self._toggle_ords); bar.addWidget(self.ord_chk)
         self.inv_chk = QtWidgets.QCheckBox(" ◐ invert")           # polarity inversion — whole window
         self.inv_chk.setToolTip("Polarity inversion ('reverse video'): invert the entire window's theme.\n"
                                 "Computed from the dark palette — see docs/design.md → Polarity inversion.")
@@ -3440,6 +3529,18 @@ class Main(QtWidgets.QMainWindow):
             i = self.tabs.indexOf(self.geo)
             if i != -1: self.tabs.removeTab(i)
             self.geo.deleteLater(); self.geo = None
+    def _toggle_ords(self, on):
+        # Same lazy build/destroy as Geo Map — "default off = nothing running". Inserted
+        # right before RPC Console so diagnostics stay grouped.
+        if on:
+            if self.ords is None: self.ords = OrdinalsTab()
+            i = self.tabs.indexOf(self.con)
+            self.tabs.insertTab(i if i != -1 else self.tabs.count(), self.ords, "🜚 Ordinals")
+            self.tabs.setCurrentWidget(self.ords)
+        elif self.ords is not None:
+            i = self.tabs.indexOf(self.ords)
+            if i != -1: self.tabs.removeTab(i)
+            self.ords.deleteLater(); self.ords = None
     def on_zmq_block(self, block_hash, seq):
         # push-driven refresh — a new block connected; update the active tab + stamp.
         self.zmq_lbl.setText(f"  ⚡ zmq ● block {block_hash[:10]}…"); self.zmq_lbl.setStyleSheet("color:#16C784")

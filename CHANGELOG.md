@@ -4,6 +4,22 @@ All notable changes to the BANKON tools monorepo. Component versions are indepen
 **bankon-vault** (`bankon_vault.core.VAULT_VERSION`), **bankon-ord** (`bankon_ord.__version__`),
 **bankonOS installer** (`bankonos/install.sh`).
 
+## 2026-07-13 — bankon-qt: optional 🜚 Ordinals tab (ord 0.2.1-alpha)
+
+The ord README's "optional Qt panel" item, delivered inside the read-only contract:
+
+- New `OrdinalsTab` in bankon-qt — toolbar checkbox **🜚 Ordinals**, default OFF, lazy
+  build/destroy exactly like the Geo Map toggle ("default off = nothing running"); inserts
+  before RPC Console.
+- **Read-only only**: preflight (honest readiness report), wallet balance / inscriptions /
+  outputs, all off the UI thread (FnWorker). Every mutating action (inscribe/send/etch/mint)
+  stays in bankon-ord's gated CLI — the tab says so on its face.
+- Live **isolation badge** while typing a wallet name (🜚 ordinal / ⛔ cardinal via
+  `is_ordinal_wallet`), so the ordinal-vs-cardinal rule is visible before anything is queried.
+- Degrades honestly: missing bankon-ord module → status says so; missing `ord` binary → the
+  preflight report says so. Verified offscreen: tab construction, badge logic, module wiring,
+  preflight report, and Main-window toggle insert/remove.
+
 ## 2026-07-13 — bankon-vault 1.5.0
 
 **BIP-322 for p2wsh K-of-N multisig** — closes the "needs a script interpreter" gap for the case
