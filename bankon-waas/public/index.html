@@ -49,11 +49,19 @@
   .standard { border:1px solid var(--btc); background:linear-gradient(135deg,#1c1710,#0e1116); border-radius:10px; padding:.8rem 1rem; margin:.2rem 0 1rem; }
   .standard .badge { display:inline-block; background:var(--btc); color:#1a1200; font-weight:700; letter-spacing:.06em; font-size:.72rem; padding:.1rem .5rem; border-radius:5px; }
   .standard a { color:#f0c050; } .standard button { margin-top:.5rem; }
+  .wtabs { display:flex; gap:.4rem; margin:.8rem 0 1rem; border-bottom:2px solid #21262d; }
+  .wtabs button { background:none; border:none; border-bottom:3px solid transparent; color:#7d8590;
+    font-size:1rem; font-weight:700; padding:.4rem .9rem; cursor:pointer; border-radius:0; }
+  .wtabs button.on { color:var(--btc); border-bottom-color:var(--btc); }
+  .obadge { font-weight:700; }
 </style>
 </head>
 <body>
   <h1>₿ANKON WaaS ₿ANKON ₿TC <small>Wallet&nbsp;as&nbsp;a&nbsp;Service · non-custodial</small></h1>
   <p class="muted">Your keys and passphrase are generated <b>here, in your browser</b>. BANKON never receives them — only a public watch-only descriptor is sent so the node can show balances and prepare unsigned transactions.</p>
+
+  <div class="wtabs"><button id="wt-wallet" class="on">₿ Wallet</button><button id="wt-ordinals">🜚 Ordinals</button></div>
+  <div id="tab-wallet">
 
   <fieldset>
     <legend>1 · Choose how you want your wallet</legend>
@@ -232,6 +240,43 @@
     </details>
   </fieldset>
 
+  </div><!-- /tab-wallet -->
+
+  <div id="tab-ordinals" class="hidden">
+    <fieldset>
+      <legend>🜚 Ordinals — inscriptions · runes · sat hunting</legend>
+      <p class="muted"><b>Honest custody note:</b> ordinal wallets are <b>descriptor wallets inside your own
+      Bitcoin Core node</b> (managed by the <code>ord</code> tool) — self-custody on <i>your</i> node, a different
+      model from the browser-minted WaaS wallets above. Keep <b>ordinal</b> and <b>cardinal</b> (plain-BTC)
+      wallets strictly separate: a normal spend from an inscription wallet can destroy the inscription.</p>
+      <p class="muted">net <select id="ordnet"><option>mainnet</option><option>testnet</option><option>signet</option><option>regtest</option></select>
+        <button id="ordpre" class="secondary">▶ Readiness check</button> <span id="ordstat" class="muted"></span></p>
+      <div id="orddiag" class="muted"></div>
+    </fieldset>
+
+    <fieldset>
+      <legend>✚ Create an ORDINAL wallet <span class="muted">(name must declare itself: ord-… / inscriptions / runes)</span></legend>
+      <div class="row" style="gap:.5rem"><input id="ordw" placeholder="e.g. ord-main" style="flex:1"/>
+        <span id="ordbadge" class="obadge muted">—</span>
+        <button id="ordcreate">Create</button><button id="ordrecv" class="secondary">Receive address</button></div>
+      <pre id="ordcreateout" class="muted" style="white-space:pre-wrap"></pre>
+    </fieldset>
+
+    <fieldset>
+      <legend>👁 View existing <span class="muted">balance · inscriptions · outputs</span></legend>
+      <p><button id="ordview">Inspect wallet above</button></p>
+      <div id="ordviewout" class="muted">—</div>
+    </fieldset>
+
+    <fieldset>
+      <legend>🛠 Inscribe · etch · mint · send</legend>
+      <p class="muted">Full gated interaction — dry-run first, explicit ⚠ broadcast second — lives in the
+      <b>BANKON Console → 🜚 Ordinals</b>: <a href="http://127.0.0.1:8090" target="_blank" rel="noopener">open the Console ↗</a>
+      (and in the Qt app + the <code>bankon-ord</code> CLI). The same fail-closed gates apply everywhere:
+      ordinal-wallet isolation · material-funds refusal (≥0.1 BTC) · unknown balance fails closed.</p>
+    </fieldset>
+  </div><!-- /tab-ordinals -->
+
 <script type="module">
   // Same audited libs as keygen.mjs — keys are minted client-side. Vendored locally in
   // ./vendor/ (no CDN), so keygen works even with the network removed.
@@ -402,6 +447,59 @@
         ? `✓ ${r.variant} (${r.tier})\n  public key: ${r.public_key} (${r.public_key_bytes} B)\n  signature: ${r.signature_bytes} B · verified: ${r.verified}\n  ${r.note}`
         : `Falcon backend unavailable — ${r.note || 'install a prebuilt liboqs + liboqs-python'}`;
     } catch (e) { $('pqcout').textContent = 'error: ' + (e.message || e); }
+  };
+
+  // ---- 🜚 Ordinals tab (creation + viewing; full interaction lives in the Console/Qt/CLI) ----
+  const wtab = (which) => {
+    $('tab-wallet').classList.toggle('hidden', which !== 'wallet');
+    $('tab-ordinals').classList.toggle('hidden', which !== 'ordinals');
+    $('wt-wallet').classList.toggle('on', which === 'wallet');
+    $('wt-ordinals').classList.toggle('on', which === 'ordinals');
+  };
+  $('wt-wallet').onclick = () => wtab('wallet');
+  $('wt-ordinals').onclick = () => wtab('ordinals');
+  const ordCall = async (body) => fetch('/api/ord', { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ net: $('ordnet').value, ...body }) }).then(r => r.json()).catch(e => ({ ok: false, error: String(e) }));
+  $('ordw').oninput = () => {
+    const w = $('ordw').value.trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ');
+    const ok = /(^| )(ord|insc|rune)/.test(' ' + w);
+    $('ordbadge').textContent = w.trim() ? (ok ? '🜚 ordinal' : '⛔ cardinal — will be refused') : '—';
+    $('ordbadge').style.color = ok ? 'var(--cash)' : '#f85149';
+  };
+  $('ordpre').onclick = async () => {
+    $('ordstat').textContent = 'probing…';
+    const r = await ordCall({ op: 'status' });
+    if (!r.ok) { $('ordstat').textContent = ''; $('orddiag').textContent = 'error: ' + r.error; return; }
+    const p = r.preflight || {};
+    $('ordstat').textContent = `✓ ${r.elapsed_ms} ms`;
+    $('orddiag').innerHTML =
+      `module <b>${r.module_version || '—'}</b> · ord <b>${p.ord_installed ? (p.ord_version || 'yes') : 'NOT INSTALLED'}</b>` +
+      ` · Core <b>${p.core_reachable ? 'reachable v' + (p.core_version ?? '?') : 'UNREACHABLE'}</b>` +
+      ` · inscribe-capable <b>${p.inscribe_capable ? 'yes' : 'no'}</b>` +
+      (p.notes || []).map(n => `<br>• ${n}`).join('');
+  };
+  $('ordcreate').onclick = async () => {
+    $('ordcreateout').textContent = 'creating…';
+    const r = await ordCall({ op: 'create_wallet', wallet: $('ordw').value.trim() });
+    $('ordcreateout').textContent = r.ok
+      ? '⚠ SAVE THIS MNEMONIC — shown once, controls the wallet:\n' + JSON.stringify(r.created, null, 2) + '\n\n' + (r.note || '')
+      : 'refused: ' + r.error;
+  };
+  $('ordrecv').onclick = async () => {
+    $('ordcreateout').textContent = '…';
+    const r = await ordCall({ op: 'receive', wallet: $('ordw').value.trim() });
+    $('ordcreateout').textContent = r.ok ? JSON.stringify(r.receive, null, 2) : 'refused: ' + r.error;
+  };
+  $('ordview').onclick = async () => {
+    $('ordviewout').textContent = 'loading…';
+    const r = await ordCall({ op: 'wallet', wallet: $('ordw').value.trim() });
+    if (!r.ok) { $('ordviewout').textContent = 'error: ' + r.error; return; }
+    const ins = Array.isArray(r.inscriptions) ? r.inscriptions : [];
+    $('ordviewout').innerHTML = `<p>${r.isolation || ''}</p>` +
+      `<p>balance: <code>${JSON.stringify(r.balance)}</code></p>` +
+      `<p>inscriptions (${ins.length}):</p>` +
+      (ins.map(i => `<pre style="margin:.2rem 0">${(i.inscription || i.id || JSON.stringify(i))}</pre>`).join('') || '<p class="muted">none</p>') +
+      `<details><summary>outputs (raw)</summary><pre>${JSON.stringify(r.outputs, null, 2)}</pre></details>`;
   };
 </script>
 </body>

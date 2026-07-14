@@ -3266,13 +3266,15 @@ class NetLogTab(QtWidgets.QWidget):
 
 
 class OrdinalsTab(QtWidgets.QWidget):
-    """🜚 Ordinals — OPTIONAL read-only panel over the bankon-ord module (which wraps the `ord`
-    CLI). Honors the Qt read-only contract: preflight, wallet balance, inscriptions and outputs
-    only — every mutating action (inscribe/send/etch/mint) stays in the GATED bankon-ord CLI.
+    """🜚 Ordinals — OPTIONAL panel over the bankon-ord module (which wraps the `ord` CLI).
+    Reads run in-process; MUTATIONS (create/inscribe/etch/mint/send) go through the shared
+    webbridge subprocess with the same two-step protocol as the web Console: dry-run (gate
+    verdict + exact command/batchfile) → explicit ⚠ BROADCAST + confirm dialog. The node-RPC
+    surface stays read-only; ord's own fail-closed gates guard every mutation.
     Degrades honestly: no module → says so; no `ord` binary → the preflight report says so."""
     def __init__(self):
         super().__init__(); v = QtWidgets.QVBoxLayout(self)
-        h = QtWidgets.QLabel("🜚 Ordinals — read-only (inscriptions · runes · sat hunting)")
+        h = QtWidgets.QLabel("🜚 Ordinals — inscriptions · runes · sat hunting (gated interaction)")
         h.setStyleSheet("font-weight:700;font-size:15px;color:#F7931A"); v.addWidget(h)
         top = QtWidgets.QHBoxLayout()
         top.addWidget(QtWidgets.QLabel("network:"))
@@ -3294,10 +3296,113 @@ class OrdinalsTab(QtWidgets.QWidget):
         v.addLayout(wl)
         self.out = QtWidgets.QPlainTextEdit(); self.out.setReadOnly(True)
         self.out.setStyleSheet("font-family:monospace"); v.addWidget(self.out, 1)
-        note = QtWidgets.QLabel("Read-only by contract — inscribe/send/etch/mint run only through the gated "
-                                "bankon-ord CLI (ordinal-wallet isolation · material-funds guard · human approval).")
+        # ---- INTERACT (parity with the web Console 🜚 tab): create · inscribe · runes · send ----
+        # Same two-step protocol via the shared webbridge: dry-run shows the gate verdict + the
+        # exact command/batchfile, then an explicit ⚠ BROADCAST. The bridge enforces the same
+        # fail-closed gates as the CLI; node-RPC surface stays read-only — mutations go via ord.
+        box = QtWidgets.QGroupBox("Interact — two-step: Dry-run → ⚠ Broadcast (gated by bankon-ord)")
+        gl = QtWidgets.QGridLayout(box)
+        gl.addWidget(QtWidgets.QLabel("ord server:"), 0, 0)
+        self.srv = QtWidgets.QLineEdit(); self.srv.setPlaceholderText("http://127.0.0.1:8080 (wallet ops need `ord server`)")
+        gl.addWidget(self.srv, 0, 1, 1, 5)
+        cw = QtWidgets.QPushButton("create wallet"); cw.clicked.connect(lambda: self._simple("create_wallet"))
+        rc = QtWidgets.QPushButton("receive"); rc.clicked.connect(lambda: self._simple("receive"))
+        gl.addWidget(cw, 0, 6); gl.addWidget(rc, 0, 7)
+        gl.addWidget(QtWidgets.QLabel("inscribe:"), 1, 0)
+        self.ifile = QtWidgets.QLineEdit(); self.ifile.setPlaceholderText("file path")
+        gl.addWidget(self.ifile, 1, 1, 1, 3)
+        pick = QtWidgets.QPushButton("…"); pick.setFixedWidth(28)
+        pick.clicked.connect(lambda: self.ifile.setText(QtWidgets.QFileDialog.getOpenFileName(self, "file to inscribe")[0] or self.ifile.text()))
+        gl.addWidget(pick, 1, 4)
+        self.ifee = QtWidgets.QDoubleSpinBox(); self.ifee.setRange(0.1, 5000); self.ifee.setValue(2); self.ifee.setSuffix(" sat/vB")
+        gl.addWidget(self.ifee, 1, 5)
+        bi = QtWidgets.QPushButton("Dry-run inscribe"); bi.clicked.connect(lambda: self._dry("inscribe"))
+        gl.addWidget(bi, 1, 6, 1, 2)
+        gl.addWidget(QtWidgets.QLabel("rune:"), 2, 0)
+        self.rune = QtWidgets.QLineEdit(); self.rune.setPlaceholderText("RUNE•NAME"); gl.addWidget(self.rune, 2, 1)
+        self.rdiv = QtWidgets.QSpinBox(); self.rdiv.setRange(0, 38); self.rdiv.setPrefix("div "); gl.addWidget(self.rdiv, 2, 2)
+        self.rsup = QtWidgets.QLineEdit("0"); self.rsup.setPlaceholderText("supply"); self.rsup.setFixedWidth(70); gl.addWidget(self.rsup, 2, 3)
+        self.rpre = QtWidgets.QLineEdit("0"); self.rpre.setPlaceholderText("premine"); self.rpre.setFixedWidth(70); gl.addWidget(self.rpre, 2, 4)
+        self.rfee = QtWidgets.QDoubleSpinBox(); self.rfee.setRange(0.1, 5000); self.rfee.setValue(2); gl.addWidget(self.rfee, 2, 5)
+        be = QtWidgets.QPushButton("Dry-run etch"); be.clicked.connect(lambda: self._dry("etch")); gl.addWidget(be, 2, 6)
+        bm = QtWidgets.QPushButton("Dry-run mint"); bm.clicked.connect(lambda: self._dry("mint")); gl.addWidget(bm, 2, 7)
+        gl.addWidget(QtWidgets.QLabel("send:"), 3, 0)
+        self.sto = QtWidgets.QLineEdit(); self.sto.setPlaceholderText("destination address"); gl.addWidget(self.sto, 3, 1, 1, 2)
+        self.sout = QtWidgets.QLineEdit(); self.sout.setPlaceholderText("inscription id · sat · '10 RUNE'"); gl.addWidget(self.sout, 3, 3, 1, 2)
+        self.sfee = QtWidgets.QDoubleSpinBox(); self.sfee.setRange(0.1, 5000); self.sfee.setValue(2); gl.addWidget(self.sfee, 3, 5)
+        bs = QtWidgets.QPushButton("Dry-run send"); bs.clicked.connect(lambda: self._dry("send")); gl.addWidget(bs, 3, 6, 1, 2)
+        v.addWidget(box)
+        self.go = QtWidgets.QPushButton("⚠ BROADCAST (irreversible — spends a fee)")
+        self.go.setStyleSheet("background:#3a2d10;color:#e3b341;font-weight:800")
+        self.go.setEnabled(False); self.go.clicked.connect(self._broadcast); v.addWidget(self.go)
+        self._pending = None
+        note = QtWidgets.QLabel("Node-RPC surface stays read-only; ordinals mutations run through bankon-ord's "
+                                "fail-closed gates (ordinal-wallet isolation · ≥0.1 BTC refusal · unknown balance refused) "
+                                "— dry-run first, always. Same engine as the web Console 🜚 tab and the CLI.")
         note.setWordWrap(True); note.setStyleSheet("color:#8aa0b4"); v.addWidget(note)
         self.wname.textChanged.connect(self._iso_badge)
+
+    # ---- shared webbridge (subprocess; identical gating/receipts to the web Console) ----
+    def _bridge(self, body, on_done):
+        import subprocess
+        req = dict(body); req.setdefault("net", self.netbox.currentText())
+        if self.srv.text().strip(): req.setdefault("server_url", self.srv.text().strip())
+        cwd = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bankon-ord")
+        def run():
+            p = subprocess.run(["python3", "-m", "bankon_ord.webbridge"], input=json.dumps(req),
+                               capture_output=True, text=True, timeout=180, cwd=cwd)
+            try: return json.loads(p.stdout)
+            except Exception: return {"ok": False, "error": (p.stderr or p.stdout or "bridge failed")[:400]}
+        spawn_fn(run, on_done=on_done,
+                 on_fail=lambda e: self.out.setPlainText(f"bridge error: {e}"))
+
+    def _feedback(self, tag, r):
+        stamp = time.strftime("%H:%M:%S")
+        self.out.setPlainText(f"[{stamp}] {tag} → {'✓' if r.get('ok') else '✗'} "
+                              f"({r.get('elapsed_ms', '?')} ms)\n" + json.dumps(r, indent=2, default=str))
+        self.status.setText(("● " if r.get("ok") else "○ ") + tag)
+
+    def _mut_body(self, kind):
+        w = self.wname.text().strip()
+        return {"inscribe": {"op": "inscribe", "wallet": w, "file": self.ifile.text().strip(),
+                             "fee_rate": self.ifee.value()},
+                "etch": {"op": "etch", "wallet": w, "rune": self.rune.text().strip(),
+                         "divisibility": self.rdiv.value(), "supply": self.rsup.text().strip() or "0",
+                         "premine": self.rpre.text().strip() or "0", "fee_rate": self.rfee.value()},
+                "mint": {"op": "mint", "wallet": w, "rune": self.rune.text().strip(),
+                         "fee_rate": self.rfee.value()},
+                "send": {"op": "send", "wallet": w, "to": self.sto.text().strip(),
+                         "outgoing": self.sout.text().strip(), "fee_rate": self.sfee.value()}}[kind]
+
+    def _simple(self, op):
+        self.status.setText(f"… {op}")
+        self._bridge({"op": op, "wallet": self.wname.text().strip()},
+                     lambda r: self._feedback(op, r))
+
+    def _dry(self, kind):
+        body = self._mut_body(kind)
+        self.status.setText(f"… dry-run {kind}")
+        self.go.setEnabled(False); self._pending = None
+        def done(r):
+            self._feedback(f"dry-run {kind}", r)
+            if r.get("ok"):
+                self._pending = body
+                self.go.setText(f"⚠ BROADCAST {kind} (irreversible — spends a fee)")
+                self.go.setEnabled(True)
+        self._bridge(body, done)
+
+    def _broadcast(self):
+        if not self._pending: return
+        body = dict(self._pending, confirm=True, approved=True)
+        if QtWidgets.QMessageBox.warning(
+                self, "Broadcast for real?",
+                f"{body['op']} on wallet {body.get('wallet')!r} — this spends a fee and cannot be undone.\n"
+                "The dry-run you just reviewed is what will run.",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Cancel) != QtWidgets.QMessageBox.Yes:
+            return
+        self.go.setEnabled(False); self._pending = None
+        self.status.setText(f"… LIVE {body['op']}")
+        self._bridge(body, lambda r: self._feedback(f"LIVE {body['op']}", r))
 
     def _ord(self):
         """Lazy import of the sibling bankon-ord module; None (with an honest status) if absent."""

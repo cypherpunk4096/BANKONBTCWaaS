@@ -4,6 +4,27 @@ All notable changes to the BANKON tools monorepo. Component versions are indepen
 **bankon-vault** (`bankon_vault.core.VAULT_VERSION`), **bankon-ord** (`bankon_ord.__version__`),
 **bankonOS installer** (`bankonos/install.sh`).
 
+## 2026-07-14 — 🜚 Ordinals everywhere: WaaS tab + Qt full interaction (waas 0.2.0)
+
+Ordinals now has a tab on **every BANKON surface**, all riding the one shared webbridge and the
+one set of fail-closed gates:
+
+- **WaaS (:8088)** grows a real tab bar — **₿ Wallet | 🜚 Ordinals**. The Ordinals tab covers
+  the WaaS's remit: an **honest custody note** (ord wallets are descriptor wallets inside YOUR
+  Bitcoin Core — self-custody on your node, a different model from browser-minted WaaS keys),
+  readiness check, **create ordinal wallet** (live isolation badge while typing, mnemonic
+  shown once with a SAVE warning), receive address, and view-existing (balance, inscriptions,
+  outputs). Deep interaction links to the Console 🜚 tab. Server: same `POST /api/ord` bridge
+  endpoint as the Console (loopback, 180 s cap).
+- **Qt console**: the 🜚 Ordinals tab is upgraded from read-only to **full gated interaction**
+  matching the web — create/receive, inscribe (with file picker), rune etch/mint, send; the
+  same two-step protocol (Dry-run → single armed **⚠ BROADCAST** button + a Qt confirm
+  dialog), timestamped feedback with the bridge receipt. Reads stay in-process; mutations go
+  through the shared webbridge subprocess, so gating/receipts are byte-identical across Qt,
+  web Console and CLI. Node-RPC surface remains read-only.
+- Verified: WaaS endpoint + tab markup on a throwaway port, then the live :8088 restart;
+  Qt offscreen smoke (widgets, mutation bodies, real bridge dry-run etch).
+
 ## 2026-07-14 — BANKON Console: 🜚 Ordinals tab (full interaction) + bankon-ord webbridge
 
 The web Console (:8090) gains a complete **🜚 Ordinals** tab — handling, creation and viewing of

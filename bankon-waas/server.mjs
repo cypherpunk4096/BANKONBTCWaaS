@@ -254,6 +254,30 @@ app.post('/api/pqc/falcon/demo', async (req, res) => {
   ok(res, r);
 });
 
+// --- 🜚 Ordinals bridge (same contract as the Console's /api/ord): one POST → one bridge process,
+// stdin JSON → stdout JSON. bankon-ord keeps its own fail-closed gates (ordinal/cardinal isolation,
+// material-funds refusal, unknown-balance refusal, DRY-RUN unless confirm+approved). Loopback only.
+import { spawn as _spawnOrd } from 'node:child_process';
+import { existsSync as _existsOrd } from 'node:fs';
+const ORD_DIR = join(__dir, '..', 'bankon-ord');
+app.post('/api/ord', (req, res) => {
+  if (!_existsOrd(join(ORD_DIR, 'bankon_ord', 'webbridge.py')))
+    return res.json({ ok: false, error: 'bankon-ord module not found beside the WaaS' });
+  const py = _spawnOrd('python3', ['-m', 'bankon_ord.webbridge'], { cwd: ORD_DIR });
+  let out = '', err = '';
+  const t = setTimeout(() => { try { py.kill('SIGKILL'); } catch {} }, 180_000);
+  py.stdout.on('data', d => out += d);
+  py.stderr.on('data', d => err += d);
+  py.on('error', e => { clearTimeout(t); res.json({ ok: false, error: String(e.message) }); });
+  py.on('close', (code) => {
+    clearTimeout(t);
+    if (res.headersSent) return;
+    try { res.json(JSON.parse(out)); }
+    catch { res.json({ ok: false, error: (err || out || `bridge exited ${code}`).slice(0, 600) }); }
+  });
+  py.stdin.end(JSON.stringify(req.body || {}));
+});
+
 // --- Node intelligence: collect live network into Postgres (pgvector + pgvectorscale) ---
 // Collects from THIS single Bitcoin Core instance (addrman + peers), enriches with GeoIP,
 // tracks uptime/version, embeds for vector search. Needs DATABASE_URL (your pgvectorscale DB).
