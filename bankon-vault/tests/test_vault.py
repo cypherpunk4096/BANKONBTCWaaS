@@ -324,6 +324,46 @@ def test_bip322_full_sign_roundtrip_and_dispatch():
         assert btc.verify_message_bip322(msg, r["signature"], r["address"]) is None
 
 
+def test_bip322_timelock_vectors_and_semantics():
+    """The spec's two time-lock full-variant vectors (hodl template: OP_IF pk1 OP_ELSE n CSV
+    OP_DROP pk2 OP_ENDIF OP_CHECKSIG) — template-matched, no script interpreter. With these,
+    ALL 10 generated full-variant types verify (and all 28 error vectors reject)."""
+    btc = BitcoinAdapter("main")
+    # p2wsh time-lock (ELSE/CSV branch, sequence 2016)
+    A = "bc1qhqcmw7ud03vqde3pe6hzajaylhucmlatrkcztzpnk8vpgvhg9dzq5ydark"
+    S = ("AgAAAAABAYYJeOOOi3c33O+dholAwiF51Amy/E0qIf3ew2vFtDtTAAAAAADgBwAAAQAAAAAAAAAAAWoDSDBF"
+         "AiEA64MwD2HkJjPLPAc2u5ia6ZdwCVO3okzVqGPEXnuJGZQCIE27BGOBQTdwJ2M/Wdsm6nFVunqaj+xZBSG/"
+         "g/64FMbtAQBNYyEDrYfXhOkh0CvwuJpB+O3tal2ECfO0v7k1/A4PTlGcQiBnAuAHsnUhA4ZGGvodKgqeg/ZY"
+         "ffm6miaKaG57VkCSjmmRprCa+ulyaKzgBwAA")
+    assert btc.verify_message_bip322_full("MGKMA2MJUBDHT55J7MHOLM7UPE", S, A) == A
+    assert btc.verify_message_bip322_full("WRONG MESSAGE", S, A) is None
+    # p2tr time-lock (tapscript script-path spend with control block)
+    T = "bc1p6vffkx7vcyezrjq7pg9qqdjv7vmtanfhk8ukwsn4syejwmarmhxqp0rw5x"
+    ST = ("AgAAAAABAaza7/ukfX9ZdxCUvK7CPJgADDdPdF7ikXVKWctd5EHrAAAAAADgBwAAAQAAAAAAAAAAAWoEQPvu"
+          "T0enYGwsab2lsPZU0U3OcRkGng+o/PAt4QU2lc8hG7lTUmflkt0To+eoipv2vptf0TlGOBCsKU5xE3kXKcMA"
+          "S2MgrYfXhOkh0CvwuJpB+O3tal2ECfO0v7k1/A4PTlGcQiBnAuAHsnUgJjLn4tl5ytgC8CNTyITXmg4rx9ct"
+          "xPedwRMPEBvfoUBorCHBJjLn4tl5ytgC8CNTyITXmg4rx9ctxPedwRMPEBvfoUDgBwAA")
+    assert btc.verify_message_bip322_full("AY2VOQOXYI5CN2EHZKLOX7ZI37", ST, T) == T
+    assert btc.verify_message_bip322_full("WRONG MESSAGE", ST, T) is None
+    # BIP-65/112 semantics unit checks — the ELSE branch must be REFUSED when unsatisfied
+    from bankon_vault.chains.btc import _timelock_satisfied
+    from embit.transaction import Transaction, TransactionInput, TransactionOutput
+    from embit.script import Script
+    def tx(version=2, locktime=0, seq=0):
+        return Transaction(version=version, locktime=locktime,
+                           vin=[TransactionInput(b"\x00" * 32, 0, sequence=seq)],
+                           vout=[TransactionOutput(0, Script(b"\x6a"))])
+    assert _timelock_satisfied(tx(seq=2016), 0xb2, 2016)                  # CSV met
+    assert not _timelock_satisfied(tx(seq=2015), 0xb2, 2016)              # CSV short
+    assert not _timelock_satisfied(tx(version=1, seq=2016), 0xb2, 2016)   # CSV needs tx v2
+    assert not _timelock_satisfied(tx(seq=2016 | (1 << 31)), 0xb2, 2016)  # disable flag set
+    assert not _timelock_satisfied(tx(seq=2016 | (1 << 22)), 0xb2, 2016)  # type bits disagree
+    assert _timelock_satisfied(tx(locktime=800000, seq=0), 0xb1, 700000)  # CLTV met
+    assert not _timelock_satisfied(tx(locktime=600000, seq=0), 0xb1, 700000)
+    assert not _timelock_satisfied(tx(locktime=800000, seq=0xFFFFFFFF), 0xb1, 700000)  # disabled
+    assert not _timelock_satisfied(tx(locktime=800000, seq=0), 0xb1, 1_600_000_000)    # type mix
+
+
 def test_rekey_rotates_custody():
     v, salt = _fresh()
     v.store("a", "alpha", context="demo")

@@ -4,6 +4,26 @@ All notable changes to the BANKON tools monorepo. Component versions are indepen
 **bankon-vault** (`bankon_vault.core.VAULT_VERSION`), **bankon-ord** (`bankon_ord.__version__`),
 **bankonOS installer** (`bankonos/install.sh`).
 
+## 2026-07-14 — bankon-vault 1.7.0
+
+**BIP-322 spec coverage complete: 10/10 generated full-variant types** — the two time-lock
+types land via template matching, still with no script interpreter.
+
+- The canonical hodl script `OP_IF <pk1> OP_ELSE <n> CLTV/CSV OP_DROP <pk2> OP_ENDIF
+  OP_CHECKSIG` is recognized in both p2wsh (ECDSA) and **p2tr script-path** form (tapscript
+  leaf + BIP-341 control-block verification: TapLeaf/TapBranch merkle fold, x-only tweak must
+  reproduce the address's output key; `ext_flag=1` script-path sighash).
+- The IF branch verifies against pk1 with no time condition; the ELSE branch **enforces real
+  BIP-65/BIP-112 semantics** before any signature check: CLTV needs locktime ≥ n, matching
+  time/height type, sequence ≠ 0xFFFFFFFF; CSV needs tx v2+, disable flag clear, matching type
+  bits, masked value ≥ n. Nine unit checks pin those rules; both spec vectors verify and both
+  reject a tampered message.
+- Scoreboard against `bip-0322/generated-test-vectors.json`: **full 10/10 · simple 4/4 ·
+  basic 6/6 · error 0/28 leaked**. What remains refused is refused for stated reasons:
+  proof-of-funds payloads (UTXO-set context) and scripts outside the covered templates.
+
+Vault suite: 22 tests; monorepo total 72.
+
 ## 2026-07-14 — bankon-vault 1.6.0
 
 **BIP-322 FULL variant** — the payload is the complete `to_sign` transaction (any

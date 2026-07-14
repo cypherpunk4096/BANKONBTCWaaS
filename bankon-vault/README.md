@@ -36,10 +36,10 @@ bankon_vault/
   pqc_falcon.py  FN-DSA (Falcon) POC via liboqs — the Algorand-style quantum-native path
   chains/
     base.py      ChainAdapter ABC (derive · address · sign_message · verify_message · sign_psbt)
-    btc.py       BitcoinAdapter (embit) — BIP32/39/44/84/86, bech32 P2WPKH + P2TR, PSBT, BSM-ECDSA + BIP-137 + BIP-322(simple+full: pkh · wpkh · sh-wpkh · taproot · K-of-N multisig) gating
+    btc.py       BitcoinAdapter (embit) — BIP32/39/44/84/86, bech32 P2WPKH + P2TR, PSBT, BSM-ECDSA + BIP-137 + BIP-322(simple+full: ALL 10 spec types incl. timelocks) gating
     pqc.py       MLDSAAdapter — Tier-Q identity/quorum (sign_psbt refuses, honestly: BTC is secp256k1)
 clients/vault-client.mjs   thin JS/HTTP client (WaaS/offline pages → gated signature, never a key)
-tests/         48 tests across 5 suites: crypto, gating (BIP-137/322), rekey, policy, ceremony, multisig, PQC
+tests/         49 tests across 5 suites: crypto, gating (BIP-137/322), rekey, policy, ceremony, multisig, PQC
 install.sh     one-shot installer (deps → self-check → tests → launcher)
 ```
 
@@ -173,6 +173,6 @@ Shipped: agnostic core, three overseers, BTC adapter (addresses + BSM-ECDSA gati
 sign-don't-export), approval gate, **programmable policy engine** (limits/allow-deny/cooldown/
 timelock/N-of-M + audit), **frozen custody** — GF(256) **Shamir K-of-N operator ceremony** +
 `ShamirOverseer` + **GNU Tomb** LUKS backend — a **legacy-vault migration importer**, loopback
-oracle, JS client, CLI, installer, **48 passing tests** (21 vault · 11 policy · 6 ceremony · 3 multisig · 7 pqc). Optional
+oracle, JS client, CLI, installer, **49 passing tests** (22 vault · 11 policy · 6 ceremony · 3 multisig · 7 pqc). Optional
 ordinals live in the separate [`bankon-ord`](../bankon-ord/README.md) module. The full stepwise plan
 (vault → ord → policy → frozen hardening) is **complete**. See `LINEAGE.md` and `SECURITY.md`.

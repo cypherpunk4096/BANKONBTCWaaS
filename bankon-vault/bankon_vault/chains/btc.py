@@ -273,29 +273,86 @@ class BitcoinAdapter(ChainAdapter):
                 if ec.PublicKey.parse(pub).verify(ec.Signature.parse(sig_all[:-1]), h):
                     return address
                 return None
-            if len(data) == 34 and data[:2] == b"\x51\x20":              # p2tr key-path
-                if len(items) != 1:
+            if len(data) == 34 and data[:2] == b"\x51\x20":              # p2tr
+                if len(items) == 1:                                      # key-path
+                    s = items[0]
+                    if len(s) == 65 and s[64] == SIGHASH.ALL:
+                        h = to_sign.sighash_taproot(0, [spk], [0], sighash=SIGHASH.ALL)
+                        s = s[:64]
+                    elif len(s) == 64:
+                        h = to_sign.sighash_taproot(0, [spk], [0])
+                    else:
+                        return None
+                    if ec.PublicKey.from_xonly(data[2:]).schnorr_verify(ec.SchnorrSig.parse(s), h):
+                        return address
                     return None
-                s = items[0]
-                if len(s) == 65 and s[64] == SIGHASH.ALL:
-                    h = to_sign.sighash_taproot(0, [spk], [0], sighash=SIGHASH.ALL)
-                    s = s[:64]
-                elif len(s) == 64:
-                    h = to_sign.sighash_taproot(0, [spk], [0])
-                else:
+                if len(items) == 4:                                      # script-path: hodl template
+                    # [sig, branch-selector, leaf script, control block]
+                    s, sel, leaf, ctrl = items
+                    if len(s) != 64 or len(ctrl) < 33 or (len(ctrl) - 33) % 32:
+                        return None
+                    t = _parse_timelock_template(leaf, xonly=True)
+                    if t is None:
+                        return None
+                    pk1, n, op, pk2 = t
+                    # control block proves the leaf really commits to this output key (BIP-341)
+                    leaf_ver = ctrl[0] & 0xFE
+                    node = hashes.tagged_hash("TapLeaf",
+                                              bytes([leaf_ver]) + compact.to_bytes(len(leaf)) + leaf)
+                    for j in range(33, len(ctrl), 32):
+                        sib = ctrl[j:j + 32]
+                        pair = node + sib if node < sib else sib + node
+                        node = hashes.tagged_hash("TapBranch", pair)
+                    internal = ec.PublicKey.from_xonly(ctrl[1:33])
+                    # the x-only tweak match is the binding that ties this leaf to the address.
+                    # (embit normalizes the tweaked key to even-Y, so the control byte's parity
+                    # bit cannot be re-checked here — x-match + a valid sig is what we need.)
+                    if internal.taproot_tweak(node).xonly() != data[2:]:
+                        return None
+                    if sel == b"\x01":
+                        pk = pk1                                         # IF branch — no timelock
+                    elif sel == b"":
+                        if not _timelock_satisfied(to_sign, op, n):      # ELSE branch — enforce it
+                            return None
+                        pk = pk2
+                    else:
+                        return None
+                    h = to_sign.sighash_taproot(0, [spk], [0], ext_flag=1,
+                                                script=Script(leaf), leaf_version=leaf_ver)
+                    if ec.PublicKey.from_xonly(pk).schnorr_verify(ec.SchnorrSig.parse(s), h):
+                        return address
                     return None
-                if ec.PublicKey.from_xonly(data[2:]).schnorr_verify(ec.SchnorrSig.parse(s), h):
-                    return address
                 return None
-            if len(data) == 34 and data[:2] == b"\x00\x20":              # p2wsh — multisig template
-                # witness = [dummy(empty, the CHECKMULTISIG bug), sig_1..sig_m, witness_script].
-                # No script interpreter needed: the standard K-of-N template is parsed and its
-                # CHECKMULTISIG semantics (ORDERED sigs, exactly m, all SIGHASH_ALL) applied here.
-                from embit import finalizer
-                if len(items) < 3 or items[0] != b"":
+            if len(data) == 34 and data[:2] == b"\x00\x20":              # p2wsh
+                if len(items) < 3:
                     return None
                 ws_raw = items[-1]
                 if hashlib.sha256(ws_raw).digest() != data[2:]:          # script must own the address
+                    return None
+                # hodl template: witness = [sig, branch-selector, witness_script]
+                t = _parse_timelock_template(ws_raw, xonly=False) if len(items) == 3 else None
+                if t is not None:
+                    pk1, n, op, pk2 = t
+                    sig_all, sel = items[0], items[1]
+                    if len(sig_all) < 9 or sig_all[-1] != SIGHASH.ALL:
+                        return None
+                    if sel == b"\x01":
+                        pk = pk1                                         # IF branch — no timelock
+                    elif sel == b"":
+                        if not _timelock_satisfied(to_sign, op, n):      # ELSE branch — enforce it
+                            return None
+                        pk = pk2
+                    else:
+                        return None
+                    h = to_sign.sighash_segwit(0, Script(ws_raw), 0)
+                    if ec.PublicKey.parse(pk).verify(ec.Signature.parse(sig_all[:-1]), h):
+                        return address
+                    return None
+                # K-of-N multisig template: [dummy(empty, the CHECKMULTISIG bug), sig_1..sig_m, ws].
+                # No script interpreter needed: the standard template is parsed and its
+                # CHECKMULTISIG semantics (ORDERED sigs, exactly m, all SIGHASH_ALL) applied here.
+                from embit import finalizer
+                if items[0] != b"":
                     return None
                 m, pubs = finalizer.parse_multisig(Script(ws_raw))
                 sigs = items[1:-1]
@@ -485,6 +542,62 @@ def _is_hex(s: str) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _parse_timelock_template(sc: bytes, xonly: bool) -> Optional[tuple]:
+    """Match the canonical hodl script: OP_IF <pk1> OP_ELSE <n> (CLTV|CSV) OP_DROP <pk2> OP_ENDIF
+    OP_CHECKSIG. Template-strict — anything else returns None (no script interpreter is run).
+    Returns (pk_if, locknum, lock_op, pk_else)."""
+    kl = 32 if xonly else 33
+    try:
+        i = 0
+        if sc[i] != 0x63:                                   # OP_IF
+            return None
+        i += 1
+        if sc[i] != kl:
+            return None
+        pk1 = sc[i + 1:i + 1 + kl]; i += 1 + kl
+        if sc[i] != 0x67:                                   # OP_ELSE
+            return None
+        i += 1
+        ln = sc[i]
+        if not (1 <= ln <= 5):                              # minimal CScriptNum push
+            return None
+        num = sc[i + 1:i + 1 + ln]
+        if num[-1] & 0x80:                                  # negative locktimes are nonsense
+            return None
+        n = int.from_bytes(num, "little"); i += 1 + ln
+        op = sc[i]
+        if op not in (0xb1, 0xb2):                          # OP_CLTV / OP_CSV
+            return None
+        i += 1
+        if sc[i] != 0x75:                                   # OP_DROP
+            return None
+        i += 1
+        if sc[i] != kl:
+            return None
+        pk2 = sc[i + 1:i + 1 + kl]; i += 1 + kl
+        if sc[i] != 0x68 or sc[i + 1] != 0xac or i + 2 != len(sc):   # OP_ENDIF OP_CHECKSIG, end
+            return None
+        return pk1, n, op, pk2
+    except IndexError:
+        return None
+
+
+def _timelock_satisfied(tx, op: int, n: int) -> bool:
+    """BIP-65 (CLTV) / BIP-112 (CSV) semantics for input 0 of the provided to_sign tx."""
+    seq = tx.vin[0].sequence
+    if op == 0xb1:                                          # CLTV — absolute, against nLockTime
+        if seq == 0xFFFFFFFF:
+            return False                                    # locktime disabled → CLTV must fail
+        same_type = (tx.locktime < 500_000_000) == (n < 500_000_000)
+        return same_type and tx.locktime >= n
+    # CSV — relative, against nSequence (tx v2+, disable flag clear, type bits agree)
+    if tx.version < 2 or seq & (1 << 31):
+        return False
+    if (seq & (1 << 22)) != (n & (1 << 22)):
+        return False
+    return (seq & 0xFFFF) >= (n & 0xFFFF)
 
 
 def _script_pushes(data: bytes) -> Optional[list]:

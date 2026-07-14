@@ -103,10 +103,13 @@ honest about what needs hardware:
   **p2wsh K-of-N multisig** BIP-322 is also shipped (verify against the spec's 3-of-3 vector;
   partial-sign + assemble for cosigners) — the standard multisig template needs no script
   interpreter. The **BIP-322 *full* variant is shipped too** (`verify_message_bip322_full` +
-  `sign_message_bip322(variant="full")`): 8 of the spec's 10 generated full-variant types
-  verify (p2pkh · p2wpkh · p2sh-p2wpkh · p2tr · p2wsh K-of-N · p2sh-p2wsh · legacy p2sh
-  multisig), all 28 error vectors rejected. Honest refusals: time-locked scripts and
-  proof-of-funds payloads (arbitrary-script evaluation / UTXO-set context).
+  `sign_message_bip322(variant="full")`): **ALL 10 of the spec's generated full-variant types
+  verify** (p2pkh · p2wpkh · p2sh-p2wpkh · p2tr key-path AND script-path · p2wsh K-of-N ·
+  p2sh-p2wsh · legacy p2sh multisig · **both time-lock types** — the hodl template
+  `IF pk1 ELSE n CLTV/CSV DROP pk2 ENDIF CHECKSIG` is template-matched with full BIP-65/112
+  semantics, still no script interpreter), and all 28 error vectors rejected. The one honest
+  refusal left: proof-of-funds payloads with extra inputs (they need UTXO-set context that no
+  offline verifier has) and scripts outside the covered templates.
 - Retrieved plaintext is returned as a `bytearray` you should `for i: buf[i]=0` after use;
   `gated_sign_psbt` does this for you.
 - Shamir K-of-N split + multi-operator ceremony are **shipped** (`shamir.py`, `ceremony.py`) — or use
