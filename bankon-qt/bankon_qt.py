@@ -2128,6 +2128,15 @@ class GeoMapTab(QtWidgets.QWidget):
         self.legend = QtWidgets.QLabel(""); self.legend.setStyleSheet("color:#d6e3ef"); self.legend.setWordWrap(True); v.addWidget(self.legend)
         self._peers, self._ni, self._net, self._act = [], {}, [], []
         self._bg = None; self._bg_n = -1     # cached background pixmap + the node count it was built for
+        # PACKET FLOW state — same colour law as the Net Map: orange = actual bytes INTO this
+        # node (peer → us along the arc), green = actual bytes OUT (us → peer). Rates are real
+        # per-peer B/s deltas between polls, on the same absolute log scale.
+        self._prev = {}          # addr -> (bytesrecv, bytessent, t)
+        self._rates = {}         # addr -> (in B/s, out B/s)
+        self._flows = []         # [(arc points [(x,y)…] node→peer, pin, pout)]
+        self._fanim = []         # overlay dot items, rebuilt each pulse
+        self._fphase = 0.0
+        self._ftimer = QtCore.QTimer(self); self._ftimer.timeout.connect(self._flow_pulse); self._ftimer.start(80)
     def _toggle(self):
         # Globe (0) ⇄ Flat (1); from Advanced (2) go back to Globe.
         i = 1 if self.stack.currentIndex() == 0 else 0
@@ -2155,10 +2164,60 @@ class GeoMapTab(QtWidgets.QWidget):
         else:
             self._net = []; self._redraw()
         spawn_fn(lambda: fetch_json("/api/netactivity?n=60"), self._on_act)   # log-based geo fallback (works during choke)
-    def _on_peers(self, peers, stale): self._peers = peers or []; self._redraw()
+    def _on_peers(self, peers, stale):
+        import time as _t
+        now = _t.time()
+        for p in (peers or []):                       # real per-peer B/s between polls
+            a = p.get("addr")
+            prev = self._prev.get(a)
+            if prev and now > prev[2]:
+                dt = now - prev[2]
+                self._rates[a] = (max(0, p.get("bytesrecv", 0) - prev[0]) / dt,
+                                  max(0, p.get("bytessent", 0) - prev[1]) / dt)
+            self._prev[a] = (p.get("bytesrecv", 0), p.get("bytessent", 0), now)
+        self._peers = peers or []; self._redraw()
     def _on_ni(self, ni, stale): self._ni = ni or {}; self._redraw()
     def _on_net(self, nodes): self._net = nodes or []; self._redraw()
     def _on_act(self, d): self._act = (d or {}).get("events", []); self._redraw()
+    def _flow_pulse(self):
+        # animated packets along the REAL great-circle arcs, scaled by ACTUAL per-peer B/s.
+        # Same colour law as everywhere in BANKON: orange = data IN (peer→node),
+        # green = data OUT (node→peer). Gated by anim_on — zero cost when hidden.
+        if not anim_on(self):
+            return
+        for it in self._fanim:
+            try: self.scene.removeItem(it)
+            except Exception: pass
+        self._fanim = []
+        if not self._flows:
+            return
+        self._fphase += 0.04
+        ORANGE = QtGui.QColor("#F7931A"); GREEN = QtGui.QColor("#16C784")
+        def at(pts, t):
+            # position along a (possibly seam-broken) polyline at parameter t ∈ [0,1)
+            n = len(pts)
+            f = t * (n - 1); i = int(f); fr = f - i
+            a, b = pts[i], pts[min(i + 1, n - 1)]
+            if a is None or b is None: return None
+            return (a[0] + (b[0] - a[0]) * fr, a[1] + (b[1] - a[1]) * fr)
+        for k, (pts, pin, pout) in enumerate(self._flows):
+            if len(pts) < 2: continue
+            if pin > 0:      # peer → OUR node: run the arc backwards (pts are node→peer)
+                npk = 1 + int(round(2 * pin)); spd = 0.5 + 2.0 * pin; rad = 1.6 + 2.4 * pin
+                for j in range(npk):
+                    t = (self._fphase * spd + j / npk + k * 0.11) % 1.0
+                    pos = at(pts, 1.0 - t)
+                    if pos:
+                        self._fanim.append(self.scene.addEllipse(pos[0] - rad, pos[1] - rad, 2 * rad, 2 * rad,
+                                                                 QtGui.QPen(QtCore.Qt.NoPen), QtGui.QBrush(ORANGE)))
+            if pout > 0:     # OUR node → peer
+                npk = 1 + int(round(2 * pout)); spd = 0.5 + 2.0 * pout; rad = 1.6 + 2.4 * pout
+                for j in range(npk):
+                    t = (self._fphase * spd + j / npk + k * 0.17) % 1.0
+                    pos = at(pts, t)
+                    if pos:
+                        self._fanim.append(self.scene.addEllipse(pos[0] - rad, pos[1] - rad, 2 * rad, 2 * rad,
+                                                                 QtGui.QPen(QtCore.Qt.NoPen), QtGui.QBrush(GREEN)))
     def _my_latlon(self):
         la = (self._ni or {}).get("localaddresses") or []
         for a in la:
@@ -2198,7 +2257,7 @@ class GeoMapTab(QtWidgets.QWidget):
         self._bg = pm; self._bg_n = len(self._net)
     def _redraw(self):
         from collections import Counter
-        self.scene.clear()
+        self.scene.clear(); self._fanim = []; self._flows = []
         if self._bg is None or self._bg_n != len(self._net):
             self._build_bg()
         self.scene.addPixmap(self._bg)
@@ -2207,19 +2266,26 @@ class GeoMapTab(QtWidgets.QWidget):
         if my:
             mx, my_y = self.proj(my[1], my[0])
             arc_pen = QtGui.QPen(QtGui.QColor(247, 147, 26, 120), 1.0)
+            self._flows = []
             for p in self._peers:
                 ip = p.get("addr", "").rsplit(":", 1)[0].strip("[]")
                 g = geolocate(ip)
                 if not g: continue
                 path = QtGui.QPainterPath(); started = False; px = None
+                pts = []                                            # node→peer arc for packet flow
                 for la, lo in great_circle_points(my[0], my[1], g["lat"], g["lon"], 40):
                     x, y = self.proj(lo, la)
                     if px is not None and abs(x - px) > self.W / 2:   # antimeridian wrap
                         started = False
+                        pts.append(None)                              # break the flow at the seam too
                     if not started: path.moveTo(x, y); started = True
                     else: path.lineTo(x, y)
-                    px = x
+                    px = x; pts.append((x, y))
                 self.scene.addPath(path, arc_pen)
+                ri, ro = self._rates.get(p.get("addr"), (0.0, 0.0))
+                pin, pout = NetworkMapTab._flow_frac(ri), NetworkMapTab._flow_frac(ro)
+                if pin > 0 or pout > 0:
+                    self._flows.append((pts, pin, pout))
             mk = self.scene.addEllipse(mx - 6, my_y - 6, 12, 12, QtGui.QPen(QtGui.QColor("#F7931A"), 2), QtGui.QBrush(QtGui.QColor("#1a1200")))
             _nc = nearest_city(my[0], my[1])
             mk.setToolTip(f"bankon: this node · nearest city: {_nc[0]}, {_nc[1]} (~{_nc[2]:.0f} km)")

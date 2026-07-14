@@ -55,6 +55,14 @@ def asn(ip):
         return None
 
 
+# ACTUAL earth geography — Natural Earth 110m land polygons (public domain), vendored in
+# world_geo.py: 127 coastline rings / ~3.7k points, real continent shapes AND sizes. The rough
+# hand sketch below remains only as an emergency fallback if the dataset file is missing.
+try:
+    from .world_geo import WORLD_LAND
+except Exception:                                    # pragma: no cover — dataset always ships
+    WORLD_LAND = None
+
 # Rough continent outlines (lon,lat) — a recognizable world backdrop for the geo map.
 WORLD = [
   [(-168,65),(-150,70),(-120,72),(-95,70),(-82,62),(-64,60),(-52,47),(-66,44),(-80,26),(-97,18),(-110,23),(-124,40),(-140,59),(-168,65)],
@@ -64,3 +72,5 @@ WORLD = [
   [(40,52),(60,66),(100,72),(140,70),(165,62),(180,66),(168,50),(140,45),(122,30),(108,20),(95,12),(78,8),(68,24),(50,28),(45,40),(40,52)],
   [(114,-22),(130,-12),(142,-12),(150,-24),(153,-30),(140,-38),(128,-32),(116,-35),(114,-22)],
 ]
+if WORLD_LAND:
+    WORLD = WORLD_LAND        # real coastlines win whenever the dataset is present
