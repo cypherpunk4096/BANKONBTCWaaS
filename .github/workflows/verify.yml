@@ -52,7 +52,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install crypto deps (system-style: cryptography + embit)
+      - name: "Install crypto deps (cryptography + embit)"
         run: python -m pip install --quiet cryptography embit
 
       - name: bankon-vault suite (vault · policy · ceremony · multisig)
