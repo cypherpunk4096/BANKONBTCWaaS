@@ -143,6 +143,13 @@ def disk_runway(total_bytes, avail_bytes):
     return txt, col
 
 
+_IP_RE = re.compile(r"^(\d{1,3}\.){3}\d{1,3}$|^[0-9a-fA-F:]+$")
+def is_ip_literal(s):
+    """True for IPv4/IPv6 literals; False for DNS names (addnode'd seed hostnames appear
+    verbatim as getpeerinfo.addr and can't be geolocated without resolving)."""
+    return bool(s) and bool(_IP_RE.match(s)) and (":" in s or s.count(".") == 3)
+
+
 def emoji_icon(ch, px=64):
     """High-quality tab icon from a color-emoji glyph: rendered big (Noto Color Emoji),
     handed to QIcon which downscales smoothly — crisp at any tab-bar icon size, instead
@@ -267,8 +274,45 @@ class OverviewTab(QtWidgets.QWidget):
     # ---- datadir diagnostic (external disk ₿ANKON is attached to; works with node down) ----
     def _tick_fs(self):
         if self.isVisible():
-            spawn_fn(lambda: fetch_json("/api/filesystem?files=1"), self._fill_fs)
+            # Console down ≠ blind: the datadir is LOCAL — measure it ourselves as fallback
+            spawn_fn(lambda: fetch_json("/api/filesystem?files=1"), self._fill_fs,
+                     lambda _e: spawn_fn(self._local_fs, self._fill_fs))
             spawn_fn(lambda: fetch_json("/api/system"), self._fill_sys)
+    @staticmethod
+    def _local_fs():
+        """Local datadir measurement (same reply shape as the Console's /api/filesystem)."""
+        real = os.path.realpath(DATADIR)
+        st = os.statvfs(real)
+        size = st.f_frsize * st.f_blocks; avail = st.f_frsize * st.f_bavail
+        used = size - st.f_frsize * st.f_bfree
+        comp = {}
+        for name in ("blocks", "chainstate", "indexes"):
+            p = os.path.join(real, name)
+            tot = 0
+            try:
+                for root, _dirs, files in os.walk(p):
+                    for f in files:
+                        try: tot += os.stat(os.path.join(root, f)).st_size
+                        except OSError: pass
+            except OSError:
+                continue
+            comp[name] = tot
+        comp["total"] = sum(comp.values())
+        files = []
+        try:
+            for e in sorted(os.scandir(real), key=lambda x: x.name):
+                try:
+                    s = e.stat()
+                    files.append({"name": e.name, "isDir": e.is_dir(),
+                                  "bytes": None if e.is_dir() else s.st_size, "mtime": s.st_mtime})
+                except OSError:
+                    pass
+        except OSError:
+            pass
+        return {"ok": True, "realPath": real, "datadir": DATADIR, "local": True,
+                "df": {"size": size, "used": used, "avail": avail,
+                       "pcent": f"{used / size * 100:.0f}%" if size else "?", "source": "statvfs (local)"},
+                "components": comp, "files": files}
     def _fill_sys(self, d):
         if not d or not d.get("ok"): return
         cpu = d.get("cpuPct")
@@ -1611,6 +1655,18 @@ class NetworkMapTab(QtWidgets.QWidget):
     # ---- 3D cluster explore: double-click a peer → its network neighbourhood as a pointcloud ----
     def _enter_explore(self, peer):
         import math
+        # "3D doesn't toggle" guard: the pointcloud is built from the addrman cloud — if that
+        # hasn't arrived yet (tab just opened / RPC was busy), fetch it NOW and re-enter, so
+        # the toggle always visibly does something instead of drawing an empty universe
+        if not self._known:
+            self.info.setText("Explore — fetching the addrman cloud for this neighbourhood…")
+            self._explore = peer
+            self.backbtn.show(); self.backbtn.raise_()
+            spawn_fn(lambda: known_nodes(max(1, self.maxnodes.value() or 2000)),
+                     lambda nodes: (setattr(self, "_known", nodes or []),
+                                    self._enter_explore(peer) if self._known else
+                                    self.info.setText("Explore — addrman unavailable (node RPC busy); try again shortly")))
+            return
         ip = (peer.get("addr") or "").rsplit(":", 1)[0].strip("[]")
         base = next((nd for nd in self._known or [] if nd.get("ip") == ip), None)
         a = base.get("asn") if base else None
@@ -2275,6 +2331,31 @@ class GeoMapTab(QtWidgets.QWidget):
         self._fphase = 0.0
         self._ftimer = QtCore.QTimer(self); self._ftimer.timeout.connect(self._flow_pulse); self._ftimer.start(80)
         cities_ensure_full()      # complete GeoNames city list loads in the background (lazy, ~1s)
+        # DNS-named peers (addnode'd seed hostnames ride getpeerinfo.addr verbatim) resolve
+        # here once per session so they can be plotted — labeled approximate, never implied exact
+        self._dns = {}
+    def _peer_ip(self, p):
+        """Peer's plottable IP: literal addr, or the session-resolved IP of a DNS-named peer."""
+        host = (p.get("addr") or "").rsplit(":", 1)[0].strip("[]")
+        return (host if is_ip_literal(host) else self._dns.get(host)), host
+    def _resolve_hostnames(self, peers):
+        todo = []
+        for p in peers or []:
+            host = (p.get("addr") or "").rsplit(":", 1)[0].strip("[]")
+            if host and not is_ip_literal(host) and host not in self._dns:
+                todo.append(host)
+        if not todo:
+            return
+        def work(hs=sorted(set(todo))):
+            import socket as _s
+            out = {}
+            for h in hs:
+                try:
+                    out[h] = _s.getaddrinfo(h, 8333, _s.AF_INET)[0][4][0]
+                except Exception:
+                    out[h] = None                    # cache the miss — no repeat lookups
+            return out
+        spawn_fn(work, lambda d: (self._dns.update(d or {}), self._redraw()))
     def _toggle(self):
         # Globe (0) ⇄ Flat (1); from Advanced (2) go back to Globe.
         i = 1 if self.stack.currentIndex() == 0 else 0
@@ -2320,7 +2401,9 @@ class GeoMapTab(QtWidgets.QWidget):
                 self._rates[a] = (max(0, p.get("bytesrecv", 0) - prev[0]) / dt,
                                   max(0, p.get("bytessent", 0) - prev[1]) / dt)
             self._prev[a] = (p.get("bytesrecv", 0), p.get("bytessent", 0), now)
-        self._peers = peers or []; self._redraw()
+        self._peers = peers or []
+        self._resolve_hostnames(self._peers)     # DNS-named peers → plottable (async, once/session)
+        self._redraw()
     def _on_ni(self, ni, stale): self._ni = ni or {}; self._redraw()
     def _on_net(self, nodes): self._net = nodes or []; self._redraw()
     def _on_act(self, d): self._act = (d or {}).get("events", []); self._redraw()
@@ -2455,8 +2538,8 @@ class GeoMapTab(QtWidgets.QWidget):
             arc_pen = QtGui.QPen(QtGui.QColor(247, 147, 26, 120), 1.0)
             self._flows = []
             for p in self._peers:
-                ip = p.get("addr", "").rsplit(":", 1)[0].strip("[]")
-                g = geolocate(ip)
+                ip, _host = self._peer_ip(p)
+                g = geolocate(ip) if ip else None
                 if not g: continue
                 path = QtGui.QPainterPath(); started = False; px = None
                 pts = []                                            # node→peer arc for packet flow
@@ -2485,13 +2568,14 @@ class GeoMapTab(QtWidgets.QWidget):
         unlocated = []
         _citymarks = {}          # (name, iso) -> city entry — deduped nearest-major-city labels
         for p in (self._peers if show_conn else []):
-            ip = p.get("addr", "").rsplit(":", 1)[0].strip("[]")
-            g = geolocate(ip)
+            ip, _host = self._peer_ip(p)
+            g = geolocate(ip) if ip else None
             if not g:
                 unlocated.append(p)
                 continue
             located += 1; cc[g["iso"]] += 1
             an = asn_lookup(ip) or {}
+            _dnsnote = "  ·  (DNS-named — location via re-resolve, approximate)" if _host != ip else ""
             if an.get("org"): asncc[an["org"][:22]] += 1
             x, y = self.proj(g["lon"], g["lat"])
             traf = p.get("bytessent", 0) + p.get("bytesrecv", 0); inbound = p.get("inbound")
@@ -2505,7 +2589,7 @@ class GeoMapTab(QtWidgets.QWidget):
             _ce = nearest_city_entry(g["lat"], g["lon"])
             _pop = f", pop {_ce[5]:,}" if len(_ce) > 5 and _ce[5] else ""
             _city = f"{g['city']} (GeoIP)" if g.get("city") else f"near {_ce[0]} (~{_ce[4]:.0f} km{_pop})"
-            d.setToolTip(f"{p.get('addr')}  ·  {flag(g['iso'])} {g['country']}  ·  {_city}  ·  AS{an.get('asn','?')} {an.get('org','')}  ·  {(traf/1048576):.1f} MiB  ·  {'in' if inbound else 'out'}")
+            d.setToolTip(f"{p.get('addr')}  ·  {flag(g['iso'])} {g['country']}  ·  {_city}  ·  AS{an.get('asn','?')} {an.get('org','')}  ·  {(traf/1048576):.1f} MiB  ·  {'in' if inbound else 'out'}{_dnsnote}")
             if self.cities_chk.isChecked() and _ce:
                 _citymarks[(_ce[0], _ce[1])] = _ce
         # 🏙 optional overlay: nearest MAJOR CITY per located peer — drawn at the city's own
@@ -2519,7 +2603,9 @@ class GeoMapTab(QtWidgets.QWidget):
             ct.setPos(cx + 3, cy - 5)
         if unlocated:
             uy = self.H - 16
-            lab = self.scene.addSimpleText(f"⚫ no geo data ({len(unlocated)}): tor / unmapped —")
+            _ndns = sum(1 for p in unlocated if not is_ip_literal((p.get("addr") or "").rsplit(":", 1)[0].strip("[]")))
+            _kinds = ("DNS-named (resolving…) / " if _ndns else "") + "tor / unmapped"
+            lab = self.scene.addSimpleText(f"⚫ no geo data ({len(unlocated)}): {_kinds} —")
             lab.setBrush(QtGui.QColor("#8aa0b4")); lab.setPos(8, uy - 4)
             ux = 8 + lab.boundingRect().width() + 10
             for p in unlocated[:12]:
