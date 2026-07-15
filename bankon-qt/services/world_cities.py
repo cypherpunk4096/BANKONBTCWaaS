@@ -835,8 +835,9 @@ def _load_full():
                     la, lo, pop = float(p[2]), float(p[3]), int(p[4] or 0)
                 except ValueError:
                     continue
+                elev = "" if p[5] in ("-9999", "9999") else p[5]   # GeoNames missing-elevation sentinel
                 grid.setdefault((int(la), int(lo)), []).append(len(rows))
-                rows.append((p[0], p[1], la, lo, pop, p[5], p[6]))
+                rows.append((p[0], p[1], la, lo, pop, elev, p[6]))
     except Exception:
         return
     if rows:

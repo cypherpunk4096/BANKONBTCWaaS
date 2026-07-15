@@ -14,3 +14,16 @@ Obtain free with a MaxMind account: <https://dev.maxmind.com/geoip/geolite2-free
 
 Without them, BANKON degrades gracefully — the maps fall back to the node-native /
 activity-ring views instead of geographic placement.
+
+## Complete world-city list (committed)
+
+`cities1000.tsv.gz` (~3.2 MB) — **every city on earth with population ≥ 1000**
+(170,399 cities · 246 countries), derived from the public **GeoNames `cities1000`
+dump** (<https://download.geonames.org/export/dump/>), licensed **CC-BY 4.0**
+(attribution: GeoNames, geonames.org). Columns: name · ISO2 · lat · lon ·
+population · elevation_m · timezone.
+
+Used by the Geo Map's nearest-city overlay and 🧊 ICE geo/IP forensics
+(services/world_cities.py — lazy background load into a 1°×1° grid index; a
+bundled ~800-city Natural Earth table is the instant fallback and the UI always
+states which dataset is in use).
