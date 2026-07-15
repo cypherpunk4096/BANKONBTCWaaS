@@ -37,7 +37,10 @@ def geolocate(ip):
         if loc.get("latitude") is None:
             return None
         return {"lat": loc["latitude"], "lon": loc["longitude"],
-                "country": ctry.get("names", {}).get("en", "?"), "iso": ctry.get("iso_code", "??")}
+                "country": ctry.get("names", {}).get("en", "?"), "iso": ctry.get("iso_code", "??"),
+                # per-IP city name straight from the mmdb (empty for many datacenter IPs —
+                # callers fall back to nearest_city); this field was previously left unread
+                "city": (g.get("city", {}).get("names", {}) or {}).get("en")}
     except Exception:
         return None
 

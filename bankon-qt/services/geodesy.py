@@ -75,45 +75,10 @@ def haversine_km(lat1, lon1, lat2, lon2):
     return 2 * r * math.asin(min(1.0, math.sqrt(a)))
 
 
-# Major world cities (name, country ISO, lat, lon) — compact, public-domain facts,
-# enough to name the nearest populated place for any peer/point. No network calls.
-CITIES = [
-    ("New York", "US", 40.7128, -74.0060), ("Los Angeles", "US", 34.0522, -118.2437),
-    ("Chicago", "US", 41.8781, -87.6298), ("Toronto", "CA", 43.6532, -79.3832),
-    ("Mexico City", "MX", 19.4326, -99.1332), ("Bogotá", "CO", 4.7110, -74.0721),
-    ("São Paulo", "BR", -23.5505, -46.6333), ("Buenos Aires", "AR", -34.6037, -58.3816),
-    ("Santiago", "CL", -33.4489, -70.6693), ("Lima", "PE", -12.0464, -77.0428),
-    ("London", "GB", 51.5074, -0.1278), ("Paris", "FR", 48.8566, 2.3522),
-    ("Madrid", "ES", 40.4168, -3.7038), ("Amsterdam", "NL", 52.3676, 4.9041),
-    ("Frankfurt", "DE", 50.1109, 8.6821), ("Berlin", "DE", 52.5200, 13.4050),
-    ("Zurich", "CH", 47.3769, 8.5417), ("Milan", "IT", 45.4642, 9.1900),
-    ("Stockholm", "SE", 59.3293, 18.0686), ("Helsinki", "FI", 60.1699, 24.9384),
-    ("Warsaw", "PL", 52.2297, 21.0122), ("Kyiv", "UA", 50.4501, 30.5234),
-    ("Moscow", "RU", 55.7558, 37.6173), ("Istanbul", "TR", 41.0082, 28.9784),
-    ("Dubai", "AE", 25.2048, 55.2708), ("Tel Aviv", "IL", 32.0853, 34.7818),
-    ("Cape Town", "ZA", -33.9249, 18.4241), ("Johannesburg", "ZA", -26.2041, 28.0473),
-    ("Lagos", "NG", 6.5244, 3.3792), ("Nairobi", "KE", -1.2921, 36.8219),
-    ("Cairo", "EG", 30.0444, 31.2357), ("Mumbai", "IN", 19.0760, 72.8777),
-    ("Bengaluru", "IN", 12.9716, 77.5946), ("Singapore", "SG", 1.3521, 103.8198),
-    ("Bangkok", "TH", 13.7563, 100.5018), ("Jakarta", "ID", -6.2088, 106.8456),
-    ("Hong Kong", "HK", 22.3193, 114.1694), ("Shanghai", "CN", 31.2304, 121.4737),
-    ("Beijing", "CN", 39.9042, 116.4074), ("Seoul", "KR", 37.5665, 126.9780),
-    ("Tokyo", "JP", 35.6762, 139.6503), ("Osaka", "JP", 34.6937, 135.5023),
-    ("Sydney", "AU", -33.8688, 151.2093), ("Melbourne", "AU", -37.8136, 144.9631),
-    ("Auckland", "NZ", -36.8485, 174.7633), ("Honolulu", "US", 21.3069, -157.8583),
-    ("Reykjavik", "IS", 64.1466, -21.9426), ("Anchorage", "US", 61.2181, -149.9003),
-    ("Vancouver", "CA", 49.2827, -123.1207), ("Seattle", "US", 47.6062, -122.3321),
-]
-
-
-def nearest_city(lat, lon):
-    """Nearest known city to (lat, lon). Returns (name, iso, distance_km)."""
-    best = None
-    for name, iso, clat, clon in CITIES:
-        d = haversine_km(lat, lon, clat, clon)
-        if best is None or d < best[2]:
-            best = (name, iso, d)
-    return best
+# Nearest-city lookup now lives in world_cities.py (~800 Natural Earth populated places,
+# public domain) — the old hand-picked 50-city table mislabeled anywhere far from a listed
+# metro. Re-exported here so existing callers keep working unchanged.
+from .world_cities import CITIES, nearest_city  # noqa: F401  (compat re-export)
 
 
 # ── High precision (mpmath) — 18+ decimal AE projection & geodesy measurement ──

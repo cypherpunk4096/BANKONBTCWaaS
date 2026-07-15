@@ -96,7 +96,7 @@ export function rowFromPeer(p, rd) {             // getpeerinfo entry (richer: v
     latitude: g.lat, longitude: g.lon, country: g.country, country_code: g.cc, city: g.cityName,
     asn: g.asn, asn_org: g.org,
     user_agent: p.subver || null, protocol_version: p.version || null, services,
-    start_height: p.startingheight ?? null,
+    start_height: p.synced_blocks ?? p.startingheight ?? null,   // startingheight removed in Core v31
     last_connected: new Date().toISOString(), connections: 1, source: 'peer',
     addr_time: p.conntime ? new Date(p.conntime * 1000).toISOString() : null,
     embedding: embed({ lat: g.lat, lon: g.lon, asn: g.asn, services, protocol_version: p.version }),

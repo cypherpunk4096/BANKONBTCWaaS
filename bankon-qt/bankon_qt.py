@@ -32,7 +32,16 @@ WAAS_URL = os.environ.get("BANKON_WAAS_URL", "http://127.0.0.1:8088")
 from services.geoip_service import geolocate, asn as asn_lookup, WORLD, HAVE_GEOIP, HAVE_ASN
 from services.geodesy import (great_circle_points, azimuthal_equidistant, nearest_city,
                               densify_latlon, azimuthal_equidistant_hp, format_hp)
+from services.world_cities import nearest_city_entry
+try:
+    from services.world_borders import BORDERS as WORLD_BORDERS   # political overlay (NE 110m admin_0)
+except Exception:                                                 # pragma: no cover
+    WORLD_BORDERS = []
 from services.network_view import known_nodes, network_asof
+# Exact-arithmetic scientific formatting (BTC.oracle / ICE): integer satoshis + Decimal,
+# 18-decimal display, exact expected work from the compact target.
+from decimal import Decimal
+from services.precision import btc18, btc18_html, dec18, pct18, work_from_bits, chainwork_int
 _geo = HAVE_GEOIP   # back-compat flag used by the Geo Map tab
 
 class Worker(QtCore.QThread):
@@ -103,6 +112,36 @@ def sync_color(p):
     L = lambda a, b: int(a + (b - a) * t)
     return f"rgb({L(11,22)},{L(93,199)},{L(52,132)})"
 
+def disk_runway(total_bytes, avail_bytes):
+    """Disk runway for the datadir device: free space ÷ chain growth rate → (text, color).
+
+    Growth is OBSERVED from size-on-device samples persisted across sessions (QSettings,
+    ≤4 samples/day, ≥1 day span before trusting); until then a ~55 GB/yr full-node
+    baseline is used and labeled as an estimate. The 1 TB device is the binding
+    constraint of this node — runway makes that a live diagnostic, not a surprise."""
+    if not avail_bytes:
+        return None, None
+    rate = None
+    try:
+        st = QtCore.QSettings("BANKON", "bankon-qt")
+        hist = json.loads(st.value("datadir/growth", "[]"))
+        now = time.time()
+        if total_bytes and (not hist or now - hist[-1][0] > 21600):
+            hist = (hist + [[now, int(total_bytes)]])[-64:]
+            st.setValue("datadir/growth", json.dumps(hist))
+        if len(hist) >= 2 and hist[-1][0] - hist[0][0] > 86400 and hist[-1][1] > hist[0][1]:
+            rate = (hist[-1][1] - hist[0][1]) / (hist[-1][0] - hist[0][0])
+    except Exception:
+        pass
+    basis = "observed" if rate else "est. 55 GB/yr"
+    rate = rate or (55e9 / (365.25 * 86400))
+    months = avail_bytes / rate / (30.44 * 86400)
+    col = "#f85149" if months < 3 else ("#F7931A" if months < 12 else "#16C784")
+    txt = (f"runway ≈ {months:.1f} months ({basis})" if months < 24
+           else f"runway ≈ {months/12:.1f} years ({basis})")
+    return txt, col
+
+
 def cardgrid(fields):
     w = QtWidgets.QWidget(); form = QtWidgets.QFormLayout(w)
     labels = {}
@@ -172,6 +211,9 @@ class OverviewTab(QtWidgets.QWidget):
     def _tick_sync(self):
         if self.isVisible():
             spawn_fn(synctip, self._sync)
+            # peers churn faster than the global refresh (default 1 min) — ride this 3s tick
+            # so the card tracks getnetworkinfo.connections near-realtime (cheap, warm-cached)
+            spawn("getnetworkinfo", self._n, timeout=8)
     def refresh(self):
         spawn("getblockchaininfo", self._c)
         spawn("getnetworkinfo", self._n)
@@ -199,7 +241,12 @@ class OverviewTab(QtWidgets.QWidget):
         self.f["headers"].setText(f"{c.get('headers',0):,}"); self.f["verify %"].setText(f"{pct:.8f}")
         self.f["size on disk"].setText(f"{c.get('size_on_disk',0)/1073741824:.1f} GB")
         self.f["IBD"].setText("● FULL NODE" if synced else "IBD (syncing)")
-    def _n(self, n, stale): self.f["peers"].setText(str(n.get("connections", "—")))
+    def _n(self, n, stale):
+        c = n.get("connections")
+        o, i = n.get("connections_out"), n.get("connections_in")
+        detail = f"  ({o} out · {i} in)" if (o is not None and i is not None) else ""
+        # honesty: a stale value is last-known, not current — say so instead of passing it off
+        self.f["peers"].setText(("—" if c is None else f"{c}{detail}") + ("   (cached)" if stale else ""))
     def _m(self, m, stale): self.f["mempool txs"].setText(f"{m.get('size',0):,}")
     # ---- datadir diagnostic (external disk BANKON is attached to; works with node down) ----
     def _tick_fs(self):
@@ -235,8 +282,10 @@ class OverviewTab(QtWidgets.QWidget):
             self.fsbar.setFormat(f"disk {df.get('pcent','?')} · {self._gib(avail)} free of {self._gib(size)}"
                                  + ("  ⚠ FULL — Bitcoin Core can't write" if full else (" — low" if low else "")))
         c = d.get("components") or {}
+        rw, rwcol = disk_runway(c.get("total"), (d.get("df") or {}).get("avail"))
         self.fscomp.setText(f"blocks {self._gib(c.get('blocks'))}  ·  indexes {self._gib(c.get('indexes'))}  ·  "
-                            f"chainstate {self._gib(c.get('chainstate'))}  ·  total on device {self._gib(c.get('total'))}")
+                            f"chainstate {self._gib(c.get('chainstate'))}  ·  total on device {self._gib(c.get('total'))}"
+                            + (f"  ·  <span style='color:{rwcol};font-weight:700'>{rw}</span>" if rw else ""))
         files = d.get("files")
         if files is not None:
             self.fsfiles.clear()
@@ -1079,7 +1128,9 @@ def peer_diag_lines(p):
         ("connected for",   _dur(age)),
         ("their blocks",    p.get("synced_blocks", "—")),
         ("their headers",   p.get("synced_headers", "—")),
-        ("starting ht",     p.get("startingheight", "—")),
+        # startingheight was removed from getpeerinfo in Core v31 — presynced_headers is the
+        # closest live measure of where this peer's header sync stands before validation
+        ("presynced hdrs",  p.get("presynced_headers", p.get("startingheight", "—"))),
         ("blocks in-flight", len(p.get("inflight") or [])),
         ("manual (addnode)", "yes" if p.get("addnode") else "no"),
     ]
@@ -1111,7 +1162,9 @@ def mp_fill(f, m, d, stale):
     f["mempool min fee"].setText(f"{d.get('mempoolminfee','—')} BTC/kvB")
     tf = d.get('total_fee'); f["total fee"].setText(f"{tf} BTC" if tf is not None else "—")
     f["unbroadcast"].setText(f"{d.get('unbroadcastcount',0):,}")
-    f["RBF / loaded"].setText(f"fullrbf={d.get('fullrbf','?')} · loaded={d.get('loaded','?')}")
+    # fullrbf key is removed in Core v31.1+ (RBF is universal since v28) — absent ≠ unknown
+    rbf = d.get("fullrbf")
+    f["RBF / loaded"].setText(f"fullrbf={'universal (v28+)' if rbf is None else rbf} · loaded={d.get('loaded','?')}")
 
 def idx_fill(f, m, d, stale):
     if "txindex" in (d or {}):
@@ -1149,7 +1202,8 @@ class NetworkMapTab(QtWidgets.QWidget):
         split = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         self.scene = QtWidgets.QGraphicsScene()
         self.view = QtWidgets.QGraphicsView(self.scene)
-        self.view.setRenderHint(QtGui.QPainter.Antialiasing)
+        self.view.setRenderHints(QtGui.QPainter.Antialiasing | QtGui.QPainter.TextAntialiasing |
+                                 QtGui.QPainter.SmoothPixmapTransform)
         self.view.setStyleSheet("background:#05080d;border:2px solid #00BFFF;border-radius:8px")
         self.view.setMinimumHeight(300)   # modest floor so the map stays usable on small screens
         self.view.setTransformationAnchor(QtWidgets.QGraphicsView.AnchorUnderMouse)   # wheel zooms at cursor
@@ -1244,13 +1298,19 @@ class NetworkMapTab(QtWidgets.QWidget):
         self.btn_boot = QtWidgets.QPushButton("⏏ Boot"); self.btn_boot.setObjectName("danger")
         self.btn_boot.setToolTip("Disconnect this peer now (disconnectnode)")
         self.btn_boot.clicked.connect(lambda: self._act_peer("boot"))
+        # discoverable entry into the 3D cluster-explore (double-click still works)
+        self.btn_explore = QtWidgets.QPushButton("◉ 3D explore"); self.btn_explore.setObjectName("secondary")
+        self.btn_explore.setToolTip("Explore this peer's network neighbourhood as a rotating 3D pointcloud\n"
+                                    "(gossip-inferred: same ASN / prefix — cluster lines carry no flow dots)")
+        self.btn_explore.clicked.connect(lambda: self._sel and self._enter_explore(self._sel))
+        self.btn_explore.setEnabled(False)
         self.btn_ban = QtWidgets.QPushButton("🚫 Ban"); self.btn_ban.setObjectName("danger")
         self.btn_ban.setToolTip("Blacklist as unreliable — setban 7 days + disconnect")
         self.btn_ban.clicked.connect(lambda: self._list_ban(self._sel.get("addr") if self._sel else "", True))
-        br.addWidget(self.btn_promote); br.addWidget(self.btn_boot); br.addWidget(self.btn_ban); d.addLayout(br)
+        br.addWidget(self.btn_promote); br.addWidget(self.btn_boot); br.addWidget(self.btn_ban); br.addWidget(self.btn_explore); d.addLayout(br)
         self.diag_status = QtWidgets.QLabel(""); self.diag_status.setStyleSheet("color:#8aa0b4"); self.diag_status.setWordWrap(True)
         d.addWidget(self.diag_status)
-        self.btn_promote.setEnabled(False); self.btn_boot.setEnabled(False); self.btn_ban.setEnabled(False)
+        self.btn_promote.setEnabled(False); self.btn_boot.setEnabled(False); self.btn_ban.setEnabled(False); self.btn_explore.setEnabled(False)
         # ---- winners + whitelist/blacklist: 🏆 fastest · ★ promoted · 🚫 banned (view + edit) ----
         self.lists = QtWidgets.QTabWidget(); self.lists.setMaximumHeight(190)
         self.lists.setStyleSheet("QTabBar::tab{padding:3px 10px} QListWidget{font-family:monospace;font-size:11px;"
@@ -1407,7 +1467,7 @@ class NetworkMapTab(QtWidgets.QWidget):
                 if dd <= (r + 10) ** 2 and dd < bestd: best, bestd = p, dd
             if best: self._select(best)
             else: self._sel = None; self.diag_title.setText("◎ click a peer node for diagnostics"); \
-                self._clear_form(); self.btn_promote.setEnabled(False); self.btn_boot.setEnabled(False); self.btn_ban.setEnabled(False); self.diag_status.setText("")
+                self._clear_form(); self.btn_promote.setEnabled(False); self.btn_boot.setEnabled(False); self.btn_ban.setEnabled(False); self.btn_explore.setEnabled(False); self.diag_status.setText("")
             return False
         if obj is self.view.viewport() and ev.type() == QtCore.QEvent.MouseButtonDblClick:
             sp = self.view.mapToScene(ev.position().toPoint()) if hasattr(ev, "position") else self.view.mapToScene(ev.pos())
@@ -1424,11 +1484,20 @@ class NetworkMapTab(QtWidgets.QWidget):
             lv = QtWidgets.QLabel(str(val)); lv.setStyleSheet("color:#d6e3ef;font-family:monospace")
             lv.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse); lv.setWordWrap(True)
             self.diag_form.addRow(label + ":", lv)
+    def select_addr(self, addr):
+        """Cross-link entry (ICE forensics → map): select + highlight a peer by address.
+        Returns True if the peer is currently connected and now selected."""
+        p = next((q for q in (self._peers or []) if q.get("addr") == addr), None)
+        if p:
+            self._select(p)
+            return True
+        self.diag_status.setText(f"{addr} is not currently connected")
+        return False
     def _select(self, p):
         self._sel = p
         self.diag_title.setText("◎ " + (p.get("addr", "—")))
         self._fill_diag(p)
-        self.btn_promote.setEnabled(True); self.btn_boot.setEnabled(True); self.btn_ban.setEnabled(True)
+        self.btn_promote.setEnabled(True); self.btn_boot.setEnabled(True); self.btn_ban.setEnabled(True); self.btn_explore.setEnabled(True)
         self.btn_promote.setText("★ Promoted" if p.get("addnode") else "★ Promote")
         self.diag_status.setText("Promote = favourite + persistent · Boot = disconnect now")
         self._redraw()
@@ -1440,7 +1509,7 @@ class NetworkMapTab(QtWidgets.QWidget):
     def _acted(self, kind, d):
         if d and d.get("ok"):
             self.diag_status.setText(f"✓ {kind} done — {d.get('addr', '')}")
-            if kind == "boot": self._sel = None; self.btn_promote.setEnabled(False); self.btn_boot.setEnabled(False); self.btn_ban.setEnabled(False)
+            if kind == "boot": self._sel = None; self.btn_promote.setEnabled(False); self.btn_boot.setEnabled(False); self.btn_ban.setEnabled(False); self.btn_explore.setEnabled(False)
             QtCore.QTimer.singleShot(700, self.refresh)
         else:
             self.diag_status.setText(f"✗ {(d or {}).get('error', 'failed')}")
@@ -1455,7 +1524,12 @@ class NetworkMapTab(QtWidgets.QWidget):
         self._anim = []
         if self._explore:                      # STABLE 3D rotation: items persist, only positions move
             if getattr(self, "_cloud_items", None):
-                self._cloud_rot = getattr(self, "_cloud_rot", 0.0) + 0.010
+                # hold the rotation still while the user is dragging/panning the view —
+                # inspecting a node shouldn't be a moving target
+                _dragging = bool(QtWidgets.QApplication.mouseButtons() & QtCore.Qt.LeftButton) \
+                    and self.view.underMouse()
+                if not _dragging:
+                    self._cloud_rot = getattr(self, "_cloud_rot", 0.0) + 0.010
                 self._layout_cloud()
             # PACKET FLOW in the 3D view too — along the one REAL link (us ↔ the explored peer),
             # driven by that peer's live measured B/s. orange = data INTO the BANKON node
@@ -1686,25 +1760,34 @@ class NetworkMapTab(QtWidgets.QWidget):
         # peer positions per layout: radial ring, or pyramid tiers (widening rows below the apex,
         # busiest peers nearest the top so rank-in-the-pyramid means something)
         pos = []
+        tiers = []          # pyramid: [(row_y, [peer idx])] for separators + per-tier legend
         if pyramid:
             order = sorted(range(len(peers)),
                            key=lambda i: -(peers[i].get('bytesrecv', 0) + peers[i].get('bytessent', 0)))
-            row, row_len, placed, k = 0, 2, 0, 0
-            slots = []
+            row, row_len, k = 0, 2, 0
+            slots, rowno = [], []
             while k < len(peers):
                 take = min(row_len, len(peers) - k)
                 for j in range(take):
                     w = 150 * (row + 1)
                     xx = -w / 2 + (j + 0.5) * (w / take) if take > 1 else 0.0
-                    slots.append((xx, c0y + 150 + row * 130))
+                    slots.append((xx, c0y + 150 + row * 130)); rowno.append(row)
                 k += take; row += 1; row_len += 2
             pos = [None] * len(peers)
+            rows = {}
             for rank, idx in enumerate(order):
                 pos[idx] = slots[rank]
+                rows.setdefault(rowno[rank], []).append(idx)
+            tiers = [(c0y + 150 + rn * 130, idxs) for rn, idxs in sorted(rows.items())]
         else:
-            for i in range(len(peers)):
-                ang = 2 * math.pi * i / n
-                pos.append((R * math.cos(ang), R * math.sin(ang)))
+            # EtherApe-style ranking on the ring: busiest peer at 12 o'clock, then clockwise
+            # by traffic rank — position now carries meaning instead of arrival order
+            order = sorted(range(len(peers)),
+                           key=lambda i: -(peers[i].get('bytesrecv', 0) + peers[i].get('bytessent', 0)))
+            pos = [None] * len(peers)
+            for rank, idx in enumerate(order):
+                ang = -math.pi / 2 + 2 * math.pi * rank / n
+                pos[idx] = (R * math.cos(ang), R * math.sin(ang))
         # faint outer cloud = every node our addrman knows (the "all nodes" backdrop)
         if self._known:
             step = max(1, len(self._known) // 240)
@@ -1719,6 +1802,13 @@ class NetworkMapTab(QtWidgets.QWidget):
                     rr = CR + (i % 7) * 6
                     cx, cy = rr * math.cos(ang), rr * math.sin(ang)
                 self.scene.addEllipse(cx - 1.3, cy - 1.3, 2.6, 2.6, QtGui.QPen(QtCore.Qt.NoPen), QtGui.QBrush(QtGui.QColor(90, 150, 180, 90)))
+        # pyramid tier separators + per-tier legend: each row is a traffic rank band — label it
+        for _ti, (ty, idxs) in enumerate(tiers):
+            tw2 = 150 * (_ti + 1) / 2 + 90
+            _sep = self.scene.addLine(-tw2, ty + 58, tw2, ty + 58, QtGui.QPen(QtGui.QColor(20, 64, 92, 110), 1, QtCore.Qt.DashLine))
+            _tot = sum(peers[i].get("bytesrecv", 0) + peers[i].get("bytessent", 0) for i in idxs)
+            _lt = self.scene.addSimpleText(f"tier {_ti + 1} · {len(idxs)} peers · Σ {_tot / 1048576:.1f} MiB")
+            _lt.setBrush(QtGui.QColor("#5a6b7b")); _lt.setScale(0.7); _lt.setPos(tw2 + 8, ty - 6)
         # our node — accurate name + LIVE aggregate throughput (getnettotals deltas): the orange ▼
         # figure is exactly what flows INTO this node, green ▲ exactly what leaves. At the pyramid
         # APEX in pyramid mode, centre otherwise.
@@ -1763,7 +1853,9 @@ class NetworkMapTab(QtWidgets.QWidget):
                 ls = self.scene.addSimpleText("▲ " + self._rate_s(ro))
                 ls.setBrush(QtGui.QColor("#16C784")); ls.setScale(0.68)
                 ls.setPos(mx - ox * 4 - 20, my - oy * 4 + 4)
-            r = 8 + 10 * frac
+            # EtherApe idiom: node DIAMETER breathes with LIVE B/s (log scale), lifetime share
+            # keeps a floor so historically-busy peers stay visible between bursts
+            r = 7 + 6 * frac + 8 * max(pin, pout)
             selected = bool(self._sel) and p.get("addr") == self._sel.get("addr")
             promoted = bool(p.get("addnode"))
             if promoted: pen = QtGui.QPen(QtGui.QColor("#FFD37A"), 3)          # ★ favourite = gold ring
@@ -1793,7 +1885,12 @@ class NetworkMapTab(QtWidgets.QWidget):
                     t = self.scene.addText(lab); t.setDefaultTextColor(col); t.setScale(0.6); t.setPos(x + 6, y - 8)
         if not self._user_zoom: self._fitview()
         if peers:
-            self.info.setText(f"Network map — {len(peers)} peers · ~{len(self._known):,} known · "
+            # honest subsample: the backdrop draws at most ~240 of the known nodes — say so,
+            # and say the positions are topology, not geography
+            _kn = len(self._known or [])
+            drawn = -(-_kn // max(1, _kn // 240)) if _kn else 0   # exact count the [::step] slice draws
+            cloud = (f"cloud shows {drawn} of {len(self._known):,} known" if self._known else "no addrman data yet")
+            self.info.setText(f"Network map (topology view — positions are not geographic) — {len(peers)} peers · {cloud} · "
                               f"orange dots = live data IN (peer→node) · green dots = live data OUT (node→peer) · "
                               f"gold ring = ★favourite · wheel = zoom · click a node{' · cached' if stale else ''}")
         elif acts:
@@ -1824,6 +1921,7 @@ class GlobeWidget(QtWidgets.QWidget):
         self.zoom = 1.0
         self._drag = None; self._vel = 0.0     # hand-drag state + fling inertia (deg/frame)
         self._nodes, self._peers, self._arcs, self._my = [], [], [], None
+        self.show_borders = QtCore.QSettings("BANKON", "bankon-qt").value("geomap/borders", "true") == "true"
         from services.earth import earth_texture
         self._tex = earth_texture()            # real Blue Marble (numpy HxWx3) or None → vector fallback
         self._th, self._tw = (self._tex.shape[0], self._tex.shape[1]) if self._tex is not None else (0, 0)
@@ -1857,6 +1955,7 @@ class GlobeWidget(QtWidgets.QWidget):
     def reset_view(self):
         self.view_tilt = self.base_tilt; self.zoom = 1.0; self._vel = 0.0; self.update()
     def set_data(self, nodes, peers, my):
+        self._nodes_total = len(nodes)         # full count, so captions can be honest about the cut
         self._nodes = nodes[:700]              # subsample the cloud for smooth spin
         self._peers = peers
         self._my = my
@@ -1943,6 +2042,12 @@ class GlobeWidget(QtWidgets.QWidget):
                 if len(front) >= 3: qp.drawPolygon(QtGui.QPolygonF(front))
         # overlays clipped to the globe disc
         qp.setClipRegion(QtGui.QRegion(QtCore.QRect(int(cx - R), int(cy - R), int(2 * R), int(2 * R)), QtGui.QRegion.Ellipse))
+        if getattr(self, "show_borders", True) and WORLD_BORDERS:
+            # POLITICAL overlay — front-hemisphere-clipped boundary polylines (same law as arcs)
+            qp.setBrush(QtCore.Qt.NoBrush)
+            qp.setPen(QtGui.QPen(QtGui.QColor(138, 160, 180, 120), 1.0))
+            for line in WORLD_BORDERS:
+                self._polyline(qp, [self._proj(la, lo, cx, cy, R) for lo, la in line])
         qp.setPen(QtCore.Qt.NoPen); qp.setBrush(QtGui.QBrush(QtGui.QColor(255, 255, 255, 130)))
         for (la, lo) in self._nodes:                                    # known-node cloud
             x, y, v = self._proj(la, lo, cx, cy, R)
@@ -2111,6 +2216,17 @@ class GeoMapTab(QtWidgets.QWidget):
         self.allnodes = QtWidgets.QCheckBox("🌐 all known"); self.allnodes.setToolTip(
             "GLOBAL view — additionally plot the whole addrman network (every node this node knows about)")
         self.allnodes.toggled.connect(lambda _: self.refresh()); top.addWidget(self.allnodes)
+        # POLITICAL overlay (Natural Earth 110m admin_0 boundary lines) + optional nearest-major-city
+        # labels — both persisted across sessions. Borders default ON, cities opt-in.
+        _st = QtCore.QSettings("BANKON", "bankon-qt")
+        self.borders_chk = QtWidgets.QCheckBox("🗺 borders")
+        self.borders_chk.setChecked(_st.value("geomap/borders", "true") == "true")
+        self.borders_chk.setToolTip("Political overlay — international boundary lines (Natural Earth 110m, public domain)")
+        self.borders_chk.toggled.connect(self._overlay_changed); top.addWidget(self.borders_chk)
+        self.cities_chk = QtWidgets.QCheckBox("🏙 cities")
+        self.cities_chk.setChecked(_st.value("geomap/cities", "false") == "true")
+        self.cities_chk.setToolTip("Label the nearest major city for each located peer (bundled ~800-city table)")
+        self.cities_chk.toggled.connect(self._overlay_changed); top.addWidget(self.cities_chk)
         self.toggle = QtWidgets.QPushButton("🗺 Flat map"); self.toggle.setToolTip("Switch spinning globe / flat map")
         self.toggle.clicked.connect(self._toggle); top.addWidget(self.toggle)
         # Flat-map projection: plate carrée (EPSG:4326) or the accurate flat-earth
@@ -2155,6 +2271,13 @@ class GeoMapTab(QtWidgets.QWidget):
         self.stack.setCurrentIndex(1)          # show the flat map so the change is visible
         self.toggle.setText("🌐 Globe")
         self._redraw()
+    def _overlay_changed(self, _on):
+        st = QtCore.QSettings("BANKON", "bankon-qt")
+        st.setValue("geomap/borders", "true" if self.borders_chk.isChecked() else "false")
+        st.setValue("geomap/cities", "true" if self.cities_chk.isChecked() else "false")
+        self.globe.show_borders = self.borders_chk.isChecked()
+        self._bg = None                        # borders live in the cached background pixmap
+        self._redraw(); self.globe.update()
     # Flat-map point projection → scene (x, y). Dispatches on the selected mode.
     _AE_R = 350.0
     def proj(self, lon, lat):
@@ -2227,25 +2350,59 @@ class GeoMapTab(QtWidgets.QWidget):
         la = (self._ni or {}).get("localaddresses") or []
         for a in la:
             g = geolocate(a.get("address", ""))
-            if g: return g["lat"], g["lon"]
+            if g:
+                self._my_src = "localaddress"
+                return g["lat"], g["lon"]
         # not publicly reachable → locate by the address our peers report they see us as
         from collections import Counter
         seen = Counter((p.get("addrlocal") or "").rsplit(":", 1)[0].strip("[]")
                        for p in (self._peers or []) if p.get("addrlocal"))
         for ip, _n in seen.most_common(3):
             g = geolocate(ip)
-            if g: return g["lat"], g["lon"]
+            if g:
+                self._my_src = "addrlocal"    # NAT'd — this is the ISP egress, mark it approx
+                return g["lat"], g["lon"]
+        self._my_src = ""
         return None
     def _build_bg(self):
         """World + graticule + the whole known network as a dim density layer (one pixmap)."""
         pm = QtGui.QPixmap(self.W, self.H); pm.fill(QtGui.QColor("#071019"))
         qp = QtGui.QPainter(pm); qp.setRenderHint(QtGui.QPainter.Antialiasing)
+        if self.projmode == "flatearth":
+            # ocean disc first, so the flat-earth reads as a distinct body on the scene
+            qp.setPen(QtGui.QPen(QtGui.QColor("#16324a"), 1.4)); qp.setBrush(QtGui.QBrush(QtGui.QColor("#0a1723")))
+            qp.drawEllipse(QtCore.QPointF(self.W / 2, self.H / 2), self._AE_R, self._AE_R)
         qp.setPen(QtGui.QPen(QtGui.QColor("#16324a"))); qp.setBrush(QtGui.QBrush(QtGui.QColor("#0c2236")))
         for poly in WORLD:
             # Flat-earth (AE): great-circle-densify edges so continents curve correctly.
             ring = densify_latlon(poly) if self.projmode == "flatearth" else poly
+            if self.projmode == "flatearth" and any(la <= -89 for _lo, la in poly):
+                # north-pole AE: the Antarctica ring closes ACROSS the south pole — filled,
+                # it would paint the whole disc as land and hide every continent. Draw its
+                # coastline (points short of the pole seam) as a rim polyline instead.
+                pts = [QtCore.QPointF(*self.proj(lo, la)) for lo, la in ring if la > -85]
+                if len(pts) >= 2:
+                    qp.drawPolyline(QtGui.QPolygonF(pts))
+                continue
             qp.drawPolygon(QtGui.QPolygonF([QtCore.QPointF(*self.proj(lo, la)) for lo, la in ring]))
+        # POLITICAL overlay — international boundary polylines on top of the land fill,
+        # antimeridian-safe (segment break on wrap), densified in AE mode like the coasts.
+        if getattr(self, "borders_chk", None) and self.borders_chk.isChecked() and WORLD_BORDERS:
+            qp.setBrush(QtCore.Qt.NoBrush)
+            qp.setPen(QtGui.QPen(QtGui.QColor(90, 107, 123, 150), 1.0))     # #5a6b7b corporate grey
+            for line in WORLD_BORDERS:
+                seg = densify_latlon(line) if self.projmode == "flatearth" else line
+                px = None; path = QtGui.QPainterPath(); started = False
+                for lo, la in seg:
+                    x, y = self.proj(lo, la)
+                    if px is not None and abs(x - px) > self.W / 2:
+                        started = False                                     # break at the seam
+                    if not started: path.moveTo(x, y); started = True
+                    else: path.lineTo(x, y)
+                    px = x
+                qp.drawPath(path)
         qp.setPen(QtGui.QPen(QtGui.QColor("#0e2a3d")))
+        qp.setBrush(QtCore.Qt.NoBrush)     # graticule is LINES — a filled boundary circle would repaint the disc over the land
         if self.projmode == "flatearth":
             cx, cy = self.W / 2, self.H / 2
             for la in range(-60, 91, 30):                     # concentric parallels
@@ -2301,12 +2458,15 @@ class GeoMapTab(QtWidgets.QWidget):
                     self._flows.append((pts, pin, pout))
             mk = self.scene.addEllipse(mx - 6, my_y - 6, 12, 12, QtGui.QPen(QtGui.QColor("#F7931A"), 2), QtGui.QBrush(QtGui.QColor("#1a1200")))
             _nc = nearest_city(my[0], my[1])
-            mk.setToolTip(f"bankon: this node · nearest city: {_nc[0]}, {_nc[1]} (~{_nc[2]:.0f} km)")
+            # honesty: an addrlocal-derived position is the ISP egress, not this machine
+            _src = " · (approx — ISP egress, from addrlocal)" if getattr(self, "_my_src", "") == "addrlocal" else ""
+            mk.setToolTip(f"bankon: this node · nearest city: {_nc[0]}, {_nc[1]} (~{_nc[2]:.0f} km){_src}")
         # connected peers on top, coloured by traffic/direction, ASN in tooltip.
         # EVERY connected peer is accounted for: located ones at their true position, the rest
         # (Tor / I2P / unmapped IPs) in an honest strip — never silently dropped.
         cc, asncc, located, gpeers = Counter(), Counter(), 0, []
         unlocated = []
+        _citymarks = {}          # (name, iso) -> city entry — deduped nearest-major-city labels
         for p in (self._peers if show_conn else []):
             ip = p.get("addr", "").rsplit(":", 1)[0].strip("[]")
             g = geolocate(ip)
@@ -2323,8 +2483,22 @@ class GeoMapTab(QtWidgets.QWidget):
             gpeers.append((g["lat"], g["lon"], col, max(4.0, r)))
             self.scene.addEllipse(x - r - 3, y - r - 3, 2 * (r + 3), 2 * (r + 3), QtGui.QPen(QtCore.Qt.NoPen), QtGui.QBrush(QtGui.QColor(col.red(), col.green(), col.blue(), 60)))
             d = self.scene.addEllipse(x - r, y - r, 2 * r, 2 * r, QtGui.QPen(QtGui.QColor("#eef3f8"), 1), QtGui.QBrush(col))
+            # city truth ladder: the mmdb's own per-IP city name first, nearest-major-city second
             _pc = nearest_city(g["lat"], g["lon"])
-            d.setToolTip(f"{p.get('addr')}  ·  {flag(g['iso'])} {g['country']}  ·  near {_pc[0]} (~{_pc[2]:.0f} km)  ·  AS{an.get('asn','?')} {an.get('org','')}  ·  {(traf/1048576):.1f} MiB  ·  {'in' if inbound else 'out'}")
+            _city = f"{g['city']} (GeoIP)" if g.get("city") else f"near {_pc[0]} (~{_pc[2]:.0f} km)"
+            d.setToolTip(f"{p.get('addr')}  ·  {flag(g['iso'])} {g['country']}  ·  {_city}  ·  AS{an.get('asn','?')} {an.get('org','')}  ·  {(traf/1048576):.1f} MiB  ·  {'in' if inbound else 'out'}")
+            if self.cities_chk.isChecked():
+                _ce = nearest_city_entry(g["lat"], g["lon"])
+                if _ce: _citymarks[(_ce[0], _ce[1])] = _ce
+        # 🏙 optional overlay: nearest MAJOR CITY per located peer — drawn at the city's own
+        # coordinates (not the peer's), deduped, capped for legibility
+        for _ce in list(_citymarks.values())[:40]:
+            cx, cy = self.proj(_ce[3], _ce[2])
+            self.scene.addEllipse(cx - 1.6, cy - 1.6, 3.2, 3.2,
+                                  QtGui.QPen(QtCore.Qt.NoPen), QtGui.QBrush(QtGui.QColor("#9F6BFF")))
+            ct = self.scene.addSimpleText(_ce[0])
+            ct.setBrush(QtGui.QColor(196, 162, 255, 200)); ct.setScale(0.66)   # sparse polygon purple
+            ct.setPos(cx + 3, cy - 5)
         if unlocated:
             uy = self.H - 16
             lab = self.scene.addSimpleText(f"⚫ no geo data ({len(unlocated)}): tor / unmapped —")
@@ -2356,6 +2530,13 @@ class GeoMapTab(QtWidgets.QWidget):
                 dd = self.scene.addEllipse(x - 4, y - 4, 8, 8, QtGui.QPen(QtGui.QColor("#eef3f8"), 1), QtGui.QBrush(col))
                 dd.setToolTip(f"{e.get('kind')} {e.get('addr')} · {flag(g['iso'])} {g['country']}")
                 gpeers.append((g["lat"], g["lon"], col, 5.0)); act_plotted += 1
+        # AE disc: fit the view to the DISC (square scene rect), not the 2:1 pixmap —
+        # otherwise the flat-earth occupies only the centre of a wide letterboxed scene
+        if self.projmode == "flatearth":
+            cx, cy, m = self.W / 2, self.H / 2, self._AE_R + 18
+            self.scene.setSceneRect(cx - m, cy - m, 2 * m, 2 * m)
+        else:
+            self.scene.setSceneRect(0, 0, self.W, self.H)
         self.view.fitInView(self.scene.sceneRect(), QtCore.Qt.KeepAspectRatio)
         net_age = network_asof()
         net_when = datetime.fromtimestamp(net_age).strftime("%H:%M") if net_age else "—"
@@ -2364,8 +2545,10 @@ class GeoMapTab(QtWidgets.QWidget):
                               "geo approximate (EPSG:4326)" + ("" if HAVE_GEOIP else "  (GeoIP DB missing)"))
         else:
             _unl = len(unlocated)
+            _kn = len(self._net or [])
             self.info.setText(
-                (f"Network ~{len(self._net):,} known nodes (addrman @ {net_when}) · " if self._net else "") +
+                (f"Network {_kn:,} known nodes (addrman @ {net_when}"
+                 + (f" · globe draws {min(700, _kn)}" if _kn > 700 else "") + ") · " if self._net else "") +
                 f"connected: {located} located" + (f" + {_unl} no-geo (tor/unmapped)" if _unl else "") +
                 f" of {len(self._peers)} · {len(cc)} countries · orange dots = data IN · green = data OUT · "
                 "arcs inferred · geo approximate (EPSG:4326)" + ("" if HAVE_GEOIP else "  (GeoIP DB missing)"))
@@ -2597,10 +2780,14 @@ class BlockSciencePanel(QtWidgets.QFrame):
         self.head.setText(f"① identity:  #{S.get('height', self._analyzing):,}  ·  {tm}  ·  age {age}\n"
                           f"   {H.get('hash', '—')}")
         d = H.get("difficulty") or 0
-        hashes = d * 4294967296                                   # expected hashes = difficulty × 2³²
+        # exact expected work from the compact target — integer math, no float difficulty×2³²
+        try:
+            hashes = work_from_bits(int(H.get("bits", "0"), 16))
+        except (TypeError, ValueError):
+            hashes = 0
         self.q["pow"].setText(
             f"difficulty {d:.3e}\n"
-            f"exp. hashes {hashes:.2e}\n"
+            f"exp. hashes {Decimal(hashes):.6e} (exact from bits)\n"
             f"bits {H.get('bits','—')}\n"
             f"nonce {H.get('nonce','—')}\n"
             f"version 0x{H.get('version',0):08x}\n"
@@ -2615,14 +2802,16 @@ class BlockSciencePanel(QtWidgets.QFrame):
             f"segwit share {100*sw/w if w else 0:.1f}%\n"
             f"inputs {S.get('ins',0):,} · outputs {S.get('outs',0):,}\n"
             f"UTXO Δ {S.get('utxo_increase',0):+,}")
-        sub = S.get("subsidy", 0) / 1e8; fees = S.get("totalfee", 0) / 1e8
+        # economics stay INTEGER SATOSHIS end-to-end; display is exact Decimal at 18 dp
+        # (first 8 decimals = satoshi resolution, tail zeros exact) — no float /1e8 anywhere
+        sub_s = S.get("subsidy", 0) or 0; fee_s = S.get("totalfee", 0) or 0
         self.q["econ"].setText(
-            f"subsidy {sub:g} BTC\n"
-            f"fees {fees:.8f} BTC\n"
-            f"reward {sub+fees:.8f} BTC\n"
+            f"subsidy {btc18(sub_s)} BTC\n"
+            f"fees {btc18(fee_s)} BTC\n"
+            f"reward {btc18(sub_s + fee_s)} BTC\n"
             f"avg feerate {S.get('avgfeerate',0)} sat/vB\n"
             f"avg fee {S.get('avgfee',0):,} sat\n"
-            f"total out {S.get('total_out',0)/1e8:,.2f} BTC")
+            f"total out {btc18(S.get('total_out', 0))} BTC")
         self.fullbar.setValue(min(4_000_000, int(w)))
         pct = S.get("feerate_percentiles") or []
         if len(pct) == 5:
@@ -2763,7 +2952,7 @@ class OracleTab(QtWidgets.QWidget):
             line += f"  ·  mined {btime}Z"
             if hsh: line += f"  ·  {hsh[:20]}…"
             if lvl == "Scientific" and iv and b.get("nTx"):
-                line += f"  ·  {b['nTx'] / (iv * 60):.2f} tx/s"    # derived: tx throughput this interval
+                line += f"  ·  {dec18(b['nTx'], iv * 60)} tx/s"    # derived: exact Decimal, 18 dp
         self.mlog.appendPlainText(line)
         if lvl == "Scientific" and not seeded:                    # pull economics (fees/feerate) async
             spawn_fn(lambda H=h: self._blockstats(H), lambda st, H=h: self._log_sci(H, st))
@@ -2779,7 +2968,7 @@ class OracleTab(QtWidgets.QWidget):
         fee = st.get("totalfee"); mn, mx = st.get("minfeerate"), st.get("maxfeerate"); med = st.get("medianfeerate")
         vb = st.get("total_weight"); sz = st.get("total_size")
         parts = [f"    ↳ #{height:,} science:"]
-        if fee is not None: parts.append(f"fees {fee/1e8:.4f}₿")
+        if fee is not None: parts.append(f"fees {btc18(fee)}₿")   # exact int-sat → 18 dp (was float .4f)
         if med is not None: parts.append(f"feerate {mn}/{med}/{mx} s/vB")
         if sz is not None: parts.append(f"size {sz/1000:.0f} kB")
         if vb is not None: parts.append(f"weight {vb/1000:.0f} kWU")
@@ -2862,12 +3051,13 @@ class OracleTab(QtWidgets.QWidget):
             rew = sub + s.get("totalfee", 0); fee = s.get("totalfee", 0)
             dbox, df = cardgrid(["bytes / tx", "vbytes (weight/4)", "effective sat/vByte",
                                  "fees % of subsidy", "fees % of reward", "inputs / tx", "outputs / tx"])
-            df["bytes / tx"].setText(f"{s.get('total_size',0)/txs:.1f} B")
-            df["vbytes (weight/4)"].setText(f"{tw/4:,.0f} vB")
-            df["effective sat/vByte"].setText(f"{fee/(tw/4):.3f}")
-            df["fees % of subsidy"].setText(f"{fee/sub*100:.4f}%")
-            df["fees % of reward"].setText(f"{fee/rew*100:.4f}%" if rew else "—")
-            df["inputs / tx"].setText(f"{s.get('ins',0)/txs:.2f}"); df["outputs / tx"].setText(f"{s.get('outs',0)/txs:.2f}")
+            # scientific derived measures: exact Decimal division to 18 dp (never float)
+            df["bytes / tx"].setText(dec18(s.get("total_size", 0), txs, "B"))
+            df["vbytes (weight/4)"].setText(dec18(tw, 4, "vB"))
+            df["effective sat/vByte"].setText(dec18(fee * 4, tw))
+            df["fees % of subsidy"].setText(pct18(fee, sub))
+            df["fees % of reward"].setText(pct18(fee, rew) if rew else "—")
+            df["inputs / tx"].setText(dec18(s.get("ins", 0), txs)); df["outputs / tx"].setText(dec18(s.get("outs", 0), txs))
             lay.addWidget(QtWidgets.QLabel("derived measures (scientific) →")); lay.addWidget(dbox)
             hl = QtWidgets.QLabel("fetching block header…"); hl.setStyleSheet("color:#8aa0b4"); lay.addWidget(hl)
             spawn_fn(lambda: self._blockheader(height), lambda hd: self._sci_header(hd, lay, hl))
@@ -2878,7 +3068,10 @@ class OracleTab(QtWidgets.QWidget):
         f["version"].setText(hex(hd.get("version", 0))); f["bits"].setText(str(hd.get("bits", "—")))
         f["difficulty"].setText(f"{hd.get('difficulty',0):.3e}"); f["nonce"].setText(str(hd.get("nonce", "—")))
         f["merkle root"].setText((hd.get("merkleroot", "") or "")[:20] + "…")
-        f["chainwork"].setText((hd.get("chainwork", "") or "").lstrip("0")[:16] + "…")
+        # chainwork = exact cumulative expected hashes (integer), not just a hex string slice
+        cw = chainwork_int(hd.get("chainwork", ""))
+        f["chainwork"].setText(f"{Decimal(cw):.6e} hashes (exact: …{(hd.get('chainwork','') or '').lstrip('0')[-12:]})"
+                               if cw else (hd.get("chainwork", "") or "—").lstrip("0")[:16] + "…")
         f["header nTx"].setText(f"{hd.get('nTx','—')}")
         lay.addWidget(QtWidgets.QLabel("block header (scientific) →")); lay.addWidget(box)
     def _export(self, fmt):
@@ -2912,7 +3105,7 @@ class OracleTab(QtWidgets.QWidget):
         self._clock()
     def _fill(self, o):
         self._lastupd = _now()
-        mn = lambda s: f"{s/60:.3f} min" if s else "—"
+        mn = lambda s: dec18(s, 60, "min") if s else "—"   # exact Decimal minutes, 18 dp
         self.f["chain height"].setText(f"{o.get('height', 0):,}")
         a = o.get("avgBlockTimeAllTime")
         self.f["avg block time — all-time (from genesis)"].setText(mn(a))
@@ -2923,7 +3116,9 @@ class OracleTab(QtWidgets.QWidget):
         self.f["recommended poll"].setText(f"{rp/1000:.0f}s" if rp else "—")
         g = o.get("genesisTime")
         self.f["genesis"].setText(datetime.fromtimestamp(g, timezone.utc).strftime("%Y-%m-%d") if g else "—")
-        self.mesh.set_headline(mn(a), "average block time · all-time, from genesis")
+        # the mesh graphic keeps a compact headline (it's a display, not the measurement);
+        # the exact 18-dp figure lives in the cards above
+        self.mesh.set_headline(f"{a/60:.3f} min" if a else "—", "average block time · all-time, from genesis")
         self._clock()
     @staticmethod
     def _fmt_bytes(n, per_s=False):
@@ -3270,6 +3465,20 @@ class ControlTab(QtWidgets.QWidget):
         self.airgap.clicked.connect(self._toggle_net); ar.addWidget(self.airgap)
         waas = QtWidgets.QPushButton("Open WaaS"); waas.clicked.connect(lambda: webbrowser.open(WAAS_URL)); ar.addWidget(waas)
         ar.addStretch(); v.addLayout(ar)
+        # -- External tools: EtherApe live wire visualizer (also surfaced in 🧊 ICE) --
+        v.addWidget(QtWidgets.QLabel("<b>🔧 External tools</b> — forensic wire visualizer"))
+        xr = QtWidgets.QHBoxLayout()
+        _ok, _txt = etherape_status()
+        self.eth_status = QtWidgets.QLabel(_txt)
+        self.eth_status.setStyleSheet("color:%s" % ("#16C784" if _ok else "#8aa0b4"))
+        self.eth_status.setToolTip("EtherApe — radial live-traffic visualizer (GTK/libpcap), the display reference "
+                                   "BANKON's Net Map borrows from: node size ∝ traffic, protocol colors.\n"
+                                   "docs/reference/etherape.md")
+        xr.addWidget(self.eth_status, 1)
+        eb = QtWidgets.QPushButton("🕸 EtherApe (port 8333)"); eb.setObjectName("secondary"); eb.setEnabled(_ok)
+        eb.setToolTip("pkexec etherape -f 'port 8333' — live pcap of this node's Bitcoin P2P traffic")
+        eb.clicked.connect(lambda: etherape_launch(self.eth_status.setText)); xr.addWidget(eb)
+        v.addLayout(xr)
         self.status = QtWidgets.QLabel("network state: checking…"); self.status.setStyleSheet("color:#8aa0b4")
         v.addWidget(self.status)
         self._netactive = None
@@ -3322,7 +3531,10 @@ class ControlTab(QtWidgets.QWidget):
         df = (d or {}).get("df") or {}
         if df:
             used = df.get("used", 0) / 1073741824; size = df.get("size", 0) / 1073741824
-            self.f["datadir disk"].setText(f"{used:,.0f} / {size:,.0f} GB ({df.get('pcent','?')}) on {df.get('source','?')}")
+            rw, rwcol = disk_runway(((d or {}).get("components") or {}).get("total"), df.get("avail"))
+            self.f["datadir disk"].setText(
+                f"{used:,.0f} / {size:,.0f} GB ({df.get('pcent','?')}) on {df.get('source','?')}"
+                + (f"   ·   <span style='color:{rwcol};font-weight:700'>{rw}</span>" if rw else ""))
     # ---- admin: node ▶/■ (Console first, direct fallback — client stays admin if Console is down) ----
     def _start(self):
         def work():
@@ -3691,16 +3903,50 @@ class OrdinalsTab(QtWidgets.QWidget):
                                                         f"{self.netbox.currentText()} node running?)")))
 
 
+def etherape_status():
+    """(found: bool, text) — EtherApe is the classic live network visualizer (GTK/libpcap);
+    BANKON documents it as the display reference the Net Map borrows its idioms from."""
+    import shutil as _sh
+    p = _sh.which("etherape")
+    return (True, f"etherape found: {p}") if p else (False, "etherape not installed — sudo apt install etherape")
+
+
+def etherape_launch(status_cb=None):
+    """Launch EtherApe pre-filtered to Bitcoin P2P traffic (port 8333). Live capture needs
+    pcap privileges → pkexec (same escalation pattern as the ICE rfkill wall)."""
+    ok, txt = etherape_status()
+    if not ok:
+        if status_cb: status_cb(txt)
+        return
+    try:
+        # -f = capture filter (BPF). pkexec grants the capture privilege interactively.
+        subprocess.Popen(["pkexec", "etherape", "-f", "port 8333"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        if status_cb: status_cb("EtherApe launching (BPF filter: port 8333) — authorize in the pkexec prompt")
+    except Exception as e:
+        if status_cb: status_cb(f"EtherApe launch failed: {e}")
+
+
 class IceTab(QtWidgets.QWidget):
-    """🧊 ICE — the wall between the network and the wallet. CPU temperature plus the
-    radio (RF) kill switch. AIRGAP severs every RF path (Bluetooth/Wi-Fi/WWAN/NFC).
-    Radio changes need root → via pkexec; the full ICE controller opens separately."""
+    """🧊 ICE — Intrusion Countermeasures Electronics: the wall between the network and the
+    wallet, now with the forensic toolkit. The wall: CPU heat gate + radio kill (AIRGAP severs
+    Bluetooth/Wi-Fi/WWAN/NFC, via pkexec). The toolkit: geo/IP forensics (offline GeoLite2),
+    Net Map cross-links, 18-decimal precision metrics, the exportable/shreddable `.history`
+    connectivity evidence trail, and EtherApe live wire capture.
+    Namesake: ICE, coined by Tom Maddox, popularized by William Gibson — see docs/ice.md."""
     ICE_APP = os.path.expanduser("~/ICE/ice.py")
     RADIOS = [("bluetooth", "Bluetooth"), ("wifi", "Wi-Fi"), ("wwan", "Cellular"), ("nfc", "NFC")]
     def __init__(self):
-        super().__init__(); v = QtWidgets.QVBoxLayout(self)
-        h = QtWidgets.QLabel("🧊 ICE — the wall between the network and the wallet")
+        super().__init__()
+        outer = QtWidgets.QVBoxLayout(self)
+        scroll = QtWidgets.QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        body = QtWidgets.QWidget(); v = QtWidgets.QVBoxLayout(body)
+        scroll.setWidget(body); outer.addWidget(scroll)
+        h = QtWidgets.QLabel("🧊 ICE — Intrusion Countermeasures Electronics")
         h.setStyleSheet("font-weight:700;font-size:15px;color:#00BFFF"); v.addWidget(h)
+        sub = QtWidgets.QLabel('"…ice from ICE, Intrusion Countermeasures Electronics." — W. Gibson, Burning Chrome (1982) · docs/ice.md')
+        sub.setStyleSheet("color:#5a6b7b;font-size:10px"); v.addWidget(sub)
+        # ---- the wall (unchanged behavior): CPU heat + radio kill ----
         self.temp = QtWidgets.QLabel("CPU: — °C"); self.temp.setStyleSheet("font-size:22px;font-weight:700"); v.addWidget(self.temp)
         rl = QtWidgets.QHBoxLayout()
         ag = QtWidgets.QPushButton("🛑 AIRGAP (cut all radios)"); ag.clicked.connect(lambda: self._rfk("block")); rl.addWidget(ag)
@@ -3709,10 +3955,176 @@ class IceTab(QtWidgets.QWidget):
         self.rlabel = QtWidgets.QLabel("radios — …"); self.rlabel.setStyleSheet("font-family:monospace"); v.addWidget(self.rlabel)
         launch = QtWidgets.QPushButton("Open full ICE controller (scaling · auto-cool · persistence · radios)")
         launch.clicked.connect(self._launch); v.addWidget(launch)
-        note = QtWidgets.QLabel("ICE gates CPU heat and the machine's radios. AIRGAP severs every RF path between "
-                                "the network and the wallet. No wallet data is involved.")
+        # ---- forensic toolkit ----
+        self.netmap_link = None                      # wired by Main → jump-to-Net-Map
+        v.addWidget(self._geo_panel())
+        v.addWidget(self._evidence_panel())
+        v.addWidget(self._precision_panel())
+        v.addWidget(self._capture_panel())
+        note = QtWidgets.QLabel("ICE gates CPU heat and the machine's radios; the forensic toolkit works offline "
+                                "(local GeoLite2, local .history). AIRGAP severs every RF path between the network "
+                                "and the wallet. No wallet data is involved.")
         note.setWordWrap(True); note.setStyleSheet("color:#8aa0b4"); v.addWidget(note); v.addStretch(1)
+        self._ni, self._peers = {}, []
         self._t = QtCore.QTimer(self); self._t.timeout.connect(self.refresh); self._t.start(2000)
+    # ---- 🔎 geo/IP forensics ----
+    def _geo_panel(self):
+        fr = QtWidgets.QFrame(); fr.setStyleSheet("QFrame{border:1px solid #0e3d57;border-radius:6px}")
+        fl = QtWidgets.QVBoxLayout(fr)
+        hd = QtWidgets.QLabel("🔎 Geo/IP forensics — offline GeoLite2 (City + ASN)")
+        hd.setStyleSheet("color:#F7931A;font-weight:700;border:0"); fl.addWidget(hd)
+        row = QtWidgets.QHBoxLayout()
+        self.geo_in = QtWidgets.QLineEdit(); self.geo_in.setPlaceholderText("ip[:port] — or pick a connected peer →")
+        self.geo_in.returnPressed.connect(self._geo_lookup); row.addWidget(self.geo_in, 1)
+        self.geo_pick = QtWidgets.QComboBox(); self.geo_pick.setMinimumWidth(190)
+        self.geo_pick.activated.connect(lambda i: (self.geo_in.setText(self.geo_pick.currentText()), self._geo_lookup()))
+        row.addWidget(self.geo_pick)
+        gb = QtWidgets.QPushButton("Lookup"); gb.clicked.connect(self._geo_lookup); row.addWidget(gb)
+        self.geo_map_btn = QtWidgets.QPushButton("◎ show on Net Map"); self.geo_map_btn.setObjectName("secondary")
+        self.geo_map_btn.setEnabled(False)
+        self.geo_map_btn.clicked.connect(self._show_on_map); row.addWidget(self.geo_map_btn)
+        fl.addLayout(row)
+        self.geo_out = QtWidgets.QLabel("—"); self.geo_out.setStyleSheet("font-family:monospace;border:0;color:#d6e3ef")
+        self.geo_out.setWordWrap(True); self.geo_out.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        fl.addWidget(self.geo_out)
+        return fr
+    def _geo_lookup(self):
+        raw = self.geo_in.text().strip()
+        ip = raw.rsplit(":", 1)[0].strip("[]") if raw else ""
+        if not ip:
+            self.geo_out.setText("enter an IP (or pick a peer)"); return
+        g = geolocate(ip); a = asn_lookup(ip) or {}
+        if not g:
+            self.geo_out.setText(f"{ip} — no geolocation (Tor/I2P/unmapped){'' if HAVE_GEOIP else ' · GeoIP DB missing'}")
+            self.geo_map_btn.setEnabled(any(p.get("addr", "").startswith(ip) for p in self._peers))
+            return
+        _nc = nearest_city(g["lat"], g["lon"])
+        city = f"{g['city']} (GeoIP)" if g.get("city") else f"near {_nc[0]} (~{_nc[2]:.0f} km)"
+        my = self._my_latlon()
+        from services.geodesy import haversine_km
+        dist = f"{haversine_km(my[0], my[1], g['lat'], g['lon']):,.0f} km from this node" if my else "node location unknown"
+        self.geo_out.setText(f"{ip}\n{flag(g['iso'])} {g['country']} ({g['iso']}) · {city}\n"
+                             f"lat {g['lat']:.4f} · lon {g['lon']:.4f} · {dist}\n"
+                             f"AS{a.get('asn','?')} {a.get('org','—')}")
+        self.geo_map_btn.setEnabled(any(p.get("addr", "").startswith(ip) for p in self._peers))
+    def _show_on_map(self):
+        raw = self.geo_in.text().strip()
+        addr = next((p.get("addr") for p in self._peers if p.get("addr", "").startswith(raw.rsplit(':', 1)[0])), raw)
+        if self.netmap_link: self.netmap_link(addr)
+    def _my_latlon(self):
+        la = (self._ni or {}).get("localaddresses") or []
+        for a in la:
+            g = geolocate(a.get("address", ""))
+            if g: return g["lat"], g["lon"]
+        for p in self._peers:
+            ip = (p.get("addrlocal") or "").rsplit(":", 1)[0].strip("[]")
+            if ip:
+                g = geolocate(ip)
+                if g: return g["lat"], g["lon"]
+        return None
+    # ---- 📜 connectivity evidence (.history) ----
+    def _evidence_panel(self):
+        fr = QtWidgets.QFrame(); fr.setStyleSheet("QFrame{border:1px solid #0e3d57;border-radius:6px}")
+        fl = QtWidgets.QVBoxLayout(fr)
+        hd = QtWidgets.QHBoxLayout()
+        t = QtWidgets.QLabel("📜 Connectivity evidence — .history (rotates at 1 MB × 5)")
+        t.setStyleSheet("color:#F7931A;font-weight:700;border:0"); hd.addWidget(t, 1)
+        self.ev_size = QtWidgets.QLabel("—"); self.ev_size.setStyleSheet("color:#5a6b7b;border:0"); hd.addWidget(self.ev_size)
+        fl.addLayout(hd)
+        self.ev = QtWidgets.QTableWidget(0, 4)
+        self.ev.setHorizontalHeaderLabels(["time", "kind", "addr / peer", "detail"])
+        self.ev.horizontalHeader().setStretchLastSection(True); self.ev.verticalHeader().setVisible(False)
+        self.ev.setEditTriggers(QtWidgets.QTableWidget.NoEditTriggers); self.ev.setMaximumHeight(230)
+        self.ev.setStyleSheet("font-family:monospace;font-size:11px")
+        fl.addWidget(self.ev)
+        br = QtWidgets.QHBoxLayout()
+        rb = QtWidgets.QPushButton("↻ Refresh"); rb.clicked.connect(self._ev_refresh); br.addWidget(rb)
+        for fmt in ("csv", "json"):
+            b = QtWidgets.QPushButton(f"⬇ Export {fmt.upper()}"); b.setObjectName("secondary")
+            b.clicked.connect(lambda _c, f=fmt: self._ev_export(f)); br.addWidget(b)
+        br.addStretch(1)
+        db = QtWidgets.QPushButton("🗑 Delete"); db.setObjectName("danger")
+        db.setToolTip("Unlink every .history segment"); db.clicked.connect(self._ev_delete); br.addWidget(db)
+        sb = QtWidgets.QPushButton("🔥 Shred"); sb.setObjectName("danger")
+        sb.setToolTip("Secure removal: overwrite then unlink (shred -u when available)")
+        sb.clicked.connect(self._ev_shred); br.addWidget(sb)
+        fl.addLayout(br)
+        self.ev_status = QtWidgets.QLabel(""); self.ev_status.setStyleSheet("color:#8aa0b4;border:0"); fl.addWidget(self.ev_status)
+        return fr
+    def _ev_refresh(self):
+        from services import history_service as H
+        recs = H.read_recent(400)
+        self.ev.setRowCount(len(recs))
+        for r, e in enumerate(recs):
+            cells = [e.get("ts", "")[-14:], e.get("kind", ""), e.get("addr", "") or e.get("peer", "") or "—",
+                     ", ".join(f"{k}={v}" for k, v in e.items() if k not in ("ts", "kind", "addr", "peer"))[:120]]
+            for c, val in enumerate(cells):
+                self.ev.setItem(r, c, QtWidgets.QTableWidgetItem(str(val)))
+        self.ev.resizeColumnsToContents()
+        self.ev_size.setText(f"{H.size_bytes()/1024:.0f} KiB on disk")
+    def _ev_export(self, fmt):
+        from services import history_service as H
+        recs = H.read_recent(5000)
+        if not recs:
+            self.ev_status.setText("nothing to export"); return
+        exp = Path.home() / "bankon-tools" / "exports"
+        exp.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        path = exp / f"bankon-evidence-{stamp}.{fmt}"
+        try:
+            if fmt == "json":
+                path.write_text(json.dumps(recs, indent=2))
+            else:
+                import csv as _csv
+                keys = sorted({k for e in recs for k in e})
+                with open(path, "w", newline="") as fh:
+                    w = _csv.DictWriter(fh, fieldnames=keys); w.writeheader(); w.writerows(recs)
+            self.ev_status.setText(f"✓ exported {len(recs)} records → {path}")
+        except Exception as e:
+            self.ev_status.setText(f"export failed: {e}")
+    def _ev_delete(self):
+        from services import history_service as H
+        if QtWidgets.QMessageBox.question(self, "Delete", "Delete the .history evidence trail?") != QtWidgets.QMessageBox.Yes: return
+        self.ev_status.setText(f"deleted {H.delete()} segment(s)"); self._ev_refresh()
+    def _ev_shred(self):
+        from services import history_service as H
+        if QtWidgets.QMessageBox.question(self, "Shred", "SHRED the .history evidence trail (unrecoverable)?") != QtWidgets.QMessageBox.Yes: return
+        self.ev_status.setText(f"shredded {H.shred()} segment(s)"); self._ev_refresh()
+    # ---- 📐 precision metrics (shared Decimal core with BTC.oracle) ----
+    def _precision_panel(self):
+        fr = QtWidgets.QFrame(); fr.setStyleSheet("QFrame{border:1px solid #0e3d57;border-radius:6px}")
+        fl = QtWidgets.QVBoxLayout(fr)
+        hd = QtWidgets.QLabel("📐 Precision metrics — exact Decimal, 18 dp (same core as BTC.oracle)")
+        hd.setStyleSheet("color:#F7931A;font-weight:700;border:0"); fl.addWidget(hd)
+        self.prec = QtWidgets.QLabel("—"); self.prec.setStyleSheet("font-family:monospace;border:0;color:#d6e3ef")
+        self.prec.setWordWrap(True); fl.addWidget(self.prec)
+        return fr
+    def _fill_precision(self, nt, stale):
+        up = getattr(self, "_uptime_s", None)
+        rin, rout = nt.get("totalbytesrecv", 0), nt.get("totalbytessent", 0)
+        lines = []
+        lines.append(f"total received   {rin:,} B  ({dec18(rin, 1048576)} MiB)")
+        lines.append(f"total sent       {rout:,} B  ({dec18(rout, 1048576)} MiB)")
+        if up:
+            lines.append(f"node uptime      {up:,} s  ({dec18(up, 3600)} h)")
+            lines.append(f"mean rate in     {dec18(rin, up)} B/s")
+            lines.append(f"mean rate out    {dec18(rout, up)} B/s")
+        self.prec.setText("\n".join(lines) + ("   (cached)" if stale else ""))
+    # ---- 🕸 live wire capture ----
+    def _capture_panel(self):
+        fr = QtWidgets.QFrame(); fr.setStyleSheet("QFrame{border:1px solid #0e3d57;border-radius:6px}")
+        fl = QtWidgets.QVBoxLayout(fr)
+        hd = QtWidgets.QLabel("🕸 Live wire capture — EtherApe (display reference: docs/reference/etherape.md)")
+        hd.setStyleSheet("color:#F7931A;font-weight:700;border:0"); fl.addWidget(hd)
+        row = QtWidgets.QHBoxLayout()
+        ok, txt = etherape_status()
+        self.cap_status = QtWidgets.QLabel(txt); self.cap_status.setStyleSheet("border:0;color:%s" % ("#16C784" if ok else "#8aa0b4"))
+        row.addWidget(self.cap_status, 1)
+        lb = QtWidgets.QPushButton("▶ Launch (port 8333 filter)"); lb.setEnabled(ok)
+        lb.setToolTip("pkexec etherape -f 'port 8333' — live pcap of Bitcoin P2P traffic, radial traffic-proportional display")
+        lb.clicked.connect(lambda: etherape_launch(self.cap_status.setText)); row.addWidget(lb)
+        fl.addLayout(row)
+        return fr
     def _cpu_temp(self):
         import glob as _g
         best = None
@@ -3726,6 +4138,15 @@ class IceTab(QtWidgets.QWidget):
         return best
     def refresh(self):
         if not self.isVisible(): return        # no 2s /sys+rfkill probing while the tab is hidden
+        # forensic feeds at a gentler cadence (every 5th tick ≈ 10 s): peers for the picker
+        # + cross-link, nettotals/uptime for the precision strip, evidence table size
+        self._fc = (getattr(self, "_fc", -1) + 1) % 5
+        if self._fc == 0:
+            spawn("getpeerinfo", self._on_peers, timeout=10)
+            spawn("getnetworkinfo", lambda ni, s: setattr(self, "_ni", ni or {}), timeout=8)
+            spawn("getnettotals", self._fill_precision, timeout=8)
+            spawn("uptime", lambda u, s: setattr(self, "_uptime_s", u), timeout=6)
+            self._ev_refresh()
         t = self._cpu_temp()
         if t is not None:
             col = "#f85149" if t >= 85 else "#f0a020" if t >= 70 else "#16C784"
@@ -3740,6 +4161,14 @@ class IceTab(QtWidgets.QWidget):
                 continue
             states.append(f"{label}: {'on' if 'Soft blocked: yes' not in o else 'OFF'}")
         self.rlabel.setText("radios — " + ("   ·   ".join(states) if states else "none present"))
+    def _on_peers(self, peers, stale):
+        self._peers = peers or []
+        cur = self.geo_pick.currentText()
+        self.geo_pick.blockSignals(True); self.geo_pick.clear()
+        self.geo_pick.addItems([p.get("addr", "") for p in self._peers])
+        i = self.geo_pick.findText(cur)
+        if i >= 0: self.geo_pick.setCurrentIndex(i)
+        self.geo_pick.blockSignals(False)
     def _rfk(self, action):
         try:
             subprocess.Popen(["pkexec", "rfkill", action, "all"])
@@ -3752,6 +4181,83 @@ class IceTab(QtWidgets.QWidget):
             self.rlabel.setText("full ICE app not found at ~/ICE/ice.py"); return
         term = _sh.which("x-terminal-emulator") or _sh.which("gnome-terminal") or _sh.which("xterm")
         subprocess.Popen([term, "-e", self.ICE_APP] if term else [self.ICE_APP])
+
+
+# uniform "chip" base for the toolbar heartbeat band — corporate: quiet dark well, rounded,
+# semantic color carried by the text (survives ◐ invert since color is set at runtime)
+CHIP = "padding:2px 8px; border-radius:8px; background:#0d1724; font-weight:600;"
+
+
+class BannerBar(QtWidgets.QFrame):
+    """'₿ the wallet you can BANKON' — now a live control surface, not a static label.
+    DRAGGABLE: grab and drop it above the tabs (top, default) or below them (bottom);
+    the choice persists across sessions. The CORE dynamic control sits immediately to the
+    right of the title text: red = OFF (click to start) · orange = ON (click = graceful
+    stop) · green ring = feeding from a fresh tip."""
+    def __init__(self, main):
+        super().__init__(); self.main = main
+        self.setObjectName("titlebar"); self.setCursor(QtCore.Qt.OpenHandCursor)
+        lay = QtWidgets.QHBoxLayout(self); lay.setContentsMargins(9, 5, 9, 5)
+        lay.addStretch(1)
+        self.text = QtWidgets.QLabel("₿  the wallet you can BANKON")
+        self.text.setObjectName("titletext"); lay.addWidget(self.text)
+        lay.addSpacing(12)
+        self.corebtn = QtWidgets.QPushButton("● CORE"); self.corebtn.setObjectName("corebanner")
+        self.corebtn.setCursor(QtCore.Qt.PointingHandCursor)
+        self.corebtn.clicked.connect(self._core_click)
+        lay.addWidget(self.corebtn)
+        lay.addStretch(1)
+        self.setToolTip("Drag this banner to dock it above the tabs (top) or below them (bottom) — position is remembered")
+        self._press = None; self._core_up = None
+        self.set_core(None, False, "Bitcoin Core state — probing…")
+    def set_core(self, up, feeding, tip):
+        self._core_up = up
+        col = "#8aa0b4" if up is None else ("#F7931A" if up else "#f85149")
+        ring = "#16C784" if feeding else "#2e4a63"
+        self.corebtn.setText("● CORE …" if up is None else ("● CORE ON" if up else "● CORE OFF"))
+        self.corebtn.setStyleSheet(
+            f"QPushButton#corebanner{{background:#0d1724;color:{col};border:2px solid {ring};"
+            f"border-radius:10px;font-weight:800;padding:3px 12px;letter-spacing:1px}}"
+            f"QPushButton#corebanner:hover{{border:2px solid #00BFFF;background:#10202e}}")
+        self.corebtn.setToolTip(tip + "\nclick: " + ("start Bitcoin Core" if up is False else "graceful stop (bitcoin-cli stop)"))
+    def _core_click(self):
+        if self._core_up is None: return
+        sb = self.main.statusBar()
+        if self._core_up:
+            if QtWidgets.QMessageBox.question(self, "Stop Bitcoin Core",
+                                              "Gracefully stop Bitcoin Core?") != QtWidgets.QMessageBox.Yes:
+                return
+            def work():
+                try: return post_json("/api/node/stop", {}, timeout=15)
+                except Exception:
+                    r = subprocess.run([str(Path(BTC_BIN) / "bitcoin-cli"), f"-datadir={DATADIR}", "stop"],
+                                       capture_output=True, text=True, timeout=15)
+                    return {"note": r.stdout.strip() or r.stderr.strip() or "stopping…"}
+            sb.showMessage("Stopping Bitcoin Core (graceful)…", 8000)
+        else:
+            def work():
+                try: return post_json("/api/node/start", {}, timeout=8)
+                except Exception:
+                    subprocess.Popen([str(Path(BTC_BIN) / "bitcoind"), f"-datadir={DATADIR}", "-daemon"],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+                    return {"note": "bitcoind launched directly (Console down)"}
+            sb.showMessage("Starting Bitcoin Core…", 8000)
+        spawn_fn(work, lambda d: sb.showMessage(str((d or {}).get("note") or (d or {}).get("error") or "…"), 8000))
+    # ---- drag-to-dock ----
+    def mousePressEvent(self, e):
+        if e.button() == QtCore.Qt.LeftButton:
+            self._press = e.globalPosition(); self.setCursor(QtCore.Qt.ClosedHandCursor)
+        super().mousePressEvent(e)
+    def mouseReleaseEvent(self, e):
+        self.setCursor(QtCore.Qt.OpenHandCursor)
+        if self._press is None:
+            return super().mouseReleaseEvent(e)
+        moved = (e.globalPosition() - self._press).manhattanLength(); self._press = None
+        if moved >= 18:                                   # a real drag, not a click
+            cw = self.main.centralWidget()
+            mid_y = cw.mapToGlobal(QtCore.QPoint(0, cw.height() // 2)).y()
+            self.main._dock_banner("bottom" if e.globalPosition().y() > mid_y else "top")
+        super().mouseReleaseEvent(e)
 
 
 class Main(QtWidgets.QMainWindow):
@@ -3768,9 +4274,11 @@ class Main(QtWidgets.QMainWindow):
         # Central content inset by a margin; an electric-blue glow renders in that
         # margin = an "auric" shimmer on the outer periphery.
         central = QtWidgets.QWidget(); cl = QtWidgets.QVBoxLayout(central); cl.setContentsMargins(13, 13, 13, 13); cl.setSpacing(8)
-        self.titlebar = QtWidgets.QLabel("₿  the wallet you can BANKON")
-        self.titlebar.setObjectName("titlebar"); self.titlebar.setAlignment(QtCore.Qt.AlignCenter)
+        self.titlebar = BannerBar(self)
         cl.addWidget(self.titlebar); cl.addWidget(self.tabs); self.setCentralWidget(central)
+        self._central_lay = cl
+        if QtCore.QSettings("BANKON", "bankon-qt").value("banner/dock", "top") == "bottom":
+            self._dock_banner("bottom", save=False)
         self._glow = QtWidgets.QGraphicsDropShadowEffect(self)
         self._glow.setColor(QtGui.QColor("#00BFFF")); self._glow.setOffset(0, 0); self._glow.setBlurRadius(22)
         self.tabs.setGraphicsEffect(self._glow)
@@ -3799,6 +4307,8 @@ class Main(QtWidgets.QMainWindow):
                         (self.ice,"🧊 ICE"),(self.con,"RPC Console")]:
             self.tabs.addTab(w, name)
         self.tabs.currentChanged.connect(self.do_refresh)
+        # ICE forensics → Net Map cross-link: jump to the map with the peer selected
+        self.ice.netmap_link = self._show_peer_on_map
 
         bar = self.addToolBar("main")
         ref = QtWidgets.QPushButton("↻ Refresh"); ref.clicked.connect(self.do_refresh); bar.addWidget(ref)
@@ -3814,20 +4324,26 @@ class Main(QtWidgets.QMainWindow):
         self.inv_chk.setToolTip("Polarity inversion ('reverse video'): invert the entire window's theme.\n"
                                 "Computed from the dark palette — see docs/design.md → Polarity inversion.")
         self.inv_chk.toggled.connect(self._toggle_invert); bar.addWidget(self.inv_chk)
-        self.status_lbl = QtWidgets.QLabel("  ● checking…"); bar.addWidget(self.status_lbl)
+        self.status_lbl = QtWidgets.QLabel("  ● checking…"); self.status_lbl.setStyleSheet("color:#8aa0b4; " + CHIP); bar.addWidget(self.status_lbl)
         self.core_lbl = QtWidgets.QLabel(" ● CORE"); bar.addWidget(self.core_lbl)
         self.core_lbl.setToolTip("Bitcoin Core monitor — orange ON · red OFF · green ring = connecting/feeding")
         self._core_base = "padding:1px 7px; border-radius:7px; font-weight:800; border:2px solid transparent;"
         self.core_lbl.setStyleSheet("color:#f85149; " + self._core_base)
-        self.refresh_lbl = QtWidgets.QLabel("  ↻ —"); self.refresh_lbl.setStyleSheet("color:#0AC18E"); bar.addWidget(self.refresh_lbl)
+        self.refresh_lbl = QtWidgets.QLabel("  ↻ —"); self.refresh_lbl.setStyleSheet("color:#0AC18E; " + CHIP); bar.addWidget(self.refresh_lbl)
         spacer = QtWidgets.QWidget(); spacer.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred); bar.addWidget(spacer)
         waas_btn = QtWidgets.QPushButton("+ Create Wallet (WaaS)"); waas_btn.setObjectName("waas")
         waas_btn.setToolTip(WAAS_URL); waas_btn.clicked.connect(lambda: webbrowser.open(WAAS_URL)); bar.addWidget(waas_btn)
 
-        self.zmq_lbl = QtWidgets.QLabel("  ⚡ zmq —"); self.zmq_lbl.setStyleSheet("color:#5a6b7b")
+        # bandwidth evidence chip: live in/out KB/s (comparison) + session totals since node
+        # start (getnettotals) + uptime — sampled into the .history evidence trail (~1/min)
+        self.net_lbl = QtWidgets.QLabel("  ⇅ —"); self.net_lbl.setStyleSheet("color:#8aa0b4; font-family:'DejaVu Sans Mono',monospace; " + CHIP)
+        self.net_lbl.setToolTip("Bandwidth evidence — ▼ in / ▲ out live KB/s · Σ session totals since node start · uptime.\n"
+                                "Sampled to ~/.bankon/.history (1 MB rotation) — delete/shred any time in 🧊 ICE.")
+        bar.addWidget(self.net_lbl)
+        self.zmq_lbl = QtWidgets.QLabel("  ⚡ zmq —"); self.zmq_lbl.setStyleSheet("color:#5a6b7b; " + CHIP)
         self.zmq_lbl.setToolTip("ZMQ push — real-time block events from bitcoind (no polling)")
         bar.addWidget(self.zmq_lbl)
-        self.sys_lbl = QtWidgets.QLabel("  🖥 —"); self.sys_lbl.setStyleSheet("color:#8aa0b4")
+        self.sys_lbl = QtWidgets.QLabel("  🖥 —"); self.sys_lbl.setStyleSheet("color:#8aa0b4; " + CHIP)
         self.sys_lbl.setToolTip("Host CPU usage · temperature · memory"); bar.addWidget(self.sys_lbl)
         bar.addWidget(QtWidgets.QLabel(" ⏸@"))
         self.pausetemp = QtWidgets.QSpinBox(); self.pausetemp.setRange(80, 110); self.pausetemp.setValue(99); self.pausetemp.setSuffix("°C")
@@ -3841,6 +4357,8 @@ class Main(QtWidgets.QMainWindow):
         self.timer = QtCore.QTimer(); self.timer.timeout.connect(self.do_refresh)
         self.health = QtCore.QTimer(); self.health.timeout.connect(self.poll_health); self.health.start(12000)  # gentle
         self.systimer = QtCore.QTimer(); self.systimer.timeout.connect(self.poll_sys); self.systimer.start(5000); self.poll_sys()
+        self._nt_prev = None; self._nt_hist_ts = 0.0; self._uptime_s = None
+        self.nettimer = QtCore.QTimer(); self.nettimer.timeout.connect(self.poll_net); self.nettimer.start(5000); self.poll_net()
         self.coretimer = QtCore.QTimer(); self.coretimer.timeout.connect(self.poll_coremon); self.coretimer.start(5000); self.poll_coremon()
         self.logt = QtCore.QTimer(); self.logt.timeout.connect(lambda: self.node.load_log() if self.current() is self.node else None); self.logt.start(6000)
         # ZMQ push: refresh on each new block (event-driven) — the rate timer is now a fallback heartbeat.
@@ -3870,15 +4388,15 @@ class Main(QtWidgets.QMainWindow):
             self.geo.deleteLater(); self.geo = None
     def on_zmq_block(self, block_hash, seq):
         # push-driven refresh — a new block connected; update the active tab + stamp.
-        self.zmq_lbl.setText(f"  ⚡ zmq ● block {block_hash[:10]}…"); self.zmq_lbl.setStyleSheet("color:#16C784")
+        self.zmq_lbl.setText(f"  ⚡ zmq ● block {block_hash[:10]}…"); self.zmq_lbl.setStyleSheet("color:#16C784; " + CHIP)
         self.do_refresh()
     def on_zmq_status(self, ok, msg):
         self.zmq_lbl.setText(f"  ⚡ zmq {'●' if ok else '○'} {msg}")
-        self.zmq_lbl.setStyleSheet("color:%s" % ("#16C784" if ok else "#5a6b7b"))
+        self.zmq_lbl.setStyleSheet(("color:%s; " % ("#16C784" if ok else "#5a6b7b")) + CHIP)
     def closeEvent(self, e):
         # Clean kill (X button): stop every timer → no new work; stop the ZMQ thread; join live
         # worker threads. Deterministic teardown — nothing left running, nothing to clean up later.
-        for name in ("timer", "health", "systimer", "coretimer", "logt"):
+        for name in ("timer", "health", "systimer", "coretimer", "logt", "nettimer"):
             try: getattr(self, name).stop()
             except Exception: pass
         for t in self.findChildren(QtCore.QTimer):    # child-widget timers (map pulse, globe spin, oracle throb)
@@ -3903,30 +4421,98 @@ class Main(QtWidgets.QMainWindow):
         self._hb = True
         def ok(b, s):
             self._hb = False
-            self.status_lbl.setText(f"  ● node :8332 · block {b:,}" + (" (cached)" if s else "")); self.status_lbl.setStyleSheet("color:#0AC18E")
+            self.status_lbl.setText(f"  ● node :8332 · block {b:,}" + (" (cached)" if s else "")); self.status_lbl.setStyleSheet("color:#0AC18E; " + CHIP)
         def bad(e):
             self._hb = False
             if "refus" in e.lower() or "connect" in e.lower():
-                self.status_lbl.setText("  ● node stopped"); self.status_lbl.setStyleSheet("color:#f85149")
+                self.status_lbl.setText("  ● node stopped"); self.status_lbl.setStyleSheet("color:#f85149; " + CHIP)
             elif "-28" in e or "warm" in e.lower() or "load" in e.lower():
-                self.status_lbl.setText("  ● node booting…"); self.status_lbl.setStyleSheet("color:#F7931A")
+                self.status_lbl.setText("  ● node booting…"); self.status_lbl.setStyleSheet("color:#F7931A; " + CHIP)
             else:
-                self.status_lbl.setText("  ● node validating…"); self.status_lbl.setStyleSheet("color:#F7931A")
+                self.status_lbl.setText("  ● node validating…"); self.status_lbl.setStyleSheet("color:#F7931A; " + CHIP)
         spawn("getblockcount", ok, bad, timeout=6)
     def poll_coremon(self):
-        spawn_fn(lambda: fetch_json("/api/coremon"), self._coremon)
+        # Console down ≠ Core down: fall back to a direct loopback probe of :8332 so the
+        # banner CORE control stays live-and-clickable even with no Console running
+        def probe():
+            try:
+                return fetch_json("/api/coremon")
+            except Exception:
+                s = socket.socket(); s.settimeout(1.5)
+                up = s.connect_ex(("127.0.0.1", 8332)) == 0
+                s.close()
+                return {"up": up, "direct": True}
+        spawn_fn(probe, self._coremon)
     def _coremon(self, d):
         d = d or {}
         if not d.get("up"):
             self.core_lbl.setText(" ● CORE OFF"); self.core_lbl.setStyleSheet("color:#f85149; " + self._core_base)
-            self.core_lbl.setToolTip("Bitcoin Core not reachable on :" + str(d.get("port", "8332")))
+            tip = "Bitcoin Core not reachable on :" + str(d.get("port", "8332"))
+            self.core_lbl.setToolTip(tip)
+            self.titlebar.set_core(False, False, tip)
         elif d.get("feeding"):
             self.core_lbl.setText(" ● CORE ON")   # orange ON + green surround = feeding from connect
             self.core_lbl.setStyleSheet("color:#F7931A; padding:1px 7px; border-radius:7px; font-weight:800; border:2px solid #16C784;")
-            self.core_lbl.setToolTip(f"Bitcoin Core ON · feeding from connect (block {d.get('height')}, tip {d.get('logAgeSec')}s ago)")
+            tip = f"Bitcoin Core ON · feeding from connect (block {d.get('height')}, tip {d.get('logAgeSec')}s ago)"
+            self.core_lbl.setToolTip(tip)
+            self.titlebar.set_core(True, True, tip)
         else:
             self.core_lbl.setText(" ● CORE ON"); self.core_lbl.setStyleSheet("color:#F7931A; " + self._core_base)
-            self.core_lbl.setToolTip(f"Bitcoin Core ON (block {d.get('height') or '?'})")
+            tip = f"Bitcoin Core ON (block {d.get('height') or '?'})"
+            self.core_lbl.setToolTip(tip)
+            self.titlebar.set_core(True, False, tip)
+    def _dock_banner(self, where, save=True):
+        """Reinsert the banner at the top (above tabs) or bottom (below tabs) of the window."""
+        cl = self._central_lay
+        cl.removeWidget(self.titlebar)
+        cl.insertWidget(0 if where == "top" else cl.count(), self.titlebar)
+        if save:
+            QtCore.QSettings("BANKON", "bankon-qt").setValue("banner/dock", where)
+            self.statusBar().showMessage(f"banner docked {where}", 4000)
+    def _show_peer_on_map(self, addr):
+        self.tabs.setCurrentWidget(self.map)
+        self.map.select_addr(addr)
+    def poll_net(self):
+        spawn("getnettotals", self._nettotals, timeout=8)
+        if self._uptime_s is None or int(time.time()) % 60 < 5:
+            spawn("uptime", lambda u, s: setattr(self, "_uptime_s", u), timeout=6)
+    @staticmethod
+    def _gb(n): return f"{n/1073741824:.2f} GiB" if n >= 1073741824 else f"{n/1048576:.0f} MiB"
+    def _nettotals(self, nt, stale):
+        rin, rout = nt.get("totalbytesrecv", 0), nt.get("totalbytessent", 0)
+        tms = nt.get("timemillis", 0)
+        kin = kout = None
+        if self._nt_prev:
+            p_in, p_out, p_t = self._nt_prev
+            dt = max(0.001, (tms - p_t) / 1000.0)
+            if tms > p_t and rin >= p_in:                      # node restart resets totals — skip that delta
+                kin, kout = (rin - p_in) / dt / 1024.0, (rout - p_out) / dt / 1024.0
+        self._nt_prev = (rin, rout, tms)
+        up = self._uptime_s
+        uptxt = (f"up {up//3600}h{(up%3600)//60:02d}" if up and up >= 3600 else (f"up {up//60}m" if up else ""))
+        live = (f"▼{kin:,.1f} ▲{kout:,.1f} KB/s · " if kin is not None else "")
+        self.net_lbl.setText(f"  ⇅ {live}Σ {self._gb(rin)}/{self._gb(rout)}" + (f" · {uptxt}" if uptxt else "")
+                             + (" (cached)" if stale else ""))
+        self.net_lbl.setStyleSheet(("color:%s; font-family:'DejaVu Sans Mono',monospace; " % ("#16C784" if (kin or 0) + (kout or 0) > 0.5 else "#8aa0b4")) + CHIP)
+        # evidence trail: one bandwidth sample a minute into .history (self-pruning, shreddable)
+        if time.time() - self._nt_hist_ts > 60 and kin is not None:
+            self._nt_hist_ts = time.time()
+            from services import history_service as H
+            H.append("net", inKBs=round(kin, 2), outKBs=round(kout, 2),
+                     totalInB=rin, totalOutB=rout, uptimeS=up)
+            spawn_fn(lambda: fetch_json("/api/netactivity?n=30"), self._hist_events)
+    def _hist_events(self, d):
+        """Connect/disconnect/inbound events from the node log → .history (deduped)."""
+        from services import history_service as H
+        seen = getattr(self, "_ev_seen", None)
+        if seen is None: seen = self._ev_seen = set()
+        for e in (d or {}).get("events", []):
+            k = (e.get("time"), e.get("kind"), e.get("addr") or e.get("peer"))
+            if k in seen or e.get("kind") not in ("connected", "disconnect", "failed", "inbound"): continue
+            seen.add(k)
+            H.append(e.get("kind"), addr=e.get("addr") or "", peer=e.get("peer") or "",
+                     at=e.get("time") or "", text=(e.get("text") or "").strip()[:90])
+        if len(seen) > 4000: self._ev_seen = set(list(seen)[-2000:])
     def poll_sys(self):
         spawn_fn(lambda: fetch_json("/api/system"), self._sys)
     def _sys(self, d):
@@ -3943,7 +4529,7 @@ class Main(QtWidgets.QMainWindow):
         if t is not None: parts.append(f"🌡 {t}°C{sev}")
         if mem is not None: parts.append(f"mem {mem}%")
         self.sys_lbl.setText("  " + " · ".join(parts))
-        self.sys_lbl.setStyleSheet(f"color:{col}; font-weight:{weight}")
+        self.sys_lbl.setStyleSheet(f"color:{col}; font-weight:{weight}; " + CHIP)
         # thermal protection: at/above the chosen temp, pause the pruned node to cool down
         thr = self.pausetemp.value()
         if t is not None and t >= thr and not self._thermal_paused:
@@ -3966,13 +4552,18 @@ class Main(QtWidgets.QMainWindow):
 # Multi-chain accent palette (matches the web UIs): Bitcoin orange (primary),
 # Polygon purple, Ethereum blue, Cash green (success), Cardano blue (hover), Solana royal.
 QSS = """
+  /* typography root: DejaVu everywhere (verified installed; no Inter/JetBrains on host),
+     Noto Sans CJK as the wide-glyph fallback. Monospace surfaces name their stack below. */
+  * { font-family:"DejaVu Sans","Noto Sans CJK SC","FreeSans",sans-serif; }
   QMainWindow { background:#06090e; }
-  /* BANKON corporate blue-grey title banner (hint of blue) */
-  QLabel#titlebar {
+  /* BANKON corporate blue-grey title banner (hint of blue) — now a draggable QFrame
+     carrying the title text + the CORE dynamic control */
+  QFrame#titlebar {
     background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #3b4b5d, stop:1 #28384a);
-    color:#e8eef5; font-size:15px; font-weight:800; letter-spacing:2px;
-    border:1px solid #2e4a63; border-bottom:2px solid #00BFFF; border-radius:8px; padding:9px;
+    border:1px solid #2e4a63; border-bottom:2px solid #00BFFF; border-radius:8px;
   }
+  QLabel#titletext { background:transparent; border:0; color:#e8eef5;
+    font-size:15px; font-weight:800; letter-spacing:2px; padding:4px; }
   /* BTC.oracle — enhanced Bitcoin-orange outline */
   QFrame#oracleframe { border:2px solid #F7931A; border-radius:12px; background:#06090e; }
   /* 🔬 Block science quadrant — electric-blue outline (the oracle's accuracy panel) */
@@ -4000,9 +4591,14 @@ QSS = """
   /* secondary — Polygon purple (chain-accent token) */
   QPushButton#secondary { background:qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #9F6BFF, stop:1 #6C2BD9); color:#fff; border:2px solid #3a1c78; font-weight:700; }
   QPushButton#secondary:hover { background:qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #B98BFF, stop:1 #8247E5); border:2px solid #C4A2FF; }
-  QTabBar::tab { background:#10161f; color:#8aa0b4; padding:6px 14px; border:1px solid #0e2738; border-bottom:0; margin-right:1px; }
-  QTabBar::tab:selected { color:#eef3f8; background:#13202c; border-bottom:2px solid #00BFFF; }
-  QTabBar::tab:hover { color:#7DF9FF; }
+  QTabBar::tab { background:#10161f; color:#8aa0b4; padding:7px 16px; letter-spacing:0.5px;
+    border:1px solid #0e2738; border-bottom:0; border-top-left-radius:5px; border-top-right-radius:5px; margin-right:1px; }
+  QTabBar::tab:selected { color:#eef3f8; font-weight:600;
+    background:qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #1a2c3c, stop:1 #13202c);
+    border-bottom:2px solid #00BFFF; }
+  QTabBar::tab:hover { color:#7DF9FF; background:#14202d; }
+  /* named monospace stack for every inline font-family:monospace site (inheritance) */
+  QPlainTextEdit, QTableWidget, QTreeWidget { font-family:"DejaVu Sans Mono","Liberation Mono",monospace; }
   QProgressBar { border:1px solid #0e3d57; border-radius:6px; text-align:center; background:#070d14; color:#eef3f8; }
   QProgressBar::chunk { background:qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #F7931A, stop:1 #00BFFF); border-radius:5px; }
   QComboBox, QLineEdit { background:#0a121b; border:1px solid #14405c; border-radius:6px; padding:4px 7px; color:#eef3f8; selection-background-color:#00BFFF; selection-color:#001018; }
@@ -4034,6 +4630,8 @@ def invert_qss(qss):
 QSS_INVERTED = None   # computed lazily on first toggle (startup stays instant)
 
 if __name__ == "__main__":
-    app = QtWidgets.QApplication(sys.argv); app.setStyle("Fusion"); app.setStyleSheet(QSS)
+    app = QtWidgets.QApplication(sys.argv); app.setStyle("Fusion")
+    app.setFont(QtGui.QFont("DejaVu Sans", 10))          # crisp verified-installed face (no Inter/JetBrains on host)
+    app.setStyleSheet(QSS)
     app.aboutToQuit.connect(shutdown_workers)   # wait for live threads → clean exit
     w = Main(); w.show(); sys.exit(app.exec())
