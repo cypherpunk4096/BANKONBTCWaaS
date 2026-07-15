@@ -45,14 +45,14 @@ def _rpc_console(method, params, timeout):
         return json.loads(_read_capped(r))
 
 
-def _rpc_node(method, params, timeout):
+def _rpc_node(method, params, timeout, url=None, cookie=None):
     """Direct to the node (fallback if the Console isn't running)."""
     try:
-        cred = Path(COOKIE).read_text().strip()
+        cred = Path(cookie or COOKIE).read_text().strip()
     except Exception:
         cred = f"{os.environ.get('RPC_USER','bitcoinrpc')}:{os.environ.get('RPC_PASS','')}"
     body = json.dumps({"jsonrpc": "1.0", "id": "bankonqt", "method": method, "params": params or []}).encode()
-    req = urllib.request.Request(RPC_URL, data=body, headers={
+    req = urllib.request.Request(url or RPC_URL, data=body, headers={
         "Content-Type": "application/json",
         "Authorization": "Basic " + base64.b64encode(cred.encode()).decode()})
     with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -60,6 +60,14 @@ def _rpc_node(method, params, timeout):
     if out.get("error"):
         raise RuntimeError(out["error"]["message"])
     return out["result"]
+
+
+def rpc_direct(method, params=None, timeout=8, url=None, cookie=None):
+    """Query a SPECIFIC node directly, bypassing the Console cache entirely — the
+    multi-node/multi-source leg of the oracle's anti-clockblock cross-check."""
+    if url is not None and not _loopback(url):
+        raise ValueError("rpc_direct is loopback-only (node credentials ride plain HTTP)")
+    return _rpc_node(method, params, timeout, url=url, cookie=cookie)
 
 
 def rpc(method, params=None, timeout=20):

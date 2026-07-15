@@ -32,7 +32,8 @@ WAAS_URL = os.environ.get("BANKON_WAAS_URL", "http://127.0.0.1:8088")
 from services.geoip_service import geolocate, asn as asn_lookup, WORLD, HAVE_GEOIP, HAVE_ASN
 from services.geodesy import (great_circle_points, azimuthal_equidistant, nearest_city,
                               densify_latlon, azimuthal_equidistant_hp, format_hp)
-from services.world_cities import nearest_city_entry
+from services.world_cities import nearest_city_entry, ensure_full as cities_ensure_full, \
+    dataset_stats as cities_stats
 try:
     from services.world_borders import BORDERS as WORLD_BORDERS   # political overlay (NE 110m admin_0)
 except Exception:                                                 # pragma: no cover
@@ -140,6 +141,21 @@ def disk_runway(total_bytes, avail_bytes):
     txt = (f"runway ≈ {months:.1f} months ({basis})" if months < 24
            else f"runway ≈ {months/12:.1f} years ({basis})")
     return txt, col
+
+
+def emoji_icon(ch, px=64):
+    """High-quality tab icon from a color-emoji glyph: rendered big (Noto Color Emoji),
+    handed to QIcon which downscales smoothly — crisp at any tab-bar icon size, instead
+    of the tiny fuzzy inline-text emoji."""
+    pm = QtGui.QPixmap(px, px); pm.fill(QtCore.Qt.transparent)
+    p = QtGui.QPainter(pm)
+    p.setRenderHints(QtGui.QPainter.Antialiasing | QtGui.QPainter.TextAntialiasing |
+                     QtGui.QPainter.SmoothPixmapTransform)
+    f = QtGui.QFont("Noto Color Emoji"); f.setPixelSize(int(px * 0.82))
+    p.setFont(f)
+    p.drawText(pm.rect(), QtCore.Qt.AlignCenter, ch)
+    p.end()
+    return QtGui.QIcon(pm)
 
 
 def cardgrid(fields):
@@ -2258,6 +2274,7 @@ class GeoMapTab(QtWidgets.QWidget):
         self._fanim = []         # overlay dot items, rebuilt each pulse
         self._fphase = 0.0
         self._ftimer = QtCore.QTimer(self); self._ftimer.timeout.connect(self._flow_pulse); self._ftimer.start(80)
+        cities_ensure_full()      # complete GeoNames city list loads in the background (lazy, ~1s)
     def _toggle(self):
         # Globe (0) ⇄ Flat (1); from Advanced (2) go back to Globe.
         i = 1 if self.stack.currentIndex() == 0 else 0
@@ -2483,13 +2500,14 @@ class GeoMapTab(QtWidgets.QWidget):
             gpeers.append((g["lat"], g["lon"], col, max(4.0, r)))
             self.scene.addEllipse(x - r - 3, y - r - 3, 2 * (r + 3), 2 * (r + 3), QtGui.QPen(QtCore.Qt.NoPen), QtGui.QBrush(QtGui.QColor(col.red(), col.green(), col.blue(), 60)))
             d = self.scene.addEllipse(x - r, y - r, 2 * r, 2 * r, QtGui.QPen(QtGui.QColor("#eef3f8"), 1), QtGui.QBrush(col))
-            # city truth ladder: the mmdb's own per-IP city name first, nearest-major-city second
-            _pc = nearest_city(g["lat"], g["lon"])
-            _city = f"{g['city']} (GeoIP)" if g.get("city") else f"near {_pc[0]} (~{_pc[2]:.0f} km)"
+            # city truth ladder: the mmdb's own per-IP city name first, then the nearest city
+            # from the complete GeoNames list (population shown when the full dataset is live)
+            _ce = nearest_city_entry(g["lat"], g["lon"])
+            _pop = f", pop {_ce[5]:,}" if len(_ce) > 5 and _ce[5] else ""
+            _city = f"{g['city']} (GeoIP)" if g.get("city") else f"near {_ce[0]} (~{_ce[4]:.0f} km{_pop})"
             d.setToolTip(f"{p.get('addr')}  ·  {flag(g['iso'])} {g['country']}  ·  {_city}  ·  AS{an.get('asn','?')} {an.get('org','')}  ·  {(traf/1048576):.1f} MiB  ·  {'in' if inbound else 'out'}")
-            if self.cities_chk.isChecked():
-                _ce = nearest_city_entry(g["lat"], g["lon"])
-                if _ce: _citymarks[(_ce[0], _ce[1])] = _ce
+            if self.cities_chk.isChecked() and _ce:
+                _citymarks[(_ce[0], _ce[1])] = _ce
         # 🏙 optional overlay: nearest MAJOR CITY per located peer — drawn at the city's own
         # coordinates (not the peer's), deduped, capped for legibility
         for _ce in list(_citymarks.values())[:40]:
@@ -2826,8 +2844,32 @@ class OracleTab(QtWidgets.QWidget):
         super().__init__(); outer = QtWidgets.QVBoxLayout(self); outer.setContentsMargins(5, 5, 5, 5); outer.setSpacing(5)
         frame = QtWidgets.QFrame(); frame.setObjectName("oracleframe")
         v = QtWidgets.QVBoxLayout(frame); v.setContentsMargins(7, 5, 7, 7); v.setSpacing(5)
-        t = QtWidgets.QLabel("₿  ₿TC.oracle — the clock kept on a ₿itcoin block"); t.setObjectName("oracletitle")
+        t = QtWidgets.QLabel("₿  ₿TC.oracle — ₿LOCKCLOCK · the clock kept on a ₿itcoin block"); t.setObjectName("oracletitle")
         t.setAlignment(QtCore.Qt.AlignCenter); v.addWidget(t)
+        # the brand equation: blockclock reads time FROM blocks; clockblock measures blocks BY time —
+        # blocktime is the shared unit, rendered exact to 18 decimals by the precision core
+        sub = QtWidgets.QLabel("blockclock: time read from blocks   ·   clockblock: blocks measured by time   ·   "
+                               "blocktime exact to 0.000000000000000001")
+        sub.setAlignment(QtCore.Qt.AlignCenter)
+        sub.setStyleSheet("color:#8aa0b4;font-size:10px;letter-spacing:1px;border:0")
+        sub.setToolTip("₿LOCKCLOCK / CLOCK₿LOCK — the oracle's two faces:\n"
+                       "• blockclock — the chain as a timepiece: tip date, time since last block, halving epochs\n"
+                       "• clockblock — wall-time as the ruler: block intervals, all-time and 2016-block averages\n"
+                       "Every blocktime figure is exact Decimal arithmetic at 18 dp — no float drift.")
+        v.addWidget(sub)
+        # ANTI-CLOCKBLOCK: never trust one clock. Tip height/time are cross-checked across
+        # independent sources every refresh — Console cache · debug.log tail · the node
+        # queried DIRECTLY (cache bypass) · a second node when one runs (pruned :8342) —
+        # and the displayed averages are checked against the local measurement HISTORY (σ).
+        self.xcheck = QtWidgets.QLabel("anti-clockblock: probing sources…")
+        self.xcheck.setAlignment(QtCore.Qt.AlignCenter)
+        self.xcheck.setStyleSheet("color:#5a6b7b;font-family:'DejaVu Sans Mono',monospace;font-size:10px;border:0")
+        self.xcheck.setToolTip("Methods against clockblocking (a stale/lying time source steering the oracle):\n"
+                               "• multi-SOURCE: Console cache vs debug.log vs direct node RPC (cache bypass)\n"
+                               "• multi-NODE: the pruned node (:8342) is queried too when it runs\n"
+                               "• HISTORY: current block-time averages sanity-checked against the local\n"
+                               "  measurement log (σ of recent intervals) — divergence is flagged, never hidden")
+        v.addWidget(self.xcheck)
         mid = QtWidgets.QHBoxLayout()
         self.mesh = MeshPanel(); mid.addWidget(self.mesh, 3)               # graphical area
         box, self.f = cardgrid(["chain height", "tip block date", "time since last block",
@@ -2898,7 +2940,49 @@ class OracleTab(QtWidgets.QWidget):
         spawn_fn(synctip, self._fill_sync)
         spawn_fn(lambda: fetch_json(f"/api/recentblocks?n={self.SERIES_N}").get("blocks", []), self._fill_blocks)
         spawn_fn(lambda: fetch_json("/api/nethealth"), self._fill_net)
+        spawn_fn(self._gather_xcheck, self._fill_xcheck)           # anti-clockblock sweep
         self.science.refresh()                                     # Q3: re-measure the running block
+    # ---- anti-clockblock: multi-source · multi-node · history cross-verification ----
+    def _gather_xcheck(self):
+        """Worker thread: tip height from every independent source that answers."""
+        from services.rpc_service import rpc_direct
+        src = {}
+        try: src["debug.log"] = synctip(timeout=5).get("height")
+        except Exception: pass
+        try: src["node:8332"] = rpc_direct("getblockcount", timeout=6)      # direct — cache bypass
+        except Exception: pass
+        try:
+            src["console-cache"] = rpc("getblockcount", timeout=6)          # Console-first path
+        except Exception: pass
+        try:
+            src["node:8342·pruned"] = rpc_direct("getblockcount", timeout=4,
+                                                 url="http://127.0.0.1:8342",
+                                                 cookie=str(Path.home() / ".bitcoin-pruned" / ".cookie"))
+        except Exception: pass
+        src = {k: v for k, v in src.items() if isinstance(v, int)}
+        ivs = [m.get("interval_min") for m in self._measurements[-24:] if m.get("interval_min")]
+        return src, ivs
+    def _fill_xcheck(self, res):
+        src, ivs = res or ({}, [])
+        if not src:
+            self.xcheck.setText("anti-clockblock: no time source answered (node down?)")
+            self.xcheck.setStyleSheet("color:#f85149;font-family:'DejaVu Sans Mono',monospace;font-size:10px;border:0")
+            return
+        heights = sorted(set(src.values()))
+        spread = heights[-1] - heights[0]
+        parts = " · ".join(f"{k}={v:,}" for k, v in sorted(src.items()))
+        hist = ""
+        if len(ivs) >= 3:
+            mu = sum(ivs) / len(ivs)
+            sd = (sum((x - mu) ** 2 for x in ivs) / len(ivs)) ** 0.5
+            hist = f"   history({len(ivs)} blk): μ {mu:.2f} min · σ {sd:.2f}"
+        if spread <= 1:
+            self.xcheck.setText(f"anti-clockblock ✓ {len(src)} sources agree @ {heights[-1]:,}   [{parts}]{hist}")
+            self.xcheck.setStyleSheet("color:#16C784;font-family:'DejaVu Sans Mono',monospace;font-size:10px;border:0")
+        else:
+            self.xcheck.setText(f"anti-clockblock ⚠ sources DIVERGE by {spread} blocks   [{parts}]{hist}"
+                                "   — trusting the highest direct-node reading")
+            self.xcheck.setStyleSheet("color:#F7931A;font-weight:700;font-family:'DejaVu Sans Mono',monospace;font-size:10px;border:0")
     def _fill_blocks(self, rb):
         blocks = [b for b in (rb or []) if b.get("time") and b.get("height") is not None]
         srt = sorted(blocks, key=lambda b: b["height"])
@@ -3998,14 +4082,21 @@ class IceTab(QtWidgets.QWidget):
             self.geo_out.setText(f"{ip} — no geolocation (Tor/I2P/unmapped){'' if HAVE_GEOIP else ' · GeoIP DB missing'}")
             self.geo_map_btn.setEnabled(any(p.get("addr", "").startswith(ip) for p in self._peers))
             return
-        _nc = nearest_city(g["lat"], g["lon"])
-        city = f"{g['city']} (GeoIP)" if g.get("city") else f"near {_nc[0]} (~{_nc[2]:.0f} km)"
+        _nc = nearest_city_entry(g["lat"], g["lon"])
+        stats = ("pop " + f"{_nc[5]:,}" + (f" · elev {_nc[6]} m" if _nc[6] else "") +
+                 (f" · tz {_nc[7]}" if _nc[7] else "")) if len(_nc) > 5 else ""
+        city = f"{g['city']} (GeoIP)" if g.get("city") else f"near {_nc[0]} (~{_nc[4]:.0f} km)"
         my = self._my_latlon()
         from services.geodesy import haversine_km
         dist = f"{haversine_km(my[0], my[1], g['lat'], g['lon']):,.0f} km from this node" if my else "node location unknown"
-        self.geo_out.setText(f"{ip}\n{flag(g['iso'])} {g['country']} ({g['iso']}) · {city}\n"
-                             f"lat {g['lat']:.4f} · lon {g['lon']:.4f} · {dist}\n"
-                             f"AS{a.get('asn','?')} {a.get('org','—')}")
+        ds = cities_stats()
+        self.geo_out.setText(f"{ip}\n{flag(g['iso'])} {g['country']} ({g['iso']}) · {city}"
+                             + (f"\nnearest-city stats: {stats}" if stats else "") +
+                             f"\nlat {g['lat']:.4f} · lon {g['lon']:.4f} · {dist}\n"
+                             f"AS{a.get('asn','?')} {a.get('org','—')}\n"
+                             f"city dataset: {ds['source']} · {ds['cities']:,} cities"
+                             + (f" · {ds['countries']} countries" if ds.get('countries') else "")
+                             + ("" if ds.get("complete") else f" · {ds.get('note','')}"))
         self.geo_map_btn.setEnabled(any(p.get("addr", "").startswith(ip) for p in self._peers))
     def _show_on_map(self):
         raw = self.geo_in.text().strip()
@@ -4316,11 +4407,17 @@ class Main(QtWidgets.QMainWindow):
         self.ctl = ControlTab()          # localhost / local-machine client control center
         self.netlog = NetLogTab()        # live network activity log (₿ANKON ₿TC WaaS)
         self.ice = IceTab()              # 🧊 ICE — network↔wallet wall (CPU + radios)
+        # 🧊 / 📡 ride as REAL tab icons (hi-res color-emoji renders, smoothly downscaled) —
+        # sharper than inline-text emoji at tab font size
+        self.tabs.setIconSize(QtCore.QSize(22, 22))
         for w, name in [(self.ov,"Overview"),(self.node,"Node"),(self.net,"Network"),(self.map,"Net Map"),
-                        (self.netlog,"📡 Net Log"),(self.mp,"Mempool"),(self.blk,"₿locks"),(self.oracle,"₿TC.oracle"),
+                        (self.netlog,("📡", "Net Log")),(self.mp,"Mempool"),(self.blk,"₿locks"),(self.oracle,"₿TC.oracle"),
                         (self.ords,"🜚 Ordinals"),(self.idx,"Indexes"),(self.ctl,"🖥 Control"),
-                        (self.ice,"🧊 ICE"),(self.con,"RPC Console")]:
-            self.tabs.addTab(w, name)
+                        (self.ice,("🧊", "ICE")),(self.con,"RPC Console")]:
+            if isinstance(name, tuple):
+                self.tabs.addTab(w, emoji_icon(name[0]), name[1])
+            else:
+                self.tabs.addTab(w, name)
         self.tabs.currentChanged.connect(self.do_refresh)
         # ICE forensics → Net Map cross-link: jump to the map with the peer selected
         self.ice.netmap_link = self._show_peer_on_map

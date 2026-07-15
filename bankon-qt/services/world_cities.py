@@ -804,8 +804,114 @@ CITIES = [
 ]
 
 
+# ---- FULL dataset: every city on earth (GeoNames cities1000, CC-BY 4.0) -------------
+# geoip/cities1000.tsv.gz = name · iso2 · lat · lon · population · elevation_m · timezone
+# for every city with population ≥ 1000 (~140k rows). Lazy-loaded in a background thread
+# (startup stays instant) into a 1°×1° grid index so nearest-city lookups stay O(cells).
+# The compact Natural Earth table above remains the instant fallback until it's loaded.
+import gzip as _gzip
+import threading as _threading
+from pathlib import Path as _Path
+
+_FULL_PATH = _Path(__file__).resolve().parent.parent.parent / "geoip" / "cities1000.tsv.gz"
+_FULL, _GRID = None, None
+_LOAD_LOCK = _threading.Lock()
+
+
+def full_available():
+    return _FULL_PATH.exists()
+
+
+def _load_full():
+    global _FULL, _GRID
+    rows, grid = [], {}
+    try:
+        with _gzip.open(_FULL_PATH, "rt", encoding="utf-8") as fh:
+            for ln in fh:
+                p = ln.rstrip("\n").split("\t")
+                if len(p) < 7:
+                    continue
+                try:
+                    la, lo, pop = float(p[2]), float(p[3]), int(p[4] or 0)
+                except ValueError:
+                    continue
+                grid.setdefault((int(la), int(lo)), []).append(len(rows))
+                rows.append((p[0], p[1], la, lo, pop, p[5], p[6]))
+    except Exception:
+        return
+    if rows:
+        _FULL, _GRID = rows, grid
+
+
+def ensure_full(background=True):
+    """Kick off (or complete) the full-dataset load. Returns True when it's ready NOW."""
+    if _FULL is not None:
+        return True
+    if not full_available():
+        return False
+    if _LOAD_LOCK.acquire(blocking=False):
+        try:
+            if background:
+                t = _threading.Thread(target=lambda: (_load_full(), _LOAD_LOCK.release()), daemon=True)
+                t.start()
+                return False
+            _load_full()
+        finally:
+            if not background:
+                _LOAD_LOCK.release()
+    return _FULL is not None
+
+
+def dataset_stats():
+    """Basic statistics of the city dataset in use — surfaced in the UI, never implied."""
+    if _FULL is not None:
+        pops = [r[4] for r in _FULL]
+        return {"source": "GeoNames cities1000 (public, CC-BY 4.0)", "cities": len(_FULL),
+                "complete": True, "min_pop": 1000, "total_pop": sum(pops),
+                "countries": len({r[1] for r in _FULL})}
+    return {"source": "Natural Earth populated places (bundled, public domain)",
+            "cities": len(CITIES), "complete": False,
+            "note": ("full list loading…" if full_available()
+                     else "geoip/cities1000.tsv.gz not present — bundled table in use")}
+
+
+def _nearest_full(lat, lon):
+    from .geodesy import haversine_km
+    la0, lo0 = int(lat), int(lon)
+    best = None
+    found_ring = None
+    for ring in range(0, 61):
+        cells = []
+        for dla in range(-ring, ring + 1):
+            for dlo in range(-ring, ring + 1):
+                if max(abs(dla), abs(dlo)) != ring:
+                    continue
+                la = la0 + dla
+                if not -90 <= la <= 89:
+                    continue
+                lo = (lo0 + dlo + 180) % 360 - 180          # wrap the antimeridian
+                cells.append((la, lo))
+        for cell in cells:
+            for i in _GRID.get(cell, ()):
+                r = _FULL[i]
+                d = haversine_km(lat, lon, r[2], r[3])
+                if best is None or d < best[4]:
+                    best = (r[0], r[1], r[2], r[3], d, r[4], r[5], r[6])
+        if best is not None:
+            if found_ring is None:
+                found_ring = ring                            # search one margin ring, then stop
+            elif ring > found_ring:
+                break
+    return best
+
+
 def nearest_city_entry(lat, lon):
-    """Nearest major city with its coordinates → (name, iso, city_lat, city_lon, distance_km)."""
+    """Nearest city with coordinates → (name, iso, lat, lon, km[, population, elev_m, tz]).
+    Uses the complete GeoNames list when loaded; the bundled major-cities table otherwise."""
+    if _FULL is not None:
+        e = _nearest_full(lat, lon)
+        if e:
+            return e
     from .geodesy import haversine_km
     best = None
     for name, iso, clat, clon, _rank in CITIES:
@@ -816,6 +922,6 @@ def nearest_city_entry(lat, lon):
 
 
 def nearest_city(lat, lon):
-    """Nearest major city to (lat, lon) → (name, iso, distance_km). Pure scan, no deps."""
+    """Nearest city to (lat, lon) → (name, iso, distance_km)."""
     e = nearest_city_entry(lat, lon)
     return (e[0], e[1], e[4]) if e else None
