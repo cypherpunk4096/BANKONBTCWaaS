@@ -4197,7 +4197,11 @@ class BannerBar(QtWidgets.QFrame):
     def __init__(self, main):
         super().__init__(); self.main = main
         self.setObjectName("titlebar"); self.setCursor(QtCore.Qt.OpenHandCursor)
-        lay = QtWidgets.QHBoxLayout(self); lay.setContentsMargins(9, 5, 9, 5)
+        lay = QtWidgets.QHBoxLayout(self); lay.setContentsMargins(11, 5, 11, 5)
+        # live diagnostics ride the banner: chain state on the left, wire+thermal on the right —
+        # dim monospace so the title stays the headline
+        _dstyle = "background:transparent;border:0;color:#8aa0b4;font-family:'DejaVu Sans Mono',monospace;font-size:10px"
+        self.diagL = QtWidgets.QLabel("⛓ —"); self.diagL.setStyleSheet(_dstyle); lay.addWidget(self.diagL)
         lay.addStretch(1)
         self.text = QtWidgets.QLabel("₿  the wallet you can BANKON")
         self.text.setObjectName("titletext"); lay.addWidget(self.text)
@@ -4207,9 +4211,19 @@ class BannerBar(QtWidgets.QFrame):
         self.corebtn.clicked.connect(self._core_click)
         lay.addWidget(self.corebtn)
         lay.addStretch(1)
-        self.setToolTip("Drag this banner to dock it above the tabs (top) or below them (bottom) — position is remembered")
-        self._press = None; self._core_up = None
+        self.diagR = QtWidgets.QLabel("⇅ —"); self.diagR.setStyleSheet(_dstyle); lay.addWidget(self.diagR)
+        self.setToolTip("Drag this banner to dock it above the tabs (top) or below them (bottom, default) — position is remembered")
+        self._press = None; self._core_up = None; self._diag = {}
         self.set_core(None, False, "Bitcoin Core state — probing…")
+    def set_diag(self, **parts):
+        """Merge diagnostic fragments (block/peers/net/temp) and re-render both banner sides."""
+        self._diag.update({k: v for k, v in parts.items() if v})
+        d = self._diag
+        left = " · ".join(x for x in (f"⛓ {d.get('block')}" if d.get("block") else "",
+                                      f"⇶ {d.get('peers')}" if d.get("peers") else "") if x)
+        right = " · ".join(x for x in (d.get("net", ""), f"🌡 {d.get('temp')}" if d.get("temp") else "") if x)
+        self.diagL.setText(left or "⛓ —")
+        self.diagR.setText(right or "⇅ —")
     def set_core(self, up, feeding, tip):
         self._core_up = up
         col = "#8aa0b4" if up is None else ("#F7931A" if up else "#f85149")
@@ -4277,7 +4291,8 @@ class Main(QtWidgets.QMainWindow):
         self.titlebar = BannerBar(self)
         cl.addWidget(self.titlebar); cl.addWidget(self.tabs); self.setCentralWidget(central)
         self._central_lay = cl
-        if QtCore.QSettings("BANKON", "bankon-qt").value("banner/dock", "top") == "bottom":
+        # bottom is the DEFAULT starting position (drag it up to re-dock above the tabs)
+        if QtCore.QSettings("BANKON", "bankon-qt").value("banner/dock", "bottom") == "bottom":
             self._dock_banner("bottom", save=False)
         self._glow = QtWidgets.QGraphicsDropShadowEffect(self)
         self._glow.setColor(QtGui.QColor("#00BFFF")); self._glow.setOffset(0, 0); self._glow.setBlurRadius(22)
@@ -4422,6 +4437,7 @@ class Main(QtWidgets.QMainWindow):
         def ok(b, s):
             self._hb = False
             self.status_lbl.setText(f"  ● node :8332 · block {b:,}" + (" (cached)" if s else "")); self.status_lbl.setStyleSheet("color:#0AC18E; " + CHIP)
+            self.titlebar.set_diag(block=f"{b:,}")
         def bad(e):
             self._hb = False
             if "refus" in e.lower() or "connect" in e.lower():
@@ -4431,6 +4447,12 @@ class Main(QtWidgets.QMainWindow):
             else:
                 self.status_lbl.setText("  ● node validating…"); self.status_lbl.setStyleSheet("color:#F7931A; " + CHIP)
         spawn("getblockcount", ok, bad, timeout=6)
+        # banner diagnostics: live peer count (cheap, warm-cached getnetworkinfo)
+        def _bp(ni, _s):
+            c, o, i = ni.get("connections"), ni.get("connections_out"), ni.get("connections_in")
+            if c is not None:
+                self.titlebar.set_diag(peers=f"{c} peers" + (f" ({o}↑ {i}↓)" if o is not None and i is not None else ""))
+        spawn("getnetworkinfo", _bp, timeout=8)
     def poll_coremon(self):
         # Console down ≠ Core down: fall back to a direct loopback probe of :8332 so the
         # banner CORE control stays live-and-clickable even with no Console running
@@ -4493,6 +4515,7 @@ class Main(QtWidgets.QMainWindow):
         live = (f"▼{kin:,.1f} ▲{kout:,.1f} KB/s · " if kin is not None else "")
         self.net_lbl.setText(f"  ⇅ {live}Σ {self._gb(rin)}/{self._gb(rout)}" + (f" · {uptxt}" if uptxt else "")
                              + (" (cached)" if stale else ""))
+        self.titlebar.set_diag(net=(f"⇅ ▼{kin:,.1f} ▲{kout:,.1f} KB/s" if kin is not None else f"Σ {self._gb(rin)}/{self._gb(rout)}"))
         self.net_lbl.setStyleSheet(("color:%s; font-family:'DejaVu Sans Mono',monospace; " % ("#16C784" if (kin or 0) + (kout or 0) > 0.5 else "#8aa0b4")) + CHIP)
         # evidence trail: one bandwidth sample a minute into .history (self-pruning, shreddable)
         if time.time() - self._nt_hist_ts > 60 and kin is not None:
@@ -4514,7 +4537,12 @@ class Main(QtWidgets.QMainWindow):
                      at=e.get("time") or "", text=(e.get("text") or "").strip()[:90])
         if len(seen) > 4000: self._ev_seen = set(list(seen)[-2000:])
     def poll_sys(self):
-        spawn_fn(lambda: fetch_json("/api/system"), self._sys)
+        # Console down ≠ blind: fall back to the same /sys thermal zones ICE reads, so the
+        # banner's 🌡 diagnostic stays live without any Console
+        def _local_temp(_e):
+            t = self.ice._cpu_temp()
+            if t is not None: self.titlebar.set_diag(temp=f"{t:.0f}°C")
+        spawn_fn(lambda: fetch_json("/api/system"), self._sys, _local_temp)
     def _sys(self, d):
         if not d or not d.get("ok"): return
         cpu, t, mem = d.get("cpuPct"), d.get("tempC"), d.get("memUsedPct")
@@ -4530,6 +4558,7 @@ class Main(QtWidgets.QMainWindow):
         if mem is not None: parts.append(f"mem {mem}%")
         self.sys_lbl.setText("  " + " · ".join(parts))
         self.sys_lbl.setStyleSheet(f"color:{col}; font-weight:{weight}; " + CHIP)
+        if t is not None: self.titlebar.set_diag(temp=f"{t:.0f}°C")
         # thermal protection: at/above the chosen temp, pause the pruned node to cool down
         thr = self.pausetemp.value()
         if t is not None and t >= thr and not self._thermal_paused:
