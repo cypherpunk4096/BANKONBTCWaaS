@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-BANKON Qt — native diagnostics & node-control UI for Bitcoin Core (PySide6).
+₿ANKON Qt — native diagnostics & node-control UI for ₿itcoin Core (PySide6).
 
 Parity with the web Console: live tabs (Overview / Node / Network / Mempool /
-Blocks / Indexes / RPC Console), a variable refresh rate (1-min default), node
+₿locks / Indexes / RPC Console), a variable refresh rate (1-min default), node
 recognition + Start/Stop, a live debug.log bootup stream, and last-known caching
 so tabs keep showing data while the node is lock-bound during IBD.
 
@@ -38,7 +38,7 @@ try:
 except Exception:                                                 # pragma: no cover
     WORLD_BORDERS = []
 from services.network_view import known_nodes, network_asof
-# Exact-arithmetic scientific formatting (BTC.oracle / ICE): integer satoshis + Decimal,
+# Exact-arithmetic scientific formatting (₿TC.oracle / ICE): integer satoshis + Decimal,
 # 18-decimal display, exact expected work from the compact target.
 from decimal import Decimal
 from services.precision import btc18, btc18_html, dec18, pct18, work_from_bits, chainwork_int
@@ -171,11 +171,11 @@ class OverviewTab(QtWidgets.QWidget):
         box, self.f = cardgrid(["chain", "height", "headers", "verify %", "peers", "mempool txs",
                                 "size on disk", "IBD", "CPU %", "memory %", "load / temp"])
         v.addWidget(box)
-        # --- Datadir diagnostic: the disk BANKON is attached to (works even when the node is down) ---
+        # --- Datadir diagnostic: the disk ₿ANKON is attached to (works even when the node is down) ---
         fs = QtWidgets.QFrame(); fs.setStyleSheet("QFrame{border:1px solid #0e3d57;border-radius:6px}")
         fl = QtWidgets.QVBoxLayout(fs)
         hh = QtWidgets.QHBoxLayout()
-        fh = QtWidgets.QLabel("💾 Datadir — the disk BANKON is attached to"); fh.setStyleSheet("color:#F7931A;font-weight:700;border:0")
+        fh = QtWidgets.QLabel("💾 Datadir — the disk ₿ANKON is attached to"); fh.setStyleSheet("color:#F7931A;font-weight:700;border:0")
         hh.addWidget(fh, 1)
         self.fsopen = QtWidgets.QPushButton("Open folder"); self.fsopen.setObjectName("secondary")
         self.fsopen.setToolTip("Open the datadir in the file manager"); self.fsopen.clicked.connect(self._open_datadir); hh.addWidget(self.fsopen)
@@ -197,10 +197,10 @@ class OverviewTab(QtWidgets.QWidget):
         # footer: dock the GTK launcher + copyright
         foot = QtWidgets.QHBoxLayout()
         self.launchbtn = QtWidgets.QPushButton("⧉ Launcher")
-        self.launchbtn.setToolTip("Open the BANKON launcher (start/stop Core + BANKON, live logs, ICE)")
+        self.launchbtn.setToolTip("Open the ₿ANKON launcher (start/stop Core + ₿ANKON, live logs, ICE)")
         self.launchbtn.clicked.connect(self._open_launcher); foot.addWidget(self.launchbtn)
         foot.addStretch(1)
-        cpr = QtWidgets.QLabel("© 2026 BANKON — all rights preserved")
+        cpr = QtWidgets.QLabel("© 2026 ₿ANKON — all rights preserved")
         cpr.setStyleSheet("color:#5a6b7b;font-size:10px"); foot.addWidget(cpr)
         v.addLayout(foot); v.addStretch()
         # near-realtime sync: /api/synctip is a cheap debug.log tail (no node RPC), so poll it
@@ -248,7 +248,7 @@ class OverviewTab(QtWidgets.QWidget):
         # honesty: a stale value is last-known, not current — say so instead of passing it off
         self.f["peers"].setText(("—" if c is None else f"{c}{detail}") + ("   (cached)" if stale else ""))
     def _m(self, m, stale): self.f["mempool txs"].setText(f"{m.get('size',0):,}")
-    # ---- datadir diagnostic (external disk BANKON is attached to; works with node down) ----
+    # ---- datadir diagnostic (external disk ₿ANKON is attached to; works with node down) ----
     def _tick_fs(self):
         if self.isVisible():
             spawn_fn(lambda: fetch_json("/api/filesystem?files=1"), self._fill_fs)
@@ -280,7 +280,7 @@ class OverviewTab(QtWidgets.QWidget):
             self.fsbar.setStyleSheet("QProgressBar{border:1px solid #0e3d57;border-radius:5px;text-align:center;background:#070d14;color:#eef3f8}"
                                      "QProgressBar::chunk{background:%s;border-radius:4px}" % col)
             self.fsbar.setFormat(f"disk {df.get('pcent','?')} · {self._gib(avail)} free of {self._gib(size)}"
-                                 + ("  ⚠ FULL — Bitcoin Core can't write" if full else (" — low" if low else "")))
+                                 + ("  ⚠ FULL — ₿itcoin Core can't write" if full else (" — low" if low else "")))
         c = d.get("components") or {}
         rw, rwcol = disk_runway(c.get("total"), (d.get("df") or {}).get("avail"))
         self.fscomp.setText(f"blocks {self._gib(c.get('blocks'))}  ·  indexes {self._gib(c.get('indexes'))}  ·  "
@@ -380,7 +380,7 @@ class NodeTab(QtWidgets.QWidget):
             self.msg.setText("bitcoind launching — watch the log below")
         except Exception as e: self.msg.setText(f"start failed: {e}")
     def do_stop(self):
-        if QtWidgets.QMessageBox.question(self, "Stop", "Stop Bitcoin Core?") != QtWidgets.QMessageBox.Yes: return
+        if QtWidgets.QMessageBox.question(self, "Stop", "Stop ₿itcoin Core?") != QtWidgets.QMessageBox.Yes: return
         try:
             r = subprocess.run([str(Path(BTC_BIN)/"bitcoin-cli"), f"-datadir={DATADIR}", "stop"],
                                capture_output=True, text=True, timeout=15)
@@ -468,7 +468,7 @@ class BlocksTab(QtWidgets.QWidget):
         self.t.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.t.cellDoubleClicked.connect(self._open_detail)
         v.addWidget(self.t, 1)
-        # stay current to Bitcoin Core: poll the accumulating feed every 5s while visible
+        # stay current to ₿itcoin Core: poll the accumulating feed every 5s while visible
         self._lt = QtCore.QTimer(self); self._lt.timeout.connect(self._tick); self._lt.start(5000)
     def _tick(self):
         if self.isVisible(): self.refresh()
@@ -516,7 +516,7 @@ class BlocksTab(QtWidgets.QWidget):
                 if k in ("time", "mediantime"):
                     val = f"{val}  ({datetime.fromtimestamp(val, timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC)"
                 lines.append(f"{k:18}: {val}")
-        d = QtWidgets.QDialog(self); d.setWindowTitle(f"Block {b.get('height','')}"); d.resize(640, 470)
+        d = QtWidgets.QDialog(self); d.setWindowTitle(f"₿lock {b.get('height','')}"); d.resize(640, 470)
         dl = QtWidgets.QVBoxLayout(d)
         te = QtWidgets.QPlainTextEdit(); te.setReadOnly(True); te.setPlainText("\n".join(lines))
         te.setStyleSheet("font-family:monospace;font-size:12px;background:#070d14;color:#d6e3ef")
@@ -528,7 +528,7 @@ class BlocksTab(QtWidgets.QWidget):
 
 class IndexesTab(QtWidgets.QWidget):
     """Live index view — every index (txindex, coinstatsindex, blockfilter…) advancing toward the
-    chain tip, updated in near-realtime like the Blocks feed. Tip comes from the cheap log-based
+    chain tip, updated in near-realtime like the ₿locks feed. Tip comes from the cheap log-based
     synctip (no cs_main), so it stays live during IBD."""
     def __init__(self):
         super().__init__(); v = QtWidgets.QVBoxLayout(self)
@@ -648,7 +648,7 @@ class IndexesTab(QtWidgets.QWidget):
         else:                                                         # at the tip, between blocks — this is healthy
             self.crunch.setText(f"✓  indexed to tip #{h:,}   ·   UTXO cache {cache}   ·   awaiting next block (~10 min)")
     INDEX_META = {
-        "txindex": "Look up ANY transaction by txid (getrawtransaction) — required for BANKON wallet/tx lookups.",
+        "txindex": "Look up ANY transaction by txid (getrawtransaction) — required for ₿ANKON wallet/tx lookups.",
         "coinstatsindex": "Instant UTXO-set stats (gettxoutsetinfo): supply, UTXO count, muhash — no full scan.",
         "basic block filter index": "BIP157/158 compact block filters — lets light clients sync privately.",
     }
@@ -988,9 +988,9 @@ class ConsoleTab(QtWidgets.QWidget):
              "getmininginfo","estimatesmartfee","getblockcount","uptime","getnettotals","listwallets"}
     HELP = {
         "getblockchaininfo": "Chain state — height, verificationprogress, size, pruned, IBD flag.",
-        "getblock": "Block by hash.  params: [hash, verbosity 0|1|2]",
+        "getblock": "₿lock by hash.  params: [hash, verbosity 0|1|2]",
         "getblockstats": "Per-block stats (fees, size, txs).  params: [height | hash]",
-        "getblockhash": "Block hash at a height.  params: [height]",
+        "getblockhash": "₿lock hash at a height.  params: [height]",
         "getchaintxstats": "Tx count & rate over a window.  params: [nblocks]",
         "getmempoolinfo": "Mempool size, bytes, usage, min relay fee.",
         "getrawmempool": "Mempool txids.  params: [verbose true|false]",
@@ -998,7 +998,7 @@ class ConsoleTab(QtWidgets.QWidget):
         "getnetworkinfo": "Version, connection count, relay fee, reachable networks.",
         "getindexinfo": "Index status (txindex, coinstatsindex, blockfilter…).",
         "getmininginfo": "Difficulty, network hashrate, mempool size.",
-        "estimatesmartfee": "Fee estimate (BTC/kvB).  params: [conf_target]",
+        "estimatesmartfee": "Fee estimate (₿TC/kvB).  params: [conf_target]",
         "getblockcount": "Current validated block height.",
         "uptime": "Node uptime in seconds.",
         "getnettotals": "Total bytes sent / received.",
@@ -1158,9 +1158,9 @@ def mp_fill(f, m, d, stale):
     f["virtual size"].setText(f"{d.get('bytes',0):,} vB")
     mx = d.get('maxmempool', 0) or 0
     f["memory / max"].setText(f"{d.get('usage',0)/1048576:.1f} / {mx/1048576:.0f} MiB")
-    f["min relay fee"].setText(f"{d.get('minrelaytxfee','—')} BTC/kvB")
-    f["mempool min fee"].setText(f"{d.get('mempoolminfee','—')} BTC/kvB")
-    tf = d.get('total_fee'); f["total fee"].setText(f"{tf} BTC" if tf is not None else "—")
+    f["min relay fee"].setText(f"{d.get('minrelaytxfee','—')} ₿TC/kvB")
+    f["mempool min fee"].setText(f"{d.get('mempoolminfee','—')} ₿TC/kvB")
+    tf = d.get('total_fee'); f["total fee"].setText(f"{tf} ₿TC" if tf is not None else "—")
     f["unbroadcast"].setText(f"{d.get('unbroadcastcount',0):,}")
     # fullrbf key is removed in Core v31.1+ (RBF is universal since v28) — absent ≠ unknown
     rbf = d.get("fullrbf")
@@ -1175,13 +1175,13 @@ def idx_fill(f, m, d, stale):
 
 
 class NetworkMapTab(QtWidgets.QWidget):
-    """EtherApe-style live topology from ONE Bitcoin Core node: our node at centre,
+    """EtherApe-style live topology from ONE ₿itcoin Core node: our node at centre,
     connected peers radial (link width + node size + colour = traffic, inbound vs
     outbound tinted), and a faint outer cloud of ALL nodes our addrman knows.
 
     DYNAMIC: a pulse timer animates traffic 'packets' flowing along each link and a
     selection halo, so the map is visibly live. CLICK any peer node → a diagnostics
-    panel shows that peer's full getpeerinfo + Promote (favourite) / Boot actions."""
+    panel shows that peer's full getpeerinfo + Promote (favourite) / ₿oot actions."""
     def __init__(self):
         super().__init__(); v = QtWidgets.QVBoxLayout(self)
         top = QtWidgets.QHBoxLayout()
@@ -1191,7 +1191,7 @@ class NetworkMapTab(QtWidgets.QWidget):
         self.speed.setToolTip("Live node throughput (getnettotals) — orange = data in, green = data out")
         top.addWidget(self.speed)
         self.layoutbtn = QtWidgets.QPushButton("▲ Pyramid")
-        self.layoutbtn.setToolTip("Switch topology: radial sphere ↔ pyramid (BANKON node at the apex, "
+        self.layoutbtn.setToolTip("Switch topology: radial sphere ↔ pyramid (₿ANKON node at the apex, "
                                   "busiest peers in the top tiers, addrman cloud as the base)")
         self.layoutbtn.clicked.connect(self._toggle_layout); top.addWidget(self.layoutbtn)
         top.addWidget(QtWidgets.QLabel("max nodes"))
@@ -1231,18 +1231,18 @@ class NetworkMapTab(QtWidgets.QWidget):
                                    "QPushButton:hover{background:#3a2500}")
         self.backbtn.clicked.connect(self._exit_explore); self.backbtn.hide()
         # DOWN-STATE onboarding overlay — when Core is off there are no nodes to map, so turn the empty
-        # map into a call-to-action: start Core + read the BANKON FAQ/docs. Shown over the view; hidden
+        # map into a call-to-action: start Core + read the ₿ANKON FAQ/docs. Shown over the view; hidden
         # the moment peers/activity appear.
         self.downpanel = QtWidgets.QFrame(self.view)
         self.downpanel.setStyleSheet("QFrame{background:rgba(8,16,26,0.95);border:2px solid #F7931A;border-radius:12px}")
         dp = QtWidgets.QVBoxLayout(self.downpanel); dp.setSpacing(8); dp.setContentsMargins(24, 18, 24, 18)
-        _h = QtWidgets.QLabel("₿  the wallet you can BANKON"); _h.setAlignment(QtCore.Qt.AlignCenter)
+        _h = QtWidgets.QLabel("₿  the wallet you can ₿ANKON"); _h.setAlignment(QtCore.Qt.AlignCenter)
         _h.setStyleSheet("color:#F7931A;font-weight:800;font-size:16px;border:0"); dp.addWidget(_h)
-        self.downmsg = QtWidgets.QLabel("Bitcoin Core is not running — BANKON attaches to your node.\n"
+        self.downmsg = QtWidgets.QLabel("₿itcoin Core is not running — ₿ANKON attaches to your node.\n"
                                         "Start Core to map the network.")
         self.downmsg.setAlignment(QtCore.Qt.AlignCenter); self.downmsg.setWordWrap(True)
         self.downmsg.setStyleSheet("color:#d6e3ef;border:0"); dp.addWidget(self.downmsg)
-        _sb = QtWidgets.QPushButton("▶  Start Bitcoin Core")
+        _sb = QtWidgets.QPushButton("▶  Start ₿itcoin Core")
         _sb.setStyleSheet("QPushButton{background:#17a24b;color:#eafff0;font-weight:800;border:2px solid #0b5d34;"
                           "border-radius:8px;padding:8px}QPushButton:hover{background:#1fc75e}")
         _sb.clicked.connect(self._start_core); dp.addWidget(_sb)
@@ -1252,11 +1252,11 @@ class NetworkMapTab(QtWidgets.QWidget):
             _b.clicked.connect(lambda _c, k=_key: self._open_doc(k)); _lk.addWidget(_b)
         dp.addLayout(_lk)
         _lk2 = QtWidgets.QHBoxLayout()
-        for _txt, _key in [("₿ BTC Standard ↗", "cypherpunk"), ("🎛 gnuGUI ↗", "gnugui")]:
+        for _txt, _key in [("₿ ₿TC Standard ↗", "cypherpunk"), ("🎛 gnuGUI ↗", "gnugui")]:
             _b = QtWidgets.QPushButton(_txt); _b.setObjectName("secondary")
             _b.clicked.connect(lambda _c, k=_key: self._open_doc(k)); _lk2.addWidget(_b)
         dp.addLayout(_lk2)
-        _rd = QtWidgets.QLabel("New here? Read the BANKON FAQ & docs while Core starts.")
+        _rd = QtWidgets.QLabel("New here? Read the ₿ANKON FAQ & docs while Core starts.")
         _rd.setAlignment(QtCore.Qt.AlignCenter); _rd.setStyleSheet("color:#8aa0b4;font-size:10px;border:0"); dp.addWidget(_rd)
         self.downpanel.hide(); self._core_off = False
         split.addWidget(self.view)
@@ -1295,7 +1295,7 @@ class NetworkMapTab(QtWidgets.QWidget):
         self.btn_promote = QtWidgets.QPushButton("★ Promote"); self.btn_promote.setObjectName("good")
         self.btn_promote.setToolTip("Mark favourite + keep a persistent connection (addnode)")
         self.btn_promote.clicked.connect(lambda: self._act_peer("promote"))
-        self.btn_boot = QtWidgets.QPushButton("⏏ Boot"); self.btn_boot.setObjectName("danger")
+        self.btn_boot = QtWidgets.QPushButton("⏏ ₿oot"); self.btn_boot.setObjectName("danger")
         self.btn_boot.setToolTip("Disconnect this peer now (disconnectnode)")
         self.btn_boot.clicked.connect(lambda: self._act_peer("boot"))
         # discoverable entry into the 3D cluster-explore (double-click still works)
@@ -1304,8 +1304,8 @@ class NetworkMapTab(QtWidgets.QWidget):
                                     "(gossip-inferred: same ASN / prefix — cluster lines carry no flow dots)")
         self.btn_explore.clicked.connect(lambda: self._sel and self._enter_explore(self._sel))
         self.btn_explore.setEnabled(False)
-        self.btn_ban = QtWidgets.QPushButton("🚫 Ban"); self.btn_ban.setObjectName("danger")
-        self.btn_ban.setToolTip("Blacklist as unreliable — setban 7 days + disconnect")
+        self.btn_ban = QtWidgets.QPushButton("🚫 ₿an"); self.btn_ban.setObjectName("danger")
+        self.btn_ban.setToolTip("₿lacklist as unreliable — setban 7 days + disconnect")
         self.btn_ban.clicked.connect(lambda: self._list_ban(self._sel.get("addr") if self._sel else "", True))
         br.addWidget(self.btn_promote); br.addWidget(self.btn_boot); br.addWidget(self.btn_ban); br.addWidget(self.btn_explore); d.addLayout(br)
         self.diag_status = QtWidgets.QLabel(""); self.diag_status.setStyleSheet("color:#8aa0b4"); self.diag_status.setWordWrap(True)
@@ -1324,7 +1324,7 @@ class NetworkMapTab(QtWidgets.QWidget):
         self.list_edit = QtWidgets.QLineEdit(); self.list_edit.setPlaceholderText("ip[:port] — or select a row above")
         er.addWidget(self.list_edit, 1)
         for txt, fn, tip in (("★", lambda: self._list_promote(self._edit_addr(), True), "Whitelist: promote (favourite + addnode)"),
-                             ("🚫", lambda: self._list_ban(self._edit_addr(), True), "Blacklist: ban as unreliable (7 days)"),
+                             ("🚫", lambda: self._list_ban(self._edit_addr(), True), "₿lacklist: ban as unreliable (7 days)"),
                              ("✖", self._list_remove, "Remove the selected/typed entry from the current list")):
             b = QtWidgets.QPushButton(txt); b.setFixedWidth(34); b.setToolTip(tip); b.clicked.connect(fn); er.addWidget(b)
         d.addLayout(er)
@@ -1499,7 +1499,7 @@ class NetworkMapTab(QtWidgets.QWidget):
         self._fill_diag(p)
         self.btn_promote.setEnabled(True); self.btn_boot.setEnabled(True); self.btn_ban.setEnabled(True); self.btn_explore.setEnabled(True)
         self.btn_promote.setText("★ Promoted" if p.get("addnode") else "★ Promote")
-        self.diag_status.setText("Promote = favourite + persistent · Boot = disconnect now")
+        self.diag_status.setText("Promote = favourite + persistent · ₿oot = disconnect now")
         self._redraw()
     def _act_peer(self, kind):
         if not self._sel: return
@@ -1532,7 +1532,7 @@ class NetworkMapTab(QtWidgets.QWidget):
                     self._cloud_rot = getattr(self, "_cloud_rot", 0.0) + 0.010
                 self._layout_cloud()
             # PACKET FLOW in the 3D view too — along the one REAL link (us ↔ the explored peer),
-            # driven by that peer's live measured B/s. orange = data INTO the BANKON node
+            # driven by that peer's live measured B/s. orange = data INTO the ₿ANKON node
             # (peer→us), green = data OUT (us→peer). Gossip-cluster lines carry no dots: honest.
             ax, ay = getattr(self, "_explore_anchor", (None, None))
             if ax is not None:
@@ -1540,13 +1540,13 @@ class NetworkMapTab(QtWidgets.QWidget):
                 ri, ro = self._rates.get((self._explore or {}).get("addr") or "", (0.0, 0.0))
                 pin, pout = self._flow_frac(ri), self._flow_frac(ro)
                 ORANGE = QtGui.QColor("#F7931A"); GREEN = QtGui.QColor("#16C784")
-                if pin > 0:            # centre (peer) → BANKON anchor
+                if pin > 0:            # centre (peer) → ₿ANKON anchor
                     npk = 1 + int(round(2 * pin)); spd = 0.6 + 2.4 * pin; rad = 2.0 + 3.0 * pin
                     for j in range(npk):
                         t = (self._phase * spd + j / npk) % 1.0
                         self._anim.append(self.scene.addEllipse(ax * t - rad, ay * t - rad, 2 * rad, 2 * rad,
                                                                 QtGui.QPen(QtCore.Qt.NoPen), QtGui.QBrush(ORANGE)))
-                if pout > 0:           # BANKON anchor → centre (peer)
+                if pout > 0:           # ₿ANKON anchor → centre (peer)
                     npk = 1 + int(round(2 * pout)); spd = 0.6 + 2.4 * pout; rad = 2.0 + 3.0 * pout
                     for j in range(npk):
                         t = (self._phase * spd + j / npk + 0.5 / max(1, npk)) % 1.0
@@ -1570,14 +1570,14 @@ class NetworkMapTab(QtWidgets.QWidget):
         c0x, c0y = getattr(self, "_c0", (0.0, 0.0))
         for k, (x, y, pin, pout) in enumerate(self._links):
             dx, dy = x - c0x, y - c0y
-            if pin > 0:    # real incoming data — bitcoin orange, external peer → BANKON node
+            if pin > 0:    # real incoming data — bitcoin orange, external peer → ₿ANKON node
                 npk = 1 + int(round(2 * pin)); spd = 0.6 + 2.4 * pin; rad = 2.0 + 3.0 * pin
                 for j in range(npk):
                     t = (self._phase * spd + j / npk + k * 0.13) % 1.0
                     px, py = c0x + dx * (1.0 - t), c0y + dy * (1.0 - t)
                     self._anim.append(self.scene.addEllipse(px - rad, py - rad, 2 * rad, 2 * rad,
                                                             QtGui.QPen(QtCore.Qt.NoPen), QtGui.QBrush(ORANGE)))
-            if pout > 0:   # real outgoing data — candle green, BANKON node → external peer
+            if pout > 0:   # real outgoing data — candle green, ₿ANKON node → external peer
                 npk = 1 + int(round(2 * pout)); spd = 0.6 + 2.4 * pout; rad = 2.0 + 3.0 * pout
                 for j in range(npk):
                     t = (self._phase * spd + j / npk + k * 0.17) % 1.0
@@ -1652,9 +1652,9 @@ class NetworkMapTab(QtWidgets.QWidget):
         self._redraw()
     # ---- down-state onboarding (advertising moment when Core is off) ----
     def _start_core(self):
-        self.downmsg.setText("starting Bitcoin Core…")
+        self.downmsg.setText("starting ₿itcoin Core…")
         spawn_fn(lambda: post_json("/api/node/start", {}, timeout=12),
-                 lambda d: self.downmsg.setText("Bitcoin Core is starting — the map fills in as peers connect."
+                 lambda d: self.downmsg.setText("₿itcoin Core is starting — the map fills in as peers connect."
                            if d and d.get("ok") else "start failed: " + str((d or {}).get("error", "?"))),
                  lambda e: self.downmsg.setText(f"start failed: {e}"))
     def _open_doc(self, which):
@@ -1672,7 +1672,7 @@ class NetworkMapTab(QtWidgets.QWidget):
     def _set_down(self, off):
         self._core_off = off
         if off and not self.downpanel.isVisible():
-            self.downmsg.setText("Bitcoin Core is not running — BANKON attaches to your node.\n"
+            self.downmsg.setText("₿itcoin Core is not running — ₿ANKON attaches to your node.\n"
                                  "Start Core to map the network.")
             self.downpanel.show(); self.downpanel.raise_(); self._place_down()
         elif not off and self.downpanel.isVisible():
@@ -1842,7 +1842,7 @@ class NetworkMapTab(QtWidgets.QWidget):
             # on an ABSOLUTE log scale — dot density/speed correlate with this link's real rate.
             ri, ro = self._rates.get(p.get("addr"), (0.0, 0.0))
             pin = self._flow_frac(ri)                # incoming from this external node right now
-            pout = self._flow_frac(ro)               # outgoing from BANKON node right now
+            pout = self._flow_frac(ro)               # outgoing from ₿ANKON node right now
             # live per-link rate labels on active links (midpoint, direction-coloured)
             mx, my = c0x + dx * 0.55, c0y + dy * 0.55
             if ri >= 256:
@@ -2190,7 +2190,7 @@ class AdvancedGeoWidget(QtWidgets.QWidget):
 
 class GeoMapTab(QtWidgets.QWidget):
     """Geo map (EPSG:4326 plate carrée). The WHOLE known network from this node's addrman
-    (getnodeaddresses — Bitnodes-style, self-sourced, no external API) as a density layer,
+    (getnodeaddresses — ₿itnodes-style, self-sourced, no external API) as a density layer,
     plus the CONNECTED peers with great-circle arcs to our node, coloured & geolocated by
     GeoLite2. Edges are inferred (Core exposes none) and IP geolocation is approximate."""
     W, H = 1440, 720
@@ -2309,7 +2309,7 @@ class GeoMapTab(QtWidgets.QWidget):
     def _on_act(self, d): self._act = (d or {}).get("events", []); self._redraw()
     def _flow_pulse(self):
         # animated packets along the REAL great-circle arcs, scaled by ACTUAL per-peer B/s.
-        # Same colour law as everywhere in BANKON: orange = data IN (peer→node),
+        # Same colour law as everywhere in ₿ANKON: orange = data IN (peer→node),
         # green = data OUT (node→peer). Gated by anim_on — zero cost when hidden.
         if not anim_on(self):
             return
@@ -2579,7 +2579,7 @@ def _parse_iso(s):
 
 
 class MeshPanel(QtWidgets.QWidget):
-    """BTC.oracle graphical area — a fine electric-blue mesh with an animated shimmer sweep, the
+    """₿TC.oracle graphical area — a fine electric-blue mesh with an animated shimmer sweep, the
     recent block-interval sparkline, and the headline average block time (drawn with QPainter)."""
     def __init__(self):
         super().__init__()
@@ -2723,12 +2723,12 @@ class BlockSciencePanel(QtWidgets.QFrame):
     as new blocks arrive; any height on demand. A visual workflow rendered from actual node
     measurements only (getblockhash → getblockheader + getblockstats, no third party):
         ① identity → ② proof-of-work → ③ structure → ④ economics
-    DeFi meets sci-fi, and BANKON.oracle is accuracy: every figure below is measured, none estimated."""
+    DeFi meets sci-fi, and ₿ANKON.oracle is accuracy: every figure below is measured, none estimated."""
     def __init__(self):
         super().__init__(); self.setObjectName("scienceframe")
         v = QtWidgets.QVBoxLayout(self)
         top = QtWidgets.QHBoxLayout()
-        tt = QtWidgets.QLabel("🔬 Block science — visual workflow from the actual block")
+        tt = QtWidgets.QLabel("🔬 ₿lock science — visual workflow from the actual block")
         tt.setStyleSheet("color:#00BFFF;font-weight:800"); top.addWidget(tt, 1)
         self.follow = QtWidgets.QCheckBox("follow tip"); self.follow.setChecked(True)
         self.follow.setToolTip("Re-analyze automatically as each new block arrives (the current running block)")
@@ -2806,12 +2806,12 @@ class BlockSciencePanel(QtWidgets.QFrame):
         # (first 8 decimals = satoshi resolution, tail zeros exact) — no float /1e8 anywhere
         sub_s = S.get("subsidy", 0) or 0; fee_s = S.get("totalfee", 0) or 0
         self.q["econ"].setText(
-            f"subsidy {btc18(sub_s)} BTC\n"
-            f"fees {btc18(fee_s)} BTC\n"
-            f"reward {btc18(sub_s + fee_s)} BTC\n"
+            f"subsidy {btc18(sub_s)} ₿TC\n"
+            f"fees {btc18(fee_s)} ₿TC\n"
+            f"reward {btc18(sub_s + fee_s)} ₿TC\n"
             f"avg feerate {S.get('avgfeerate',0)} sat/vB\n"
             f"avg fee {S.get('avgfee',0):,} sat\n"
-            f"total out {btc18(S.get('total_out', 0))} BTC")
+            f"total out {btc18(S.get('total_out', 0))} ₿TC")
         self.fullbar.setValue(min(4_000_000, int(w)))
         pct = S.get("feerate_percentiles") or []
         if len(pct) == 5:
@@ -2819,14 +2819,14 @@ class BlockSciencePanel(QtWidgets.QFrame):
 
 
 class OracleTab(QtWidgets.QWidget):
-    """BTC.oracle — the clock kept on a Bitcoin block. Bitcoin-orange framed, with an electric-blue
+    """₿TC.oracle — the clock kept on a ₿itcoin block. ₿itcoin-orange framed, with an electric-blue
     mesh graphical area (block-interval sparkline + headline) beside the statistical readout, plus a
     block-measurement history accordion for per-block scientific analysis (getblockstats)."""
     def __init__(self):
         super().__init__(); outer = QtWidgets.QVBoxLayout(self); outer.setContentsMargins(5, 5, 5, 5); outer.setSpacing(5)
         frame = QtWidgets.QFrame(); frame.setObjectName("oracleframe")
         v = QtWidgets.QVBoxLayout(frame); v.setContentsMargins(7, 5, 7, 7); v.setSpacing(5)
-        t = QtWidgets.QLabel("₿  BTC.oracle — the clock kept on a Bitcoin block"); t.setObjectName("oracletitle")
+        t = QtWidgets.QLabel("₿  ₿TC.oracle — the clock kept on a ₿itcoin block"); t.setObjectName("oracletitle")
         t.setAlignment(QtCore.Qt.AlignCenter); v.addWidget(t)
         mid = QtWidgets.QHBoxLayout()
         self.mesh = MeshPanel(); mid.addWidget(self.mesh, 3)               # graphical area
@@ -2848,9 +2848,9 @@ class OracleTab(QtWidgets.QWidget):
         outer_hist.setContentsMargins(0, 0, 0, 0)
         page = outer                # the tab's real page layout (quadrant frame goes here at the end)
         outer = outer_hist          # re-point: the history/log widgets below land in quadrant Q4
-        # Block-measurement history — accordion + a logging-verbosity control for scientific monitoring.
+        # ₿lock-measurement history — accordion + a logging-verbosity control for scientific monitoring.
         hrow = QtWidgets.QHBoxLayout()
-        hh = QtWidgets.QLabel("📜 Block measurement history — expand a block for scientific analysis")
+        hh = QtWidgets.QLabel("📜 ₿lock measurement history — expand a block for scientific analysis")
         hh.setStyleSheet("color:#F7931A;font-weight:700"); hrow.addWidget(hh, 1)
         self.automeasure = QtWidgets.QCheckBox("⚡ auto-measure"); self.automeasure.setChecked(True)
         self.automeasure.setToolTip("Measure every new block as it arrives → live activity stream + JSONL.\n"
@@ -2859,7 +2859,7 @@ class OracleTab(QtWidgets.QWidget):
         hrow.addWidget(QtWidgets.QLabel("logging"))
         self.verb = QtWidgets.QComboBox(); self.verb.addItems(["Quiet", "Normal", "Verbose", "Scientific"])
         self.verb.setCurrentText("Normal")
-        self.verb.setToolTip("Detail level for block monitoring / BTC.oracle diagnostics:\n"
+        self.verb.setToolTip("Detail level for block monitoring / ₿TC.oracle diagnostics:\n"
                              "Quiet = one-line · Normal = full metric grid · Verbose = + raw getblockstats · "
                              "Scientific = + header + derived measures")
         self.verb.currentTextChanged.connect(self._verb_changed)
@@ -2923,7 +2923,7 @@ class OracleTab(QtWidgets.QWidget):
             newly.append(b)
         if not self._primed:                                              # tab just opened: seed the log so it isn't blank
             if newly:
-                self.mlog.appendPlainText(f"— BTC.oracle log · level: {self.verb.currentText()} · "
+                self.mlog.appendPlainText(f"— ₿TC.oracle log · level: {self.verb.currentText()} · "
                                           f"persisting → {self._auto_jsonl}")
                 for b in newly[-6:]: self._log_block(b, tmap.get(b["height"] - 1), seeded=True)
             self._primed = True
@@ -3188,7 +3188,7 @@ class NetworkTab(QtWidgets.QWidget):
                                  "/api/node/fastpref) — the on/off switch for fast-peer preference.")
         self.fastpref.toggled.connect(self._toggle_fastpref); r2.addWidget(self.fastpref)
         r2.addStretch(); v.addLayout(r2)
-        # ₿ network intelligence strip — self-sourced Bitcoin facts: OUR addrman census (total nodes
+        # ₿ network intelligence strip — self-sourced ₿itcoin facts: OUR addrman census (total nodes
         # this node has actually heard of — bitnodes-style, no third party) + difficulty / hashrate /
         # subsidy / halving countdown derived from getmininginfo.
         self.btcinfo = QtWidgets.QLabel("₿ network:  measuring…")
@@ -3212,9 +3212,9 @@ class NetworkTab(QtWidgets.QWidget):
         self._sized = False
         self.t.verticalHeader().setDefaultSectionSize(28); self.t.setShowGrid(False); self.t.setAlternatingRowColors(True)
         self.t.setSortingEnabled(True); self.t.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self.t.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)              # right-click → Promote / Boot
+        self.t.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)              # right-click → Promote / ₿oot
         self.t.customContextMenuRequested.connect(self._peer_menu)
-        self.t.setToolTip("Right-click a peer for actions: ★ Promote (favourite) · ⏏ Boot (disconnect)")
+        self.t.setToolTip("Right-click a peer for actions: ★ Promote (favourite) · ⏏ ₿oot (disconnect)")
         v.addWidget(self.t, 1)
         # Connection ACTIVITY — log-based (works even when getpeerinfo is RPC-choked): attempts,
         # successes, failures, drops, inbound, + the node's local network addresses.
@@ -3260,7 +3260,7 @@ class NetworkTab(QtWidgets.QWidget):
             era = (b.get("blocks") or 0) // 210000
             left = (era + 1) * 210000 - (b.get("blocks") or 0)
             parts += [f"difficulty {b['difficulty']/1e12:.1f}T", f"~{(b.get('hashps') or 0)/1e18:.0f} EH/s",
-                      f"subsidy {50/2**era:g} BTC",
+                      f"subsidy {50/2**era:g} ₿TC",
                       f"halving in {left:,} blk (~{left*10/60/24/365.25:.1f} yr)"]
         if parts: self.btcinfo.setText("₿ network:  " + "   ·   ".join(parts))
     # ---- peer-target tiers + growth ----
@@ -3374,7 +3374,7 @@ class NetworkTab(QtWidgets.QWidget):
             m.addAction("★ Un-promote (drop favourite)").triggered.connect(lambda: self._do_peer("unpromote", addr, p))
         else:
             m.addAction("★ Promote (favourite + keep connected)").triggered.connect(lambda: self._do_peer("promote", addr, p))
-        m.addAction("⏏ Boot (disconnect now)").triggered.connect(lambda: self._do_peer("boot", addr, p))
+        m.addAction("⏏ ₿oot (disconnect now)").triggered.connect(lambda: self._do_peer("boot", addr, p))
         m.addSeparator()
         m.addAction("⧉ Copy address").triggered.connect(lambda: QtWidgets.QApplication.clipboard().setText(addr))
         m.exec(self.t.viewport().mapToGlobal(pos))
@@ -3398,11 +3398,11 @@ class ControlTab(QtWidgets.QWidget):
     via the modular toolkit (Console endpoints, direct bitcoin-cli fallback). Three panels:
       🌡 Thermal & host   — live temp / CPU / mem / disk with the SAME severity calibration as the
                             toolbar chip, plus the thermal-protection threshold (two-way synced).
-      🔌 Localhost checks — raw socket probes of every BANKON port from 127.0.0.1's OWN perspective.
+      🔌 Localhost checks — raw socket probes of every ₿ANKON port from 127.0.0.1's OWN perspective.
                             Deliberately not routed through the Console: a diagnostics panel must
                             not depend on one of the things it diagnoses.
       ⚙ Admin            — node ▶/■ + the AIRGAP switch (setnetworkactive) so the WaaS can generate
-                            wallet keys with the machine's Bitcoin network dark, then re-enable.
+                            wallet keys with the machine's ₿itcoin network dark, then re-enable.
     """
     # Every localhost service in the toolkit: (name, port). Console/WaaS ports come from their URLs
     # so env overrides (BANKON_CONSOLE_URL / BANKON_WAAS_URL) stay honoured.
@@ -3413,11 +3413,11 @@ class ControlTab(QtWidgets.QWidget):
     def __init__(self):
         super().__init__(); v = QtWidgets.QVBoxLayout(self)
         self.SERVICES = [
-            ("Bitcoin Core RPC (full)",  8332),
-            ("Bitcoin P2P",              8333),
+            ("₿itcoin Core RPC (full)",  8332),
+            ("₿itcoin P2P",              8333),
             ("Pruned node RPC",          8342),
-            ("BANKON Console",           self._port_of(CONSOLE_URL, 8090)),
-            ("BANKON WaaS",              self._port_of(WAAS_URL, 8088)),
+            ("₿ANKON Console",           self._port_of(CONSOLE_URL, 8090)),
+            ("₿ANKON WaaS",              self._port_of(WAAS_URL, 8088)),
             ("ZMQ blocks",               28332),
             ("ZMQ rawtx",                28333),
             ("ZMQ sequence",             28335),
@@ -3441,7 +3441,7 @@ class ControlTab(QtWidgets.QWidget):
         # -- Localhost service probes --
         right = QtWidgets.QVBoxLayout()
         right.addWidget(QtWidgets.QLabel("<b>🔌 Localhost services</b> — socket probes from 127.0.0.1"))
-        # BANKON table formula: ODD column counts (1·3·5·7·9·11·13) — port folds into the service
+        # ₿ANKON table formula: ODD column counts (1·3·5·7·9·11·13) — port folds into the service
         # name so this reads as 3 columns. Rationale in docs/design.md → 'The odd-column formula'.
         self.t = QtWidgets.QTableWidget(); self.t.setColumnCount(3)
         self.t.setHorizontalHeaderLabels(["service", "state", "latency"])
@@ -3460,7 +3460,7 @@ class ControlTab(QtWidgets.QWidget):
         sp = QtWidgets.QPushButton("■ Stop node"); sp.setObjectName("danger"); sp.clicked.connect(self._stop); ar.addWidget(sp)
         ar.addSpacing(24)
         self.airgap = QtWidgets.QPushButton("…"); self.airgap.setEnabled(False)   # armed once state is known
-        self.airgap.setToolTip("setnetworkactive — take the Bitcoin network dark, generate wallet keys in the "
+        self.airgap.setToolTip("setnetworkactive — take the ₿itcoin network dark, generate wallet keys in the "
                                "WaaS with zero P2P traffic, then switch back ON")
         self.airgap.clicked.connect(self._toggle_net); ar.addWidget(self.airgap)
         waas = QtWidgets.QPushButton("Open WaaS"); waas.clicked.connect(lambda: webbrowser.open(WAAS_URL)); ar.addWidget(waas)
@@ -3472,11 +3472,11 @@ class ControlTab(QtWidgets.QWidget):
         self.eth_status = QtWidgets.QLabel(_txt)
         self.eth_status.setStyleSheet("color:%s" % ("#16C784" if _ok else "#8aa0b4"))
         self.eth_status.setToolTip("EtherApe — radial live-traffic visualizer (GTK/libpcap), the display reference "
-                                   "BANKON's Net Map borrows from: node size ∝ traffic, protocol colors.\n"
+                                   "₿ANKON's Net Map borrows from: node size ∝ traffic, protocol colors.\n"
                                    "docs/reference/etherape.md")
         xr.addWidget(self.eth_status, 1)
         eb = QtWidgets.QPushButton("🕸 EtherApe (port 8333)"); eb.setObjectName("secondary"); eb.setEnabled(_ok)
-        eb.setToolTip("pkexec etherape -f 'port 8333' — live pcap of this node's Bitcoin P2P traffic")
+        eb.setToolTip("pkexec etherape -f 'port 8333' — live pcap of this node's ₿itcoin P2P traffic")
         eb.clicked.connect(lambda: etherape_launch(self.eth_status.setText)); xr.addWidget(eb)
         v.addLayout(xr)
         self.status = QtWidgets.QLabel("network state: checking…"); self.status.setStyleSheet("color:#8aa0b4")
@@ -3545,7 +3545,7 @@ class ControlTab(QtWidgets.QWidget):
                 return {"ok": True, "note": "launched directly (Console down)"}
         spawn_fn(work, lambda d: self.status.setText((d or {}).get("note") or (d or {}).get("error") or "starting…"))
     def _stop(self):
-        if QtWidgets.QMessageBox.question(self, "Stop", "Stop Bitcoin Core?") != QtWidgets.QMessageBox.Yes: return
+        if QtWidgets.QMessageBox.question(self, "Stop", "Stop ₿itcoin Core?") != QtWidgets.QMessageBox.Yes: return
         def work():
             try: return post_json("/api/node/stop", {}, timeout=15)
             except Exception:
@@ -3566,14 +3566,14 @@ class ControlTab(QtWidgets.QWidget):
             self.status.setStyleSheet("color:#16C784;font-weight:600")
         else:
             self.airgap.setText("🔓 Re-enable network (go LIVE)"); self.airgap.setObjectName("")
-            self.status.setText("network state: 🔒 AIRGAPPED — Bitcoin P2P dark; safe to generate wallet keys in the WaaS")
+            self.status.setText("network state: 🔒 AIRGAPPED — ₿itcoin P2P dark; safe to generate wallet keys in the WaaS")
             self.status.setStyleSheet("color:#F7931A;font-weight:700")
         self.airgap.style().unpolish(self.airgap); self.airgap.style().polish(self.airgap)   # re-apply QSS after objectName change
     def _toggle_net(self):
         want = not self._netactive
         if not want:      # going dark is a state change worth confirming, like Stop
             if QtWidgets.QMessageBox.question(
-                self, "Airgap", "Take the Bitcoin network DARK (setnetworkactive false)?\n"
+                self, "Airgap", "Take the ₿itcoin network DARK (setnetworkactive false)?\n"
                 "All P2P connections drop until you re-enable.") != QtWidgets.QMessageBox.Yes:
                 return
         self.airgap.setEnabled(False); self.status.setText("switching network state…")
@@ -3598,7 +3598,7 @@ class ControlTab(QtWidgets.QWidget):
 
 class NetLogTab(QtWidgets.QWidget):
     """📡 Network Activity Log — every connect / inbound / disconnect / fail event
-    from the BANKON BTC WaaS node (via /api/netactivity), parsed from debug.log so it
+    from the ₿ANKON ₿TC WaaS node (via /api/netactivity), parsed from debug.log so it
     works even during the IBD RPC choke. Rich detail per event: peer id, direction/role
     (outbound-full-relay / block-relay-only / manual / inbound / feeler), BIP324 transport
     (v1 legacy / v2 encrypted), protocol version, the peer's tip height at connect, network
@@ -3705,7 +3705,7 @@ class NetLogTab(QtWidgets.QWidget):
                  + "   |   " + seg("net", nets) + "   |   " + seg("roles", ct))
         line3 = ("local: " + (" · ".join(local) if local else "—"))
         self.summary.setText(f"{counts}<br>{line2}<br>{line3}")
-        self.info.setText(f"Network activity — {len(self._events)} events (BANKON BTC WaaS) · "
+        self.info.setText(f"Network activity — {len(self._events)} events (₿ANKON ₿TC WaaS) · "
                           f"parsed live from debug.log")
 
 
@@ -3713,7 +3713,7 @@ class OrdinalsTab(QtWidgets.QWidget):
     """🜚 Ordinals — OPTIONAL panel over the bankon-ord module (which wraps the `ord` CLI).
     Reads run in-process; MUTATIONS (create/inscribe/etch/mint/send) go through the shared
     webbridge subprocess with the same two-step protocol as the web Console: dry-run (gate
-    verdict + exact command/batchfile) → explicit ⚠ BROADCAST + confirm dialog. The node-RPC
+    verdict + exact command/batchfile) → explicit ⚠ ₿ROADCAST + confirm dialog. The node-RPC
     surface stays read-only; ord's own fail-closed gates guard every mutation.
     Degrades honestly: no module → says so; no `ord` binary → the preflight report says so."""
     def __init__(self):
@@ -3742,9 +3742,9 @@ class OrdinalsTab(QtWidgets.QWidget):
         self.out.setStyleSheet("font-family:monospace"); v.addWidget(self.out, 1)
         # ---- INTERACT (parity with the web Console 🜚 tab): create · inscribe · runes · send ----
         # Same two-step protocol via the shared webbridge: dry-run shows the gate verdict + the
-        # exact command/batchfile, then an explicit ⚠ BROADCAST. The bridge enforces the same
+        # exact command/batchfile, then an explicit ⚠ ₿ROADCAST. The bridge enforces the same
         # fail-closed gates as the CLI; node-RPC surface stays read-only — mutations go via ord.
-        box = QtWidgets.QGroupBox("Interact — two-step: Dry-run → ⚠ Broadcast (gated by bankon-ord)")
+        box = QtWidgets.QGroupBox("Interact — two-step: Dry-run → ⚠ ₿roadcast (gated by bankon-ord)")
         gl = QtWidgets.QGridLayout(box)
         gl.addWidget(QtWidgets.QLabel("ord server:"), 0, 0)
         self.srv = QtWidgets.QLineEdit(); self.srv.setPlaceholderText("http://127.0.0.1:8080 (wallet ops need `ord server`)")
@@ -3776,12 +3776,12 @@ class OrdinalsTab(QtWidgets.QWidget):
         self.sfee = QtWidgets.QDoubleSpinBox(); self.sfee.setRange(0.1, 5000); self.sfee.setValue(2); gl.addWidget(self.sfee, 3, 5)
         bs = QtWidgets.QPushButton("Dry-run send"); bs.clicked.connect(lambda: self._dry("send")); gl.addWidget(bs, 3, 6, 1, 2)
         v.addWidget(box)
-        self.go = QtWidgets.QPushButton("⚠ BROADCAST (irreversible — spends a fee)")
+        self.go = QtWidgets.QPushButton("⚠ ₿ROADCAST (irreversible — spends a fee)")
         self.go.setStyleSheet("background:#3a2d10;color:#e3b341;font-weight:800")
         self.go.setEnabled(False); self.go.clicked.connect(self._broadcast); v.addWidget(self.go)
         self._pending = None
         note = QtWidgets.QLabel("Node-RPC surface stays read-only; ordinals mutations run through bankon-ord's "
-                                "fail-closed gates (ordinal-wallet isolation · ≥0.1 BTC refusal · unknown balance refused) "
+                                "fail-closed gates (ordinal-wallet isolation · ≥0.1 ₿TC refusal · unknown balance refused) "
                                 "— dry-run first, always. Same engine as the web Console 🜚 tab and the CLI.")
         note.setWordWrap(True); note.setStyleSheet("color:#8aa0b4"); v.addWidget(note)
         self.wname.textChanged.connect(self._iso_badge)
@@ -3836,7 +3836,7 @@ class OrdinalsTab(QtWidgets.QWidget):
             self._feedback(f"dry-run {kind}", r)
             if r.get("ok"):
                 self._pending = body
-                self.go.setText(f"⚠ BROADCAST {kind} (irreversible — spends a fee)")
+                self.go.setText(f"⚠ ₿ROADCAST {kind} (irreversible — spends a fee)")
                 self.go.setEnabled(True)
         self._bridge(body, done)
 
@@ -3844,7 +3844,7 @@ class OrdinalsTab(QtWidgets.QWidget):
         if not self._pending: return
         body = dict(self._pending, confirm=True, approved=True)
         if QtWidgets.QMessageBox.warning(
-                self, "Broadcast for real?",
+                self, "₿roadcast for real?",
                 f"{body['op']} on wallet {body.get('wallet')!r} — this spends a fee and cannot be undone.\n"
                 "The dry-run you just reviewed is what will run.",
                 QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Cancel) != QtWidgets.QMessageBox.Yes:
@@ -3905,14 +3905,14 @@ class OrdinalsTab(QtWidgets.QWidget):
 
 def etherape_status():
     """(found: bool, text) — EtherApe is the classic live network visualizer (GTK/libpcap);
-    BANKON documents it as the display reference the Net Map borrows its idioms from."""
+    ₿ANKON documents it as the display reference the Net Map borrows its idioms from."""
     import shutil as _sh
     p = _sh.which("etherape")
     return (True, f"etherape found: {p}") if p else (False, "etherape not installed — sudo apt install etherape")
 
 
 def etherape_launch(status_cb=None):
-    """Launch EtherApe pre-filtered to Bitcoin P2P traffic (port 8333). Live capture needs
+    """Launch EtherApe pre-filtered to ₿itcoin P2P traffic (port 8333). Live capture needs
     pcap privileges → pkexec (same escalation pattern as the ICE rfkill wall)."""
     ok, txt = etherape_status()
     if not ok:
@@ -3930,12 +3930,12 @@ def etherape_launch(status_cb=None):
 class IceTab(QtWidgets.QWidget):
     """🧊 ICE — Intrusion Countermeasures Electronics: the wall between the network and the
     wallet, now with the forensic toolkit. The wall: CPU heat gate + radio kill (AIRGAP severs
-    Bluetooth/Wi-Fi/WWAN/NFC, via pkexec). The toolkit: geo/IP forensics (offline GeoLite2),
+    ₿luetooth/Wi-Fi/WWAN/NFC, via pkexec). The toolkit: geo/IP forensics (offline GeoLite2),
     Net Map cross-links, 18-decimal precision metrics, the exportable/shreddable `.history`
     connectivity evidence trail, and EtherApe live wire capture.
     Namesake: ICE, coined by Tom Maddox, popularized by William Gibson — see docs/ice.md."""
     ICE_APP = os.path.expanduser("~/ICE/ice.py")
-    RADIOS = [("bluetooth", "Bluetooth"), ("wifi", "Wi-Fi"), ("wwan", "Cellular"), ("nfc", "NFC")]
+    RADIOS = [("bluetooth", "₿luetooth"), ("wifi", "Wi-Fi"), ("wwan", "Cellular"), ("nfc", "NFC")]
     def __init__(self):
         super().__init__()
         outer = QtWidgets.QVBoxLayout(self)
@@ -4090,11 +4090,11 @@ class IceTab(QtWidgets.QWidget):
         from services import history_service as H
         if QtWidgets.QMessageBox.question(self, "Shred", "SHRED the .history evidence trail (unrecoverable)?") != QtWidgets.QMessageBox.Yes: return
         self.ev_status.setText(f"shredded {H.shred()} segment(s)"); self._ev_refresh()
-    # ---- 📐 precision metrics (shared Decimal core with BTC.oracle) ----
+    # ---- 📐 precision metrics (shared Decimal core with ₿TC.oracle) ----
     def _precision_panel(self):
         fr = QtWidgets.QFrame(); fr.setStyleSheet("QFrame{border:1px solid #0e3d57;border-radius:6px}")
         fl = QtWidgets.QVBoxLayout(fr)
-        hd = QtWidgets.QLabel("📐 Precision metrics — exact Decimal, 18 dp (same core as BTC.oracle)")
+        hd = QtWidgets.QLabel("📐 Precision metrics — exact Decimal, 18 dp (same core as ₿TC.oracle)")
         hd.setStyleSheet("color:#F7931A;font-weight:700;border:0"); fl.addWidget(hd)
         self.prec = QtWidgets.QLabel("—"); self.prec.setStyleSheet("font-family:monospace;border:0;color:#d6e3ef")
         self.prec.setWordWrap(True); fl.addWidget(self.prec)
@@ -4121,7 +4121,7 @@ class IceTab(QtWidgets.QWidget):
         self.cap_status = QtWidgets.QLabel(txt); self.cap_status.setStyleSheet("border:0;color:%s" % ("#16C784" if ok else "#8aa0b4"))
         row.addWidget(self.cap_status, 1)
         lb = QtWidgets.QPushButton("▶ Launch (port 8333 filter)"); lb.setEnabled(ok)
-        lb.setToolTip("pkexec etherape -f 'port 8333' — live pcap of Bitcoin P2P traffic, radial traffic-proportional display")
+        lb.setToolTip("pkexec etherape -f 'port 8333' — live pcap of ₿itcoin P2P traffic, radial traffic-proportional display")
         lb.clicked.connect(lambda: etherape_launch(self.cap_status.setText)); row.addWidget(lb)
         fl.addLayout(row)
         return fr
@@ -4189,7 +4189,7 @@ CHIP = "padding:2px 8px; border-radius:8px; background:#0d1724; font-weight:600;
 
 
 class BannerBar(QtWidgets.QFrame):
-    """'₿ the wallet you can BANKON' — now a live control surface, not a static label.
+    """'₿ the wallet you can ₿ANKON' — now a live control surface, not a static label.
     DRAGGABLE: grab and drop it above the tabs (top, default) or below them (bottom);
     the choice persists across sessions. The CORE dynamic control sits immediately to the
     right of the title text: red = OFF (click to start) · orange = ON (click = graceful
@@ -4203,7 +4203,7 @@ class BannerBar(QtWidgets.QFrame):
         _dstyle = "background:transparent;border:0;color:#8aa0b4;font-family:'DejaVu Sans Mono',monospace;font-size:10px"
         self.diagL = QtWidgets.QLabel("⛓ —"); self.diagL.setStyleSheet(_dstyle); lay.addWidget(self.diagL)
         lay.addStretch(1)
-        self.text = QtWidgets.QLabel("₿  the wallet you can BANKON")
+        self.text = QtWidgets.QLabel("₿  the wallet you can ₿ANKON")
         self.text.setObjectName("titletext"); lay.addWidget(self.text)
         lay.addSpacing(12)
         self.corebtn = QtWidgets.QPushButton("● CORE"); self.corebtn.setObjectName("corebanner")
@@ -4214,7 +4214,7 @@ class BannerBar(QtWidgets.QFrame):
         self.diagR = QtWidgets.QLabel("⇅ —"); self.diagR.setStyleSheet(_dstyle); lay.addWidget(self.diagR)
         self.setToolTip("Drag this banner to dock it above the tabs (top) or below them (bottom, default) — position is remembered")
         self._press = None; self._core_up = None; self._diag = {}
-        self.set_core(None, False, "Bitcoin Core state — probing…")
+        self.set_core(None, False, "₿itcoin Core state — probing…")
     def set_diag(self, **parts):
         """Merge diagnostic fragments (block/peers/net/temp) and re-render both banner sides."""
         self._diag.update({k: v for k, v in parts.items() if v})
@@ -4233,13 +4233,13 @@ class BannerBar(QtWidgets.QFrame):
             f"QPushButton#corebanner{{background:#0d1724;color:{col};border:2px solid {ring};"
             f"border-radius:10px;font-weight:800;padding:3px 12px;letter-spacing:1px}}"
             f"QPushButton#corebanner:hover{{border:2px solid #00BFFF;background:#10202e}}")
-        self.corebtn.setToolTip(tip + "\nclick: " + ("start Bitcoin Core" if up is False else "graceful stop (bitcoin-cli stop)"))
+        self.corebtn.setToolTip(tip + "\nclick: " + ("start ₿itcoin Core" if up is False else "graceful stop (bitcoin-cli stop)"))
     def _core_click(self):
         if self._core_up is None: return
         sb = self.main.statusBar()
         if self._core_up:
-            if QtWidgets.QMessageBox.question(self, "Stop Bitcoin Core",
-                                              "Gracefully stop Bitcoin Core?") != QtWidgets.QMessageBox.Yes:
+            if QtWidgets.QMessageBox.question(self, "Stop ₿itcoin Core",
+                                              "Gracefully stop ₿itcoin Core?") != QtWidgets.QMessageBox.Yes:
                 return
             def work():
                 try: return post_json("/api/node/stop", {}, timeout=15)
@@ -4247,7 +4247,7 @@ class BannerBar(QtWidgets.QFrame):
                     r = subprocess.run([str(Path(BTC_BIN) / "bitcoin-cli"), f"-datadir={DATADIR}", "stop"],
                                        capture_output=True, text=True, timeout=15)
                     return {"note": r.stdout.strip() or r.stderr.strip() or "stopping…"}
-            sb.showMessage("Stopping Bitcoin Core (graceful)…", 8000)
+            sb.showMessage("Stopping ₿itcoin Core (graceful)…", 8000)
         else:
             def work():
                 try: return post_json("/api/node/start", {}, timeout=8)
@@ -4255,7 +4255,7 @@ class BannerBar(QtWidgets.QFrame):
                     subprocess.Popen([str(Path(BTC_BIN) / "bitcoind"), f"-datadir={DATADIR}", "-daemon"],
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
                     return {"note": "bitcoind launched directly (Console down)"}
-            sb.showMessage("Starting Bitcoin Core…", 8000)
+            sb.showMessage("Starting ₿itcoin Core…", 8000)
         spawn_fn(work, lambda d: sb.showMessage(str((d or {}).get("note") or (d or {}).get("error") or "…"), 8000))
     # ---- drag-to-dock ----
     def mousePressEvent(self, e):
@@ -4276,7 +4276,7 @@ class BannerBar(QtWidgets.QFrame):
 
 class Main(QtWidgets.QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle("BANKON BITCOIN Wallet as a Service")
+        super().__init__(); self.setWindowTitle("₿ANKON ₿ITCOIN Wallet as a Service")
         # Universal sizing: fill ~92% of whatever screen we open on (laptop, 4K, anything),
         # centred, and never larger than that screen. Percent-of-screen instead of fixed px.
         scr = self.screen() or QtGui.QGuiApplication.primaryScreen()
@@ -4314,10 +4314,10 @@ class Main(QtWidgets.QMainWindow):
         self.oracle = OracleTab()
         self.con = ConsoleTab()
         self.ctl = ControlTab()          # localhost / local-machine client control center
-        self.netlog = NetLogTab()        # live network activity log (BANKON BTC WaaS)
+        self.netlog = NetLogTab()        # live network activity log (₿ANKON ₿TC WaaS)
         self.ice = IceTab()              # 🧊 ICE — network↔wallet wall (CPU + radios)
         for w, name in [(self.ov,"Overview"),(self.node,"Node"),(self.net,"Network"),(self.map,"Net Map"),
-                        (self.netlog,"📡 Net Log"),(self.mp,"Mempool"),(self.blk,"Blocks"),(self.oracle,"BTC.oracle"),
+                        (self.netlog,"📡 Net Log"),(self.mp,"Mempool"),(self.blk,"₿locks"),(self.oracle,"₿TC.oracle"),
                         (self.ords,"🜚 Ordinals"),(self.idx,"Indexes"),(self.ctl,"🖥 Control"),
                         (self.ice,"🧊 ICE"),(self.con,"RPC Console")]:
             self.tabs.addTab(w, name)
@@ -4341,7 +4341,7 @@ class Main(QtWidgets.QMainWindow):
         self.inv_chk.toggled.connect(self._toggle_invert); bar.addWidget(self.inv_chk)
         self.status_lbl = QtWidgets.QLabel("  ● checking…"); self.status_lbl.setStyleSheet("color:#8aa0b4; " + CHIP); bar.addWidget(self.status_lbl)
         self.core_lbl = QtWidgets.QLabel(" ● CORE"); bar.addWidget(self.core_lbl)
-        self.core_lbl.setToolTip("Bitcoin Core monitor — orange ON · red OFF · green ring = connecting/feeding")
+        self.core_lbl.setToolTip("₿itcoin Core monitor — orange ON · red OFF · green ring = connecting/feeding")
         self._core_base = "padding:1px 7px; border-radius:7px; font-weight:800; border:2px solid transparent;"
         self.core_lbl.setStyleSheet("color:#f85149; " + self._core_base)
         self.refresh_lbl = QtWidgets.QLabel("  ↻ —"); self.refresh_lbl.setStyleSheet("color:#0AC18E; " + CHIP); bar.addWidget(self.refresh_lbl)
@@ -4352,7 +4352,7 @@ class Main(QtWidgets.QMainWindow):
         # bandwidth evidence chip: live in/out KB/s (comparison) + session totals since node
         # start (getnettotals) + uptime — sampled into the .history evidence trail (~1/min)
         self.net_lbl = QtWidgets.QLabel("  ⇅ —"); self.net_lbl.setStyleSheet("color:#8aa0b4; font-family:'DejaVu Sans Mono',monospace; " + CHIP)
-        self.net_lbl.setToolTip("Bandwidth evidence — ▼ in / ▲ out live KB/s · Σ session totals since node start · uptime.\n"
+        self.net_lbl.setToolTip("₿andwidth evidence — ▼ in / ▲ out live KB/s · Σ session totals since node start · uptime.\n"
                                 "Sampled to ~/.bankon/.history (1 MB rotation) — delete/shred any time in 🧊 ICE.")
         bar.addWidget(self.net_lbl)
         self.zmq_lbl = QtWidgets.QLabel("  ⚡ zmq —"); self.zmq_lbl.setStyleSheet("color:#5a6b7b; " + CHIP)
@@ -4469,18 +4469,18 @@ class Main(QtWidgets.QMainWindow):
         d = d or {}
         if not d.get("up"):
             self.core_lbl.setText(" ● CORE OFF"); self.core_lbl.setStyleSheet("color:#f85149; " + self._core_base)
-            tip = "Bitcoin Core not reachable on :" + str(d.get("port", "8332"))
+            tip = "₿itcoin Core not reachable on :" + str(d.get("port", "8332"))
             self.core_lbl.setToolTip(tip)
             self.titlebar.set_core(False, False, tip)
         elif d.get("feeding"):
             self.core_lbl.setText(" ● CORE ON")   # orange ON + green surround = feeding from connect
             self.core_lbl.setStyleSheet("color:#F7931A; padding:1px 7px; border-radius:7px; font-weight:800; border:2px solid #16C784;")
-            tip = f"Bitcoin Core ON · feeding from connect (block {d.get('height')}, tip {d.get('logAgeSec')}s ago)"
+            tip = f"₿itcoin Core ON · feeding from connect (block {d.get('height')}, tip {d.get('logAgeSec')}s ago)"
             self.core_lbl.setToolTip(tip)
             self.titlebar.set_core(True, True, tip)
         else:
             self.core_lbl.setText(" ● CORE ON"); self.core_lbl.setStyleSheet("color:#F7931A; " + self._core_base)
-            tip = f"Bitcoin Core ON (block {d.get('height') or '?'})"
+            tip = f"₿itcoin Core ON (block {d.get('height') or '?'})"
             self.core_lbl.setToolTip(tip)
             self.titlebar.set_core(True, False, tip)
     def _dock_banner(self, where, save=True):
@@ -4546,13 +4546,13 @@ class Main(QtWidgets.QMainWindow):
     def _sys(self, d):
         if not d or not d.get("ok"): return
         cpu, t, mem = d.get("cpuPct"), d.get("tempC"), d.get("memUsedPct")
-        # temperature severity (your calibration): comfortable working zone = Bitcoin orange (fine at
+        # temperature severity (your calibration): comfortable working zone = ₿itcoin orange (fine at
         # 92°C); 96°C = concern; 99°C+ = DANGEROUS red. Cool/idle stays green.
         col, sev, weight = "#16C784", "", "normal"
         if t is not None:
             if t >= 99:   col, sev, weight = "#ff2b2b", "  ⚠ DANGEROUS", "bold"   # RED
             elif t >= 96: col, sev          = "#FF5E3A", "  concern"               # red-orange
-            elif t >= 85: col, sev          = "#F7931A", "  HOT"                   # Bitcoin orange (comfortable working @92)
+            elif t >= 85: col, sev          = "#F7931A", "  HOT"                   # ₿itcoin orange (comfortable working @92)
         parts = [f"🖥 cpu {cpu}%"]
         if t is not None: parts.append(f"🌡 {t}°C{sev}")
         if mem is not None: parts.append(f"mem {mem}%")
@@ -4578,14 +4578,14 @@ class Main(QtWidgets.QMainWindow):
         self.statusBar().showMessage(msg, 15000); print(msg)
 
 
-# Multi-chain accent palette (matches the web UIs): Bitcoin orange (primary),
+# Multi-chain accent palette (matches the web UIs): ₿itcoin orange (primary),
 # Polygon purple, Ethereum blue, Cash green (success), Cardano blue (hover), Solana royal.
 QSS = """
   /* typography root: DejaVu everywhere (verified installed; no Inter/JetBrains on host),
      Noto Sans CJK as the wide-glyph fallback. Monospace surfaces name their stack below. */
   * { font-family:"DejaVu Sans","Noto Sans CJK SC","FreeSans",sans-serif; }
   QMainWindow { background:#06090e; }
-  /* BANKON corporate blue-grey title banner (hint of blue) — now a draggable QFrame
+  /* ₿ANKON corporate blue-grey title banner (hint of blue) — now a draggable QFrame
      carrying the title text + the CORE dynamic control */
   QFrame#titlebar {
     background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #3b4b5d, stop:1 #28384a);
@@ -4593,9 +4593,9 @@ QSS = """
   }
   QLabel#titletext { background:transparent; border:0; color:#e8eef5;
     font-size:15px; font-weight:800; letter-spacing:2px; padding:4px; }
-  /* BTC.oracle — enhanced Bitcoin-orange outline */
+  /* ₿TC.oracle — enhanced ₿itcoin-orange outline */
   QFrame#oracleframe { border:2px solid #F7931A; border-radius:12px; background:#06090e; }
-  /* 🔬 Block science quadrant — electric-blue outline (the oracle's accuracy panel) */
+  /* 🔬 ₿lock science quadrant — electric-blue outline (the oracle's accuracy panel) */
   QFrame#scienceframe { border:2px solid #00BFFF; border-radius:12px; background:#06090e; }
   QLabel#oracletitle { color:#F7931A; font-size:16px; font-weight:800; letter-spacing:1px; padding:6px;
     border-bottom:1px solid #5a3a0a; }
@@ -4613,7 +4613,7 @@ QSS = """
   QPushButton#danger:hover { background:qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #38b6ff, stop:1 #0072d6); border:2px solid #00BFFF; }
   QPushButton#good { background:qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #2bd6a6, stop:1 #07a06f); border:2px solid #064f38; color:#03120d; font-weight:700; }
   QPushButton#good:hover { background:qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #FFD37A, stop:1 #E6850A); border:2px solid #00BFFF; }
-  /* WaaS button — Bitcoin ORANGE background AND orange highlights (hover brightens, never re-hues) */
+  /* WaaS button — ₿itcoin ORANGE background AND orange highlights (hover brightens, never re-hues) */
   QPushButton#waas { background:qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #FFC06B, stop:1 #F7931A); color:#1a1200; border:2px solid #7a4806; font-weight:700; }
   QPushButton#waas:hover { background:qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #FFD9A0, stop:1 #F7931A); color:#1a1200; border:2px solid #FFB74D; }
   QPushButton#waas:pressed { background:#E6850A; border:2px solid #FFD9A0; }

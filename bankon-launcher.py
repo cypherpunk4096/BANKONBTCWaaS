@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# BANKON Launcher — a one-button GTK3 window to START / stop the BANKON BTC WaaS UI.
+# ₿ANKON Launcher — a one-button GTK3 window to START / stop the ₿ANKON ₿TC WaaS UI.
 # No terminal, no sudo. Press the big button.
 import os
 import shutil
@@ -131,7 +131,7 @@ class Launcher:
         box.pack_start(title, False, False, 0)
 
         # START button with ✖ close INSIDE it; the red STOP sits OUTSIDE, right-adjacent,
-        # at 1/7 of START's width. Both appear when BANKON starts and persist while it runs.
+        # at 1/7 of START's width. Both appear when ₿ANKON starts and persist while it runs.
         hrow = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self.start = Gtk.Button()
         self.start.get_style_context().add_class("bankon")
@@ -139,7 +139,7 @@ class Launcher:
         self.start_lbl = Gtk.Label()
         self.start_lbl.set_markup(f"▶   START <span foreground='{ORANGE}' weight='800'>₿ANKON</span>")
         srow.pack_start(self.start_lbl, True, True, 0)
-        self.close_btn = Gtk.Button(label="✖ close")  # stop BANKON *and* close this launcher
+        self.close_btn = Gtk.Button(label="✖ close")  # stop ₿ANKON *and* close this launcher
         self.close_btn.get_style_context().add_class("bankon-close")
         self.close_btn.set_no_show_all(True)
         self.close_btn.set_tooltip_text("Stop ₿ANKON and close the launcher")
@@ -151,7 +151,7 @@ class Launcher:
         hrow.pack_start(self.start, True, True, 0)
         self.stop = Gtk.Button(label="■\nstop")
         self.stop.get_style_context().add_class("bankon-stop")
-        self.stop.set_no_show_all(True)               # hidden until BANKON is running
+        self.stop.set_no_show_all(True)               # hidden until ₿ANKON is running
         self.stop.set_tooltip_text("Stop ₿ANKON (launcher stays open)")
         self.stop.connect("clicked", self.on_stop)
         # keep STOP at 1/7 of START's actual width, same height
@@ -160,7 +160,7 @@ class Launcher:
         hrow.pack_start(self.stop, False, False, 0)
         box.pack_start(hrow, False, False, 0)
 
-        # Bitcoin Core — deliberately small (~10% the size of START), under the main button
+        # ₿itcoin Core — deliberately small (~10% the size of START), under the main button
         crow = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self.core = Gtk.Button(label="⛓ core")
         self.core.get_style_context().add_class("core")
@@ -187,7 +187,7 @@ class Launcher:
         # Packed WITHOUT expand: they claim window space only while open (see _on_expand).
         self.logx, self.logview = self._log_expander("📜 ₿ANKON logs (bankon.log)")
         box.pack_start(self.logx, False, False, 0)
-        self.corelogx, self.corelogview = self._log_expander("⛓ Bitcoin Core logs (debug.log)")
+        self.corelogx, self.corelogview = self._log_expander("⛓ ₿itcoin Core logs (debug.log)")
         box.pack_start(self.corelogx, False, False, 0)
         # transparency / brightness slider for BOTH log displays (orange fill + raised knob)
         self.fxrow = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -204,8 +204,13 @@ class Launcher:
         # DOCK / CALL — window choreography between the ₿UTTON and the Overview
         self.wmrow = Gtk.Box(spacing=6)
         dk = Gtk.Button(label="⚓ DOCK")
-        dk.set_tooltip_text("Send the ₿UTTON to the Overview: dock this window beside the ₿ANKON window")
-        dk.get_style_context().add_class("logmini"); dk.connect("clicked", self.on_dock)
+        dk.set_tooltip_text("CLICK: dock the ₿UTTON onto the console's '₿ the wallet you can ₿ANKON' banner "
+                            "(left-hand side, bottom of the console).\n"
+                            "PRESS AND HOLD: summon the console window to appear BEHIND the ₿UTTON.")
+        dk.get_style_context().add_class("logmini")
+        # two-mode gesture: short click vs press-and-hold (≥550 ms) — handled on press/release
+        dk.connect("pressed", self._dock_pressed)
+        dk.connect("released", self._dock_released)
         self.wmrow.pack_start(dk, True, True, 0)
         cl = Gtk.Button(label="📞 CALL")
         cl.set_tooltip_text("Bring the Overview + Console here: moves the ₿ANKON window to the ₿UTTON, "
@@ -242,7 +247,7 @@ class Launcher:
             try:
                 subprocess.Popen([BITCOIN_CLI, "stop"],
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                self.status.set_text("Stopping Bitcoin Core (graceful)…")
+                self.status.set_text("Stopping ₿itcoin Core (graceful)…")
                 self.corelogx.set_expanded(True)      # watch the shutdown in debug.log
             except Exception as e:
                 self.status.set_text(f"Core stop failed: {e}")
@@ -250,7 +255,7 @@ class Launcher:
         try:
             subprocess.Popen([BITCOIND], stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL, start_new_session=True)
-            self.status.set_text("Starting Bitcoin Core…")
+            self.status.set_text("Starting ₿itcoin Core…")
             self.corelogx.set_expanded(True)          # watch the boot in debug.log
         except Exception as e:
             self.status.set_text(f"Core start failed: {e}")
@@ -403,18 +408,52 @@ class Launcher:
         best = None
         for w in self._wm_list():
             t = w["title"].lower()
-            if "launcher" in t or t == me or "bankon" not in t:
+            if "launcher" in t or t == me or ("bankon" not in t and "₿ankon" not in t):
                 continue
             if "wallet as a service" in t:      # the Qt console's exact title — always preferred
                 return w
-            best = best or w                    # fallback: any other BANKON window (browser tab etc.)
+            best = best or w                    # fallback: any other ₿ANKON window (browser tab etc.)
         return best
 
     def _dock_pos(self, qt):
-        # DOCK position = the right-hand side OF the Overview console screen (floating above it) —
-        # the console is typically full-width, so "beside" would land off-screen.
-        bw, _bh = self.win.get_size()
-        return max(0, qt["x"] + qt["w"] - bw - 18), max(0, qt["y"] + 42)
+        # DOCK position = the LEFT-HAND SIDE of the console's '₿ the wallet you can ₿ANKON'
+        # banner, which rides the BOTTOM of the console window (Qt default) — the ₿UTTON
+        # parks on that title field like a tug against a hull.
+        _bw, bh = self.win.get_size()
+        return max(0, qt["x"] + 14), max(0, qt["y"] + qt["h"] - bh - 14)
+
+    # ── DOCK gesture: click = dock onto the banner · press-and-hold = summon console behind ──
+    _DOCK_HOLD_MS = 550
+
+    def _dock_pressed(self, _b):
+        self._dock_held = False
+        self._dock_timer = GLib.timeout_add(self._DOCK_HOLD_MS, self._dock_hold_fire)
+
+    def _dock_hold_fire(self):
+        self._dock_timer = None
+        self._dock_held = True                 # swallow the click that follows this release
+        self._summon_console_behind()
+        return False
+
+    def _dock_released(self, _b):
+        if getattr(self, "_dock_timer", None):
+            GLib.source_remove(self._dock_timer)
+            self._dock_timer = None
+        if not getattr(self, "_dock_held", False):
+            self.on_dock(None)                 # short click → dock onto the banner field
+
+    def _summon_console_behind(self):
+        """Press-and-hold DOCK: bring the console window up BEHIND the ₿UTTON (deploying it
+        first if it isn't running), keeping the ₿UTTON on top."""
+        qt = self._find_overview()
+        if qt is None:
+            self.on_start(None)                # deploy; _await_console raises it behind + docks
+            self.status.set_text("⚓ hold — deploying the console behind the ₿UTTON…")
+            self._await_console()
+            return
+        subprocess.run(["wmctrl", "-i", "-a", qt["id"]], check=False)   # raise the console…
+        self.win.present()                                              # …₿UTTON back on top
+        self.status.set_text("⚓ hold — console summoned behind the ₿UTTON. Click DOCK to park on its banner.")
 
     def on_dock(self, _b):
         qt = self._find_overview()
@@ -422,12 +461,12 @@ class Launcher:
             x, y = self._dock_pos(qt)
             self.win.move(x, y)
             self.win.present()                             # ₿UTTON floats above the console
-            self.status.set_text("⚓ ₿UTTON docked — right-hand side of the Overview console.")
+            self.status.set_text("⚓ ₿UTTON docked — left side of the '₿ the wallet you can ₿ANKON' banner.")
         else:
             scr = Gdk.Screen.get_default()
-            w, _h = self.win.get_size()
-            self.win.move(max(0, scr.get_width() - w - 16), 40)
-            self.status.set_text("⚓ Overview not found — docked to the screen's top-right instead.")
+            _w, h = self.win.get_size()
+            self.win.move(16, max(0, scr.get_height() - h - 48))
+            self.status.set_text("⚓ Overview not found — docked to the screen's bottom-left instead.")
 
     def on_call(self, _b):
         bx, by = self.win.get_position()
@@ -505,7 +544,7 @@ class Launcher:
             self._fill(self.logview, LOG, "(no log yet — press START)")
         if self.corelogx.get_expanded():
             self._fill(self.corelogview, os.path.expanduser("~/.bitcoin/debug.log"),
-                       "(no debug.log — has Bitcoin Core ever run here?)")
+                       "(no debug.log — has ₿itcoin Core ever run here?)")
 
     @staticmethod
     def _pressed(btn, on):
@@ -513,7 +552,7 @@ class Launcher:
         (ctx.add_class if on else ctx.remove_class)("running")
 
     def on_close(self, _b):
-        self.on_stop(_b)                  # stop BANKON first…
+        self.on_stop(_b)                  # stop ₿ANKON first…
         GLib.timeout_add(300, Gtk.main_quit)   # …then close the launcher (let SIGTERM land)
 
     ICE_APP = os.path.expanduser("~/ICE/ice.py")
@@ -537,9 +576,9 @@ class Launcher:
                               buttons=Gtk.ButtonsType.OK_CANCEL,
                               text="Completely uninstall ₿ANKON?")
         d.format_secondary_text(
-            "This stops every BANKON process and deletes ~/bankon-tools\n"
+            "This stops every ₿ANKON process and deletes ~/bankon-tools\n"
             "(code, services, node_modules, logs, desktop entries).\n\n"
-            "Bitcoin Core, the blockchain, bitcoin.conf and ALL wallets\n"
+            "₿itcoin Core, the blockchain, bitcoin.conf and ALL wallets\n"
             "are NOT touched — the node keeps running.\n\n"
             "This cannot be undone.")
         resp = d.run(); d.destroy()
@@ -556,7 +595,7 @@ class Launcher:
         self._pressed(self.start, bool(pids))
         self._pressed(self.core, bool(cpids))
         self.core.get_child().set_text("⛓ core ● stop" if cpids else "⛓ core ▶ start")
-        self.core.set_tooltip_text("Bitcoin Core is running — press for graceful stop" if cpids
+        self.core.set_tooltip_text("₿itcoin Core is running — press for graceful stop" if cpids
                                    else "Start bitcoind")
         if pids:                                          # START shows pressed RUNNING state
             self.start_lbl.set_markup(

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# BANKON BTC WaaS — simple foreground launcher.
+# ₿ANKON ₿TC WaaS — simple foreground launcher.
 # Runs in THIS terminal so all logs stream here. Ctrl-C to stop.
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
@@ -13,11 +13,11 @@ GPU=0
 
 usage() {
   cat <<EOF
-BANKON BTC WaaS — launcher
+₿ANKON ₿TC WaaS — launcher
 
 Usage: ./bankon.sh [options] [-- extra Qt args]
-  --btc-bin DIR     Bitcoin Core bin dir   (default: $BANKON_BTC_BIN)
-  --datadir DIR     Bitcoin data dir        (default: $BANKON_BTC_DATADIR)
+  --btc-bin DIR     ₿itcoin Core bin dir   (default: $BANKON_BTC_BIN)
+  --datadir DIR     ₿itcoin data dir        (default: $BANKON_BTC_DATADIR)
   --waas-url URL    WaaS backend URL         (default: $BANKON_WAAS_URL)
   --peers N         Peer target              (default: $BANKON_PEER_TARGET)
   --gpu             Use GPU OpenGL (default: software rendering — safer on this host)
@@ -46,7 +46,7 @@ export BANKON_BTC_BIN BANKON_BTC_DATADIR BANKON_WAAS_URL BANKON_PEER_TARGET
 # (Per the Qt globe guidance: set ONLY QT_OPENGL=software; other flags can hang.)
 [[ "$GPU" -eq 0 ]] && export QT_OPENGL=software
 
-echo "▶ BANKON BTC WaaS"
+echo "▶ ₿ANKON ₿TC WaaS"
 echo "  btc-bin : $BANKON_BTC_BIN"
 echo "  datadir : $BANKON_BTC_DATADIR"
 echo "  waas    : $BANKON_WAAS_URL"

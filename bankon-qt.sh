@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bankon-qt.sh — launch the BANKON Qt diagnostics UI.
+# bankon-qt.sh — launch the ₿ANKON Qt diagnostics UI.
 # Handles the one-time PySide6 install and forces SOFTWARE rendering, because
 # this machine's Intel HD 3000 + Mesa black-screens Qt's GL path (the reason we
 # moved the node itself off bitcoin-qt to headless bitcoind).
