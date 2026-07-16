@@ -8,6 +8,12 @@ to that terminal. None need root unless noted.
 
 ---
 
+## 📦 Installer (one-shot setup)
+
+| Script | What it does | Notes |
+|--------|--------------|-------|
+| `bankon.sh` | **THE installer** — prereqs (node·npm·python3·pip·curl) → Bitcoin Core v31 (SHA256-verified) → WaaS/Console `npm install` → Qt PySide6 → `qrencode` → optional systemd units → `bankon doctor`. Idempotent; orchestrates the pieces, duplicates none. | `--only core,waas,…` · `--dry-run` · `--yes` · `--help`. Per-OS pkg map (apt·apk·pkg_add·brew) for the bankonOS seed targets. Run: `./bankon.sh` then `./bankon up`. |
+
 ## 🚀 Launchers (UI / WaaS)
 
 | Script | What it does | Notes |
