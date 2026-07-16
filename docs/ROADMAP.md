@@ -93,6 +93,8 @@ request containing private fields).
   `.history` connectivity evidence (rotating, exportable) with **coreutils [shred(1)](https://manpages.debian.org/testing/coreutils/shred.1.en.html)**
   secure erase — 'care' = 7 overwrite passes; wipe intensity casual (default) · recommended 93% · immediate 100% CPU
 - ✅ **ICE transport switches** (in 🧊 ICE + ⟲ SPINTRADE only, OS-backed shared state): VPN · ₿luetooth · Ethernet · Infrared on/off
+- ✅ **ICE UI-interception shield** — app-wide event filter drops synthetic/injected input (UI automation, AT-SPI introspection);
+  persistently **recommends AIRGAP** for the vectors it can't cover (OS screenshots, kernel injection). Honest scope stated in-UI
 - ✅ **⟲ SPINTRADE** — chain-native trading pairs priced in SAT (SATPAY, SAT/vB book, ₿TC/BLOCK, SAT/HASH); optional module,
   default OFF, consent-gated ("innerstand"), absolute attach/detach, candle-green ON / red OFF, ICE-AIRGAP compatible.
   Swaps cryptocurrency for other assets; shortest-route locator via ICE geo. Engine: `bankon-waas/pairs.mjs` (additive)
@@ -115,9 +117,16 @@ request containing private fields).
   pgvectorscale store + the **/rage retrieval tool** (`bankon-waas/rage-search.mjs`) ship on-box.
   **Partition isolation:** the **AI partition** (pgvectorscale + RAGE) is contained on **OpenBSD**,
   separated from the **blockchain partition** (Bitcoin Core datadir) — OpenBSD's pledge/unveil +
-  separate slices keep the node and the model store from reaching into each other. Provisioning via
-  `bankonos/` (Alpine/OpenBSD-first, verified installs); the Qt console's disk-runway diagnostic is
-  the fit gauge.
+  separate slices keep the node and the model store from reaching into each other. The Qt console's
+  disk-runway diagnostic is the fit gauge.
+
+  **Seed order — three OS targets, all with PostgreSQL** (pgvectorscale runs on each):
+  1. **Debian** — broadest hardware/driver support; the reference seed.
+  2. **Alpine** — minimal, hardened, small footprint; the lean production image.
+  3. **OpenBSD** — the isolation target: hosts the AI partition apart from the blockchain partition.
+
+  Provisioning via `bankonos/` (POSIX `sh`, per-OS `pkgname()` map, verified installs) seeds the
+  builds in that order.
 - ✅ **/rage tool restored** — `bankon-waas/rage-search.mjs`: the retrieval side of RAGE (semantic
   vector kNN + structured SQL over the exported `.bitcoin` data); standalone `:8095/rage`, dry-run
   without a DB. Ingest side is `ragest-server.mjs`; both read the same pgvectorscale schema.

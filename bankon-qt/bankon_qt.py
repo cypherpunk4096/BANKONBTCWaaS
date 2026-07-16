@@ -4145,6 +4145,22 @@ class IceTab(QtWidgets.QWidget):
         sub.setStyleSheet("color:#5a6b7b;font-size:10px"); v.addWidget(sub)
         # ---- the wall (unchanged behavior): CPU heat + radio kill ----
         self.temp = QtWidgets.QLabel("CPU: — °C"); self.temp.setStyleSheet("font-size:22px;font-weight:700"); v.addWidget(self.temp)
+        # 🛡 UI-interception shield — blocks synthetic/injected input + the accessibility bridge
+        shrow = QtWidgets.QHBoxLayout()
+        self.shield = QtWidgets.QCheckBox("🛡 UI shield — block interception")
+        self.shield.setToolTip("Drop input the window system didn't originate (synthetic/injected mouse+keys, "
+                               "UI-automation, AT-SPI introspection). Does NOT stop OS screenshots or kernel "
+                               "injection — for those, AIRGAP.")
+        self.shield.toggled.connect(self._toggle_shield); shrow.addWidget(self.shield)
+        self.shield_lbl = QtWidgets.QLabel("shield OFF"); self.shield_lbl.setStyleSheet("color:#f85149;font-weight:700")
+        shrow.addWidget(self.shield_lbl); shrow.addStretch(1); v.addLayout(shrow)
+        # persistent AIRGAP recommendation — the only countermeasure the shield can't provide itself
+        self.airgap_rec = QtWidgets.QLabel("🛡 UI shield blocks in-process interception. For total isolation "
+                                           "(screenshots, kernel injection) the recommended countermeasure is AIRGAP ↓")
+        self.airgap_rec.setWordWrap(True)
+        self.airgap_rec.setStyleSheet("background:#2a1200;border:1px solid #F7931A;border-radius:6px;"
+                                      "color:#F7931A;padding:6px;font-weight:600")
+        v.addWidget(self.airgap_rec)
         rl = QtWidgets.QHBoxLayout()
         ag = QtWidgets.QPushButton("🛑 AIRGAP (cut all radios)"); ag.clicked.connect(lambda: self._rfk("block")); rl.addWidget(ag)
         rs = QtWidgets.QPushButton("📡 Restore radios"); rs.clicked.connect(lambda: self._rfk("unblock")); rl.addWidget(rs)
@@ -4500,6 +4516,17 @@ class IceTab(QtWidgets.QWidget):
                 continue
             states.append(f"{label}: {'on' if 'Soft blocked: yes' not in o else 'OFF'}")
         self.rlabel.setText("radios — " + ("   ·   ".join(states) if states else "none present"))
+        # keep the shield's live block tally + tune the airgap recommendation to the current state
+        if self.shield.isChecked():
+            self.shield_lbl.setText("shield ON · %d blocked" % ICE_SHIELD.blocked)
+        radios_up = any("OFF" not in s for s in states)
+        if radios_up:
+            self.airgap_rec.setText("🛡 UI shield blocks in-process interception. Radios are LIVE — for total "
+                                    "isolation the recommended countermeasure is AIRGAP ↓")
+            self.airgap_rec.setStyleSheet("background:#2a1200;border:1px solid #F7931A;border-radius:6px;color:#F7931A;padding:6px;font-weight:600")
+        else:
+            self.airgap_rec.setText("🛡 UI shield active · ✓ radios dark (AIRGAP engaged) — isolation at its strongest")
+            self.airgap_rec.setStyleSheet("background:#04220f;border:1px solid #16C784;border-radius:6px;color:#16C784;padding:6px;font-weight:600")
     def _on_peers(self, peers, stale):
         self._peers = peers or []
         cur = self.geo_pick.currentText()
@@ -4508,6 +4535,12 @@ class IceTab(QtWidgets.QWidget):
         i = self.geo_pick.findText(cur)
         if i >= 0: self.geo_pick.setCurrentIndex(i)
         self.geo_pick.blockSignals(False)
+    def _toggle_shield(self, on):
+        ICE_SHIELD.arm(on)
+        self.shield_lbl.setText(("shield ON · %d blocked" % ICE_SHIELD.blocked) if on else "shield OFF")
+        self.shield_lbl.setStyleSheet("color:%s;font-weight:700" % ("#16C784" if on else "#f85149"))
+        from services import history_service as H
+        H.append("ice-shield", state="armed" if on else "disarmed")
     def _rfk(self, action):
         try:
             subprocess.Popen(["pkexec", "rfkill", action, "all"])
@@ -4520,6 +4553,51 @@ class IceTab(QtWidgets.QWidget):
             self.rlabel.setText("full ICE app not found at ~/ICE/ice.py"); return
         term = _sh.which("x-terminal-emulator") or _sh.which("gnome-terminal") or _sh.which("xterm")
         subprocess.Popen([term, "-e", self.ICE_APP] if term else [self.ICE_APP])
+
+
+class ICEShield(QtCore.QObject):
+    """🛡 ICE UI-interception guard. Intrusion Countermeasures for the surface itself: an
+    application-wide event filter that DROPS input the window system did not originate —
+    synthesized/programmatically-posted mouse & key events (the shape of UI automation and
+    injection) never reach the widgets. While armed it also tears down the accessibility
+    bridge so another process can't introspect or drive the widget tree.
+
+    Honest scope: this blocks in-process/AT-SPI/synthetic-event interception. It does NOT stop
+    a raw OS screenshot or kernel-level input injection — for THOSE, the only real countermeasure
+    is to go dark, which is why the shield persistently recommends AIRGAP."""
+    def __init__(self):
+        super().__init__(); self.armed = False; self.blocked = 0
+    def arm(self, on):
+        app = QtWidgets.QApplication.instance()
+        if on and not self.armed:
+            os.environ["QT_ACCESSIBILITY"] = "0"          # deny the AT-SPI automation bridge
+            os.environ["NO_AT_BRIDGE"] = "1"
+            app.installEventFilter(self)
+            self.armed = True
+        elif not on and self.armed:
+            app.removeEventFilter(self)
+            self.armed = False
+    _INPUT = {QtCore.QEvent.MouseButtonPress, QtCore.QEvent.MouseButtonRelease,
+              QtCore.QEvent.MouseButtonDblClick, QtCore.QEvent.KeyPress, QtCore.QEvent.KeyRelease}
+    def eventFilter(self, obj, ev):
+        if ev.type() in self._INPUT:
+            # spontaneous() is True only for events the window system delivered; sendEvent/postEvent
+            # from another automation path is False → drop it. Synthesized mouse sources are dropped too.
+            if not ev.spontaneous():
+                self.blocked += 1
+                return True
+            try:
+                if ev.type() in (QtCore.QEvent.MouseButtonPress, QtCore.QEvent.MouseButtonRelease,
+                                 QtCore.QEvent.MouseButtonDblClick) and \
+                   ev.source() != QtCore.Qt.MouseEventNotSynthesized:
+                    self.blocked += 1
+                    return True
+            except Exception:
+                pass
+        return False
+
+
+ICE_SHIELD = ICEShield()
 
 
 class TransportSwitches(QtWidgets.QFrame):
