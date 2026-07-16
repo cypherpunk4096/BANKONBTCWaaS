@@ -112,6 +112,11 @@ def flag(iso):
     return "".join(chr(0x1F1E6 + ord(c) - 65) for c in iso) if (iso and len(iso) == 2 and iso.isalpha()) else "🏴"
 
 
+def clear_cache():
+    """Wipe the RPC result cache completely — called on exit so nothing lingers in memory."""
+    _CACHE.clear()
+
+
 def rpc_cached(method, params=None, timeout=15):
     """Return (value, stale). Serve last-known on failure so tabs aren't blank."""
     key = (method, json.dumps(params or []))

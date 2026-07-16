@@ -25,6 +25,25 @@ concurrency-limited), and node-native network maps.
 **Aspirational** (architecture exists in `docs/qt/`; user supplies the proprietary pieces):
 `allchain` multi-chain, EVM/Foundry, Algorand/x402, SATPAY bridge, the PARSEC shell.
 
+**Shipped since (Phase 7):** the 🧊 ICE forensic toolkit (evidence `.history` with
+[shred(1)](https://manpages.debian.org/testing/coreutils/shred.1.en.html) secure erase and
+memory scrub on exit), ICE transport switches, ⟲ SPINTRADE (chain-native pairs in SAT, opt-in +
+consent-gated), and the ordinal minter that follows its own transaction from the local node.
+See [ROADMAP §Phase 7](ROADMAP.md) and the one proposal doc
+[proposals/btc-pairs-spintrade.md](proposals/btc-pairs-spintrade.md) — details live there, not
+duplicated here.
+
+## North-star extension: bankonOS as a shippable product
+
+The endgame is **bankonOS** — a tight OS with **the blockchains as a service**, shipped on
+physical media: a **1 TB proto** build and a **2 TB production** build, each pre-provisioned with
+Bitcoin Core + the BANKON WaaS module. The 1 TB device is the *binding constraint* (the chain is
+the payload); 2 TB is production headroom. This reframes the storage tiers the Qt console already
+measures (disk-runway diagnostic) as the product's fit gauge. In this frame the **WaaS is a
+standalone dapp** — compatible with, and dockable into, the BANKON ₿TC console (a feature-peer to
+the Qt UI, per the read-only/​non-custodial invariants). Provisioning is `bankonos/`
+(Alpine/OpenBSD-first, verified installs).
+
 ---
 
 ## 2. Critical path → "Shipped Bitcoin WaaS"

@@ -88,6 +88,41 @@ request containing private fields).
 - ⛔ Apply `db/schema.sql` to a live pgvectorscale Postgres + run the collector at scale — *user (needs the DB)*
 - ⬜ allchain multi-chain globe (Tier 1/2/3 sources) + Qt Quick 3D / QRhi 3D globe (GPU host) — see [QT roadmap](roadmap.md)
 
+### Phase 7 — ICE forensics, SPINTRADE, bankonOS shipping  🔨
+- ✅ **🧊 ICE forensic toolkit** — geo/IP forensics, Net Map cross-link, 18-dp precision metrics,
+  `.history` connectivity evidence (rotating, exportable) with **coreutils [shred(1)](https://manpages.debian.org/testing/coreutils/shred.1.en.html)**
+  secure erase — 'care' = 7 overwrite passes; wipe intensity casual (default) · recommended 93% · immediate 100% CPU
+- ✅ **ICE transport switches** (in 🧊 ICE + ⟲ SPINTRADE only, OS-backed shared state): VPN · ₿luetooth · Ethernet · Infrared on/off
+- ✅ **⟲ SPINTRADE** — chain-native trading pairs priced in SAT (SATPAY, SAT/vB book, ₿TC/BLOCK, SAT/HASH); optional module,
+  default OFF, consent-gated ("innerstand"), absolute attach/detach, candle-green ON / red OFF, ICE-AIRGAP compatible.
+  Swaps cryptocurrency for other assets; shortest-route locator via ICE geo. Engine: `bankon-waas/pairs.mjs` (additive)
+- ✅ **Ordinal minter** — inscribe the `.history` digest for tamper-evident verification, **gas measured in SAT** from the
+  local node, then **follow the transaction on the ₿itcoin network from your own node** (mempool → confirmations, no explorer)
+- ✅ **Exit hygiene** — exit is fast; recommends wiping the public `.history` before leaving, clears the RPC cache completely,
+  and scrubs any private-key/signature material from memory (`scrub_memory`)
+- ✅ Retention: `.history` 5 MB × 20 = 100 MB ceiling (tunable); **price collection is separate public storage** (`.pricehistory`)
+- ⬜ **bankonOS shipping** — physical builds of the OS with the blockchains as a service
+  (Bitcoin Core + BANKON WaaS pre-provisioned), on a **power-of-two GB ladder**:
+
+  | Build | Capacity | Decimal | Tier | Carries |
+  |---|---|---|---|---|
+  | **1024 GB** | 1 TiB | 1.10 TB | proto | chain (binding constraint) |
+  | **2048 GB** | 2 TiB | 2.20 TB | production | chain + headroom |
+  | **4096 GB** | 4 TiB | 4.40 TB | data proto | chain + local index (~$666 tier) |
+  | **8192 GB** | 8 TiB | 8.80 TB | pgvectorscale | chain + **rageBTC on-box** — eyes on 10 TB drives (9,313 GiB usable → the 8192 build fits with ~1.1 TiB spare) |
+
+  The 8192 build is the fully **AIML-enhanced `.bitcoin` search** appliance: the chain exporter's
+  pgvectorscale store + the **/rage retrieval tool** (`bankon-waas/rage-search.mjs`) ship on-box.
+  **Partition isolation:** the **AI partition** (pgvectorscale + RAGE) is contained on **OpenBSD**,
+  separated from the **blockchain partition** (Bitcoin Core datadir) — OpenBSD's pledge/unveil +
+  separate slices keep the node and the model store from reaching into each other. Provisioning via
+  `bankonos/` (Alpine/OpenBSD-first, verified installs); the Qt console's disk-runway diagnostic is
+  the fit gauge.
+- ✅ **/rage tool restored** — `bankon-waas/rage-search.mjs`: the retrieval side of RAGE (semantic
+  vector kNN + structured SQL over the exported `.bitcoin` data); standalone `:8095/rage`, dry-run
+  without a DB. Ingest side is `ragest-server.mjs`; both read the same pgvectorscale schema.
+- ⬜ WaaS as a **standalone dapp**, compatible with and **dockable into** the BANKON ₿TC console (feature-peer to the Qt UI)
+
 ## Module inventory (`~/bankon-tools/`)
 | File | Role | State |
 |------|------|-------|

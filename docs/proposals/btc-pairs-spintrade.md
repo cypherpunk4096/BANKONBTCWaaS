@@ -48,3 +48,35 @@ client opts into it explicitly.
 Qt tab → WaaS `/api/pairs` when up (shared engine) → falls back to computing the same
 pair definitions directly from node RPC (works with only `bitcoind` running). Both
 paths use exact integer arithmetic (BigInt in JS, int-satoshi + Decimal in Python).
+
+## ICE transport switches (SPINTRADE ↔ ICE only)
+
+The physical links a swap can ride are **just switches**, present in **both the 🧊 ICE tab and
+the ⟲ SPINTRADE tab and nowhere else**. The OS is the single source of truth, so a switch flipped
+in one tab shows in the other on next refresh — shared state, no duplicate bookkeeping
+(`services/ice_transport.py`):
+
+| Switch | Mechanism | Notes |
+|---|---|---|
+| **VPN** | NetworkManager vpn/wireguard up/down | the shortest-route exit for the exchange |
+| **₿luetooth** | rfkill soft-block | the bluetooth exchange path |
+| **Ethernet** | `ip link set <nic> up/down` | wired exchange path |
+| **Infrared** | rc-core / IrDA protocols | infrared exchange path |
+
+All mutations escalate through `pkexec` (the same wall as the ICE AIRGAP). AIRGAP overrides the
+radios beneath the switches; SPINTRADE suspends quoting while the network is dark. SPINTRADE's
+**shortest-route locator** picks the nearest connected peer (via ICE geo) as the natural first hop.
+
+## Ordinal minter + evidence hygiene (🧊 ICE)
+
+- **Ordinal minter** (button + chain chooser, Ordinals first): hashes the `.history`, **measures gas
+  in SAT** from the local node, inscribes/anchors the digest, then **follows the transaction on the
+  ₿itcoin network from your own node** (mempool → confirmations, no explorer, no external API).
+- **`.history`** connectivity evidence rotates at 5 MB × 20 (100 MB ceiling, tunable via
+  `BANKON_HISTORY_MB` / `BANKON_HISTORY_KEEP`); **price collection is separate public storage**
+  (`.pricehistory`).
+- **Secure erase** uses coreutils [shred(1)](https://manpages.debian.org/testing/coreutils/shred.1.en.html):
+  'care' toggle (default ON) = 7 overwrite passes + zero + unlink; wipe intensity **casual**
+  (niced background, default) · **recommended (93%)** · **immediate (100% CPU)**.
+- **Exit is fast**: BANKON recommends wiping the public `.history` before leaving (public history is
+  still public), clears the RPC cache completely, and scrubs any key/signature material from memory.

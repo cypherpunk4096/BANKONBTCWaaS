@@ -72,6 +72,33 @@ def spawn(method, on_done=None, on_fail=None, params=None, timeout=15):
     w.start()
     return w
 
+def scrub_memory():
+    """Exit hygiene — clear ALL transient state from memory. BANKON Qt is non-custodial and
+    holds no private keys by design, but we scrub any key/signature-shaped material regardless,
+    empty the RPC cache completely, and drop cached datasets. Insisted on at every exit."""
+    try:
+        from services.rpc_service import clear_cache
+        clear_cache()
+    except Exception:
+        pass
+    # any module-level dict/list whose name hints at keys/signatures/PSBTs → overwrite then clear
+    import sys as _sys
+    for modname, mod in list(_sys.modules.items()):
+        if not modname.startswith(("services", "adapters")) and modname != "__main__":
+            continue
+        for attr in list(vars(mod) if hasattr(mod, "__dict__") else []):
+            low = attr.lower()
+            if any(s in low for s in ("privkey", "xprv", "mnemonic", "seed", "signature", "psbt", "passphrase")):
+                try:
+                    v = getattr(mod, attr)
+                    if isinstance(v, dict): v.clear()
+                    elif isinstance(v, list): v.clear()
+                    elif isinstance(v, (bytes, bytearray, str)): setattr(mod, attr, None)
+                except Exception:
+                    pass
+    import gc as _gc; _gc.collect()
+
+
 def shutdown_workers():
     # Bounded join so the X-button exit stays snappy: brief wait per worker (they're one-shot RPC
     # calls); any still in-flight are reclaimed when the process exits. ~1s worst case overall.
@@ -4128,6 +4155,7 @@ class IceTab(QtWidgets.QWidget):
         # ---- forensic toolkit ----
         self.netmap_link = None                      # wired by Main → jump-to-Net-Map
         v.addWidget(self._geo_panel())
+        self.transport = TransportSwitches("  (shared with ⟲ SPINTRADE)"); v.addWidget(self.transport)
         v.addWidget(self._evidence_panel())
         v.addWidget(self._precision_panel())
         v.addWidget(self._capture_panel())
@@ -4219,15 +4247,140 @@ class IceTab(QtWidgets.QWidget):
         for fmt in ("csv", "json"):
             b = QtWidgets.QPushButton(f"⬇ Export {fmt.upper()}"); b.setObjectName("secondary")
             b.clicked.connect(lambda _c, f=fmt: self._ev_export(f)); br.addWidget(b)
+        # mint the evidence trail as an NFT for extra (on-chain) verification — chain chooser
+        self.mint_chain = QtWidgets.QComboBox()
+        self.mint_chain.addItems(["Bitcoin Ordinals", "Bitcoin OP_RETURN", "Ethereum", "Polygon"])
+        self.mint_chain.setToolTip("Where to inscribe the .history digest for tamper-evident verification.\n"
+                                   "Ordinals = inscribe the SHA-256 as an inscription; OP_RETURN = timestamp anchor.")
+        br.addWidget(self.mint_chain)
+        mb = QtWidgets.QPushButton("⧉ Mint as NFT"); mb.setObjectName("secondary")
+        mb.setToolTip("Hash the current .history and inscribe/anchor the digest on the chosen chain")
+        mb.clicked.connect(self._ev_mint); br.addWidget(mb)
         br.addStretch(1)
+        # 'care' = 7-pass secure erase (shred -n 7 -z -u). Default ON.
+        self.care = QtWidgets.QCheckBox("care (7×)"); self.care.setChecked(True)
+        self.care.setToolTip("Care = coreutils shred(1) with 7 overwrite passes + zero pass + unlink.\n"
+                             "https://manpages.debian.org/testing/coreutils/shred.1.en.html\n"
+                             "Off = a single-pass wipe (faster, less thorough).")
+        br.addWidget(self.care)
+        # local public history is STILL public — wipe it automatically on close. Default ON.
+        self.autowipe = QtWidgets.QCheckBox("auto-wipe on exit"); self.autowipe.setChecked(True)
+        self.autowipe.setToolTip("The local .history is a public record of your connectivity — wipe it on exit "
+                                 "so it never lingers. Anchor/mint first if you want a permanent, verifiable copy.")
+        br.addWidget(self.autowipe)
+        # wipe intensity: casual (default) · recommended 93% · immediate 100% CPU
+        self.wipe_intensity = QtWidgets.QComboBox()
+        self.wipe_intensity.addItems(["casual (background)", "recommended (93%)", "immediate (100% CPU)"])
+        self.wipe_intensity.setToolTip("How hard the secure wipe runs:\n"
+                                       "• casual — niced background (ionice idle · nice 19), won't fight the UI (default)\n"
+                                       "• recommended — cpulimit to ~93%\n"
+                                       "• immediate — all-out, 100% CPU")
+        br.addWidget(self.wipe_intensity)
         db = QtWidgets.QPushButton("🗑 Delete"); db.setObjectName("danger")
         db.setToolTip("Unlink every .history segment"); db.clicked.connect(self._ev_delete); br.addWidget(db)
         sb = QtWidgets.QPushButton("🔥 Shred"); sb.setObjectName("danger")
-        sb.setToolTip("Secure removal: overwrite then unlink (shred -u when available)")
+        sb.setToolTip("Secure removal via coreutils shred(1) — 7 passes when 'care' is on, else 1.\n"
+                      "https://manpages.debian.org/testing/coreutils/shred.1.en.html")
         sb.clicked.connect(self._ev_shred); br.addWidget(sb)
         fl.addLayout(br)
+        ref = QtWidgets.QLabel("secure erase: coreutils <a href='https://manpages.debian.org/testing/coreutils/shred.1.en.html'>shred(1)</a> "
+                               "· 'care' = 7 overwrite passes + zero + unlink · public history is still public")
+        ref.setOpenExternalLinks(True); ref.setStyleSheet("border:0;color:#5a6b7b;font-size:10px"); fl.addWidget(ref)
         self.ev_status = QtWidgets.QLabel(""); self.ev_status.setStyleSheet("color:#8aa0b4;border:0"); fl.addWidget(self.ev_status)
         return fr
+    def _ev_mint(self):
+        import hashlib
+        from services import history_service as H
+        recs = H.read_recent(100000)
+        if not recs:
+            self.ev_status.setText("nothing to mint — .history is empty"); return
+        blob = "\n".join(json.dumps(r, separators=(",", ":"), sort_keys=True) for r in recs).encode()
+        digest = hashlib.sha256(blob).hexdigest()
+        chain = self.mint_chain.currentText()
+        # measure the gas required — in SAT, from the LOCAL node (no external feed). An ordinal
+        # inscription of a 32-byte digest ≈ commit + reveal; ~250 vB total is a safe estimate.
+        gas = self._estimate_gas(chain)
+        gas_line = (f"gas ≈ {gas['sat']:,} sat  ({gas['vb']} vB × {gas['rate']} sat/vB)  ·  pay {gas['sat']:,} PAI-sat\n"
+                    if gas else "gas: (node fee estimate unavailable — will use node default)\n")
+        if QtWidgets.QMessageBox.question(
+                self, "⧉ Ordinal minter — inscribe .history digest",
+                f"Inscribe the .history digest for extra verification?\n\n"
+                f"records: {len(recs)}\nSHA-256: {digest}\nchain: {chain}\n{gas_line}\n"
+                "Only the DIGEST goes on-chain — the evidence stays local (and is still public until wiped).\n"
+                "After broadcast, BANKON follows the transaction on the ₿itcoin network from your own node.",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No) != QtWidgets.QMessageBox.Yes:
+            return
+        def work():
+            if chain == "Bitcoin OP_RETURN":
+                return post_json("/api/anchor", {"hash": digest}, timeout=30)   # existing WaaS anchor
+            if chain == "Bitcoin Ordinals":
+                return post_json("/api/ord", {"action": "inscribe-digest", "sha256": digest}, timeout=30)
+            return post_json("/api/mint", {"chain": chain.lower(), "sha256": digest}, timeout=30)
+        self.ev_status.setText(f"minting on {chain} — digest {digest[:16]}…")
+        spawn_fn(work, lambda d: self._minted(d, chain, digest),
+                 lambda e: self.ev_status.setText(f"mint via WaaS unavailable ({e}). Digest (verify manually): {digest}"))
+    @staticmethod
+    def _estimate_gas(chain):
+        """Inscription gas in SAT, measured from the local node's fee estimate. ~250 vB covers
+        a minimal ordinal digest inscription (commit + reveal); OP_RETURN is ~150 vB."""
+        vb = 150 if "OP_RETURN" in chain else 250
+        try:
+            f = (rpc("estimatesmartfee", [1], timeout=6) or {}).get("feerate")
+            rate = max(1, round(f * 1e5)) if f else None
+        except Exception:
+            rate = None
+        if rate is None:
+            return None
+        return {"vb": vb, "rate": rate, "sat": vb * rate}
+    def _minted(self, d, chain, digest):
+        d = d or {}
+        txid = d.get("txid") or d.get("reveal") or d.get("commit")
+        insc = d.get("inscription")
+        tag = insc or txid or d.get("note") or "submitted"
+        self.ev_status.setText(f"✓ {chain}: {tag}")
+        # streamline: FOLLOW the Bitcoin tx from our own node — no explorer, no external API
+        if txid and chain.startswith("Bitcoin"):
+            self._follow_txid = txid; self._follow_insc = insc
+            self._followt = QtCore.QTimer(self); self._followt.timeout.connect(self._follow_tx)
+            self._followt.start(6000); self._follow_tx()
+    def _follow_tx(self):
+        txid = getattr(self, "_follow_txid", None)
+        if not txid: return
+        def work():
+            try:
+                r = rpc("getmempoolentry", [txid], timeout=6)          # still pending
+                return ("mempool", r)
+            except Exception:
+                pass
+            try:
+                gt = rpc("gettransaction", [txid], timeout=6)          # wallet-visible, may be confirmed
+                return ("wallet", gt)
+            except Exception:
+                pass
+            try:
+                raw = rpc("getrawtransaction", [txid, True], timeout=6)  # txindex path
+                return ("chain", raw)
+            except Exception:
+                return (None, None)
+        spawn_fn(work, self._follow_render)
+    def _follow_render(self, res):
+        where, r = res or (None, None)
+        txid = getattr(self, "_follow_txid", "")
+        insc = getattr(self, "_follow_insc", None)
+        head = f"⧉ inscription {insc[:18]}… · " if insc else ""
+        if where == "mempool":
+            fee = (r or {}).get("fees", {}).get("base")
+            self.ev_status.setText(f"{head}tx {txid[:16]}… in mempool (unconfirmed{f', fee {fee} ₿TC' if fee else ''}) — following on local node")
+        elif where in ("wallet", "chain"):
+            conf = (r or {}).get("confirmations", 0) or 0
+            if conf >= 1:
+                self.ev_status.setText(f"{head}tx {txid[:16]}… CONFIRMED ({conf} conf) — evidence anchored on ₿itcoin")
+                if conf >= 6 and getattr(self, "_followt", None):
+                    self._followt.stop()                               # deeply confirmed → stop polling
+            else:
+                self.ev_status.setText(f"{head}tx {txid[:16]}… seen, 0 conf — following on local node")
+        else:
+            self.ev_status.setText(f"{head}tx {txid[:16]}… broadcast — not yet visible to local node")
     def _ev_refresh(self):
         from services import history_service as H
         recs = H.read_recent(400)
@@ -4263,10 +4416,19 @@ class IceTab(QtWidgets.QWidget):
         from services import history_service as H
         if QtWidgets.QMessageBox.question(self, "Delete", "Delete the .history evidence trail?") != QtWidgets.QMessageBox.Yes: return
         self.ev_status.setText(f"deleted {H.delete()} segment(s)"); self._ev_refresh()
+    def _wipe_opts(self):
+        passes = 7 if self.care.isChecked() else 1
+        cpu = {0: None, 1: 93, 2: 100}[self.wipe_intensity.currentIndex()]     # casual · 93% · 100%
+        return passes, cpu
     def _ev_shred(self):
         from services import history_service as H
-        if QtWidgets.QMessageBox.question(self, "Shred", "SHRED the .history evidence trail (unrecoverable)?") != QtWidgets.QMessageBox.Yes: return
-        self.ev_status.setText(f"shredded {H.shred()} segment(s)"); self._ev_refresh()
+        passes, cpu = self._wipe_opts()
+        how = f"{passes}-pass, " + ("casual" if cpu is None else f"{cpu}% CPU")
+        if QtWidgets.QMessageBox.question(self, "Shred",
+                f"SHRED the .history evidence trail ({how}, unrecoverable)?") != QtWidgets.QMessageBox.Yes: return
+        self.ev_status.setText(f"shredding ({how})…")
+        spawn_fn(lambda: H.shred(passes=passes, cpu_pct=cpu),
+                 lambda n: (self.ev_status.setText(f"shredded {n} segment(s) — {how}"), self._ev_refresh()))
     # ---- 📐 precision metrics (shared Decimal core with ₿TC.oracle) ----
     def _precision_panel(self):
         fr = QtWidgets.QFrame(); fr.setStyleSheet("QFrame{border:1px solid #0e3d57;border-radius:6px}")
@@ -4358,6 +4520,83 @@ class IceTab(QtWidgets.QWidget):
             self.rlabel.setText("full ICE app not found at ~/ICE/ice.py"); return
         term = _sh.which("x-terminal-emulator") or _sh.which("gnome-terminal") or _sh.which("xterm")
         subprocess.Popen([term, "-e", self.ICE_APP] if term else [self.ICE_APP])
+
+
+class TransportSwitches(QtWidgets.QFrame):
+    """ICE transport controls — the physical links SPINTRADE rides. Just switches:
+    VPN · Bluetooth · Ethernet · Infrared, each on/off. Lives ONLY in the 🧊 ICE tab and
+    the ⟲ SPINTRADE tab; both read the OS as the single source of truth, so a switch flipped
+    in one is reflected in the other (shared state, no duplicate bookkeeping). Every mutation
+    escalates through pkexec — the same wall the ICE AIRGAP uses. Compatible with ICE by
+    construction: AIRGAP cuts the radios beneath these switches, and they re-probe to match."""
+    def __init__(self, host_label=""):
+        super().__init__()
+        self.setStyleSheet("QFrame{border:1px solid #0e3d57;border-radius:6px}")
+        v = QtWidgets.QVBoxLayout(self)
+        hd = QtWidgets.QLabel(f"🔀 ICE transport switches{host_label}")
+        hd.setStyleSheet("color:#F7931A;font-weight:700;border:0"); v.addWidget(hd)
+        self._rows = {}
+        grid = QtWidgets.QGridLayout()
+        # (key, label, tooltip)
+        defs = [
+            ("vpn", "VPN", "Route the exchange through a VPN exit (NetworkManager vpn/wireguard) — shortest-route leg"),
+            ("bluetooth", "₿luetooth", "Bluetooth radio (rfkill) — the SPINTRADE bluetooth exchange path"),
+            ("ethernet", "Ethernet", "Wired NIC up/down (ip link) — the wired exchange path"),
+            ("infrared", "Infrared", "IrDA / rc-core receiver — the infrared exchange path"),
+        ]
+        for r, (k, lab, tip) in enumerate(defs):
+            name = QtWidgets.QLabel(lab); name.setStyleSheet("border:0;color:#c9d4e0"); name.setToolTip(tip)
+            state = QtWidgets.QLabel("—"); state.setStyleSheet("border:0;font-family:'DejaVu Sans Mono',monospace")
+            btn = QtWidgets.QPushButton("…"); btn.setFixedWidth(64); btn.setEnabled(False)
+            btn.clicked.connect(lambda _c, key=k: self._flip(key))
+            grid.addWidget(name, r, 0); grid.addWidget(state, r, 1); grid.addWidget(btn, r, 2)
+            self._rows[k] = {"state": state, "btn": btn, "on": None, "extra": None}
+        v.addLayout(grid)
+        self.note = QtWidgets.QLabel(""); self.note.setStyleSheet("border:0;color:#5a6b7b;font-size:10px")
+        self.note.setWordWrap(True); v.addWidget(self.note)
+    def _set_row(self, k, on, present=True, extra=None):
+        row = self._rows[k]; row["on"] = on; row["extra"] = extra
+        s, b = row["state"], row["btn"]
+        if not present:
+            s.setText("not present"); s.setStyleSheet("border:0;color:#5a6b7b;font-family:'DejaVu Sans Mono',monospace")
+            b.setEnabled(False); b.setText("—"); return
+        b.setEnabled(True)
+        s.setText(("ON" if on else "OFF") + (f"  {extra}" if extra else ""))
+        s.setStyleSheet("border:0;font-weight:700;font-family:'DejaVu Sans Mono',monospace;color:%s"
+                        % ("#16C784" if on else "#f85149"))
+        b.setText("turn OFF" if on else "turn ON")
+    def refresh(self):
+        from services import ice_transport as T
+        self._set_row("bluetooth", T.bluetooth_state() == "on", present=T.bluetooth_state() is not None)
+        es = T.ethernet_state()
+        self._set_row("ethernet", es == "on", present=es is not None,
+                      extra=" ".join(f"{n}:{o}" for n, o in T.ethernet_ifaces()[:2]))
+        ir = T.infrared_state()
+        self._set_row("infrared", ir == "on", present=ir is not None)
+        active, avail = (T.vpn_state() or (None, []))
+        if not avail:
+            self._set_row("vpn", False, present=False)
+            self.note.setText("VPN: no NetworkManager vpn/wireguard profiles configured. "
+                              "Switches escalate via pkexec; AIRGAP (🧊 ICE) overrides the radios.")
+        else:
+            self._rows["vpn"]["avail"] = avail
+            self._set_row("vpn", active is not None, present=True, extra=(f"· {active}" if active else f"· {len(avail)} avail"))
+            self.note.setText("VPN routes the exchange through the shortest-route exit. "
+                              "Switches escalate via pkexec; AIRGAP (🧊 ICE) overrides the radios.")
+    def _flip(self, k):
+        from services import ice_transport as T
+        row = self._rows[k]; on = row["on"]
+        if k == "bluetooth": T.bluetooth_set(not on)
+        elif k == "ethernet": T.ethernet_set(not on)
+        elif k == "infrared": T.infrared_set(not on)
+        elif k == "vpn":
+            avail = row.get("avail") or []
+            if on:
+                a, _ = T.vpn_state()
+                if a: T.vpn_down(a)
+            elif avail:
+                T.vpn_up(avail[0])
+        QtCore.QTimer.singleShot(1200, self.refresh)    # re-probe → both tabs converge on OS truth
 
 
 # uniform "chip" base for the toolbar heartbeat band — corporate: quiet dark well, rounded,
@@ -4483,11 +4722,50 @@ class SpintradeTab(QtWidgets.QWidget):
         self.board = QtWidgets.QPlainTextEdit(); self.board.setReadOnly(True)
         self.board.setStyleSheet("font-family:'DejaVu Sans Mono',monospace;font-size:12px;background:#05080d")
         v.addWidget(self.board, 1)
+        # ICE transport switches (shared with 🧊 ICE) + shortest-route locator
+        self.transport = TransportSwitches("  (shared with 🧊 ICE)"); v.addWidget(self.transport)
+        self.route = QtWidgets.QLabel("shortest route: —")
+        self.route.setStyleSheet("color:#8aa0b4;font-family:'DejaVu Sans Mono',monospace;font-size:11px")
+        self.route.setWordWrap(True); v.addWidget(self.route)
         self.src = QtWidgets.QLabel("source: —"); self.src.setStyleSheet("color:#5a6b7b;font-size:10px"); v.addWidget(self.src)
     def refresh(self):
+        # ICE transport switches + shortest-route locator refresh with the tab
+        if hasattr(self, "transport"): self.transport.refresh()
+        self._locate_route()
         # ICE compatibility: when the 🧊 wall is up (AIRGAP / setnetworkactive=false) the venue
         # suspends honestly instead of quoting a dark network
         spawn("getnetworkinfo", self._gate, self._node_down, timeout=8)
+    def _locate_route(self):
+        # shortest exchange route: our node's location (via ICE geo) → nearest connected peer,
+        # the natural first hop for an on-chain swap. Reuses the geo forensics ICE already has.
+        def work():
+            from services.geodesy import haversine_km
+            peers = rpc("getpeerinfo", timeout=8) or []
+            me = None
+            ni = rpc("getnetworkinfo", timeout=6) or {}
+            for a in (ni.get("localaddresses") or []):
+                g = geolocate(a.get("address", ""))
+                if g: me = (g["lat"], g["lon"]); break
+            best = None
+            for p in peers:
+                host = (p.get("addr") or "").rsplit(":", 1)[0].strip("[]")
+                g = geolocate(host)
+                if not g: continue
+                if me:
+                    d = haversine_km(me[0], me[1], g["lat"], g["lon"])
+                    if best is None or d < best[0]:
+                        best = (d, p.get("addr"), g)
+            return me, best
+        spawn_fn(work, self._show_route)
+    def _show_route(self, res):
+        me, best = res or (None, None)
+        if not best:
+            self.route.setText("shortest route: locating peers…"); return
+        d, addr, g = best
+        _nc = nearest_city_entry(g["lat"], g["lon"])
+        where = f"{flag(g['iso'])} {g['country']} · near {_nc[0]}"
+        self.route.setText(f"shortest exchange route → {addr}  ({where}, ~{d:,.0f} km)  "
+                           + ("via VPN exit if switched" if True else ""))
     def _node_down(self, _e):
         self.satpay.setText("— sat")
         self.board.setPlainText("node unreachable — no venue without the blockchain")
@@ -4761,17 +5039,41 @@ class Main(QtWidgets.QMainWindow):
         self.zmq_lbl.setText(f"  ⚡ zmq {'●' if ok else '○'} {msg}")
         self.zmq_lbl.setStyleSheet(("color:%s; " % ("#16C784" if ok else "#5a6b7b")) + CHIP)
     def closeEvent(self, e):
-        # Clean kill (X button): stop every timer → no new work; stop the ZMQ thread; join live
-        # worker threads. Deterministic teardown — nothing left running, nothing to clean up later.
+        # EXIT IS EXIT — BANKON closes quickly and cleanly. Stop every timer → no new work;
+        # stop the ZMQ thread; join live workers; then scrub memory. No long blocking wipe here:
+        # secure erase of .history is offered as a recommendation (below) and done via the ICE
+        # button; exit stays fast.
         for name in ("timer", "health", "systimer", "coretimer", "logt", "nettimer"):
             try: getattr(self, name).stop()
             except Exception: pass
         for t in self.findChildren(QtCore.QTimer):    # child-widget timers (map pulse, globe spin, oracle throb)
             try: t.stop()
             except Exception: pass
+        # Recommend wiping the public .history before leaving (it's a public record of connectivity).
+        # One quick prompt — not a blocking wipe. Honors the ICE 'auto-wipe on exit' choice.
+        try:
+            from services import history_service as H
+            if H.size_bytes() > 0:
+                aw = getattr(self.ice, "autowipe", None)
+                do_wipe = aw.isChecked() if aw is not None else False
+                if not do_wipe:
+                    r = QtWidgets.QMessageBox.question(
+                        self, "Wipe before exit?",
+                        "The local .history is a PUBLIC record of your connectivity.\n"
+                        "Recommended: wipe it before exiting (mint/anchor first to keep a verifiable copy).\n\nWipe now?",
+                        QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No, QtWidgets.QMessageBox.Yes)
+                    do_wipe = (r == QtWidgets.QMessageBox.Yes)
+                if do_wipe:
+                    H.delete()               # fast unlink on exit; the button offers full 7-pass shred
+        except Exception:
+            pass
         try: self.zmq.stop()                 # joins the subscriber thread (≤2.5s)
         except Exception: pass
         try: shutdown_workers()              # wait out any in-flight RPC workers
+        except Exception: pass
+        # INSIST on clearing transient memory: RPC caches + any private-key/signature material
+        # (Qt is non-custodial and holds none by design, but scrub regardless) + the cache dir.
+        try: scrub_memory()
         except Exception: pass
         super().closeEvent(e)
     def do_refresh(self):

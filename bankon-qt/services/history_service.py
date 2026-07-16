@@ -12,37 +12,53 @@ from pathlib import Path
 
 HIST_DIR = Path(os.environ.get("BANKON_HISTORY_DIR", str(Path.home() / ".bankon")))
 HIST = HIST_DIR / ".history"
-MAX_BYTES = 1 * 1024 * 1024        # 1 MB per segment (retention policy)
-KEEP = 5                           # active + 4 rotated
+# Retention: connectivity .history may persist — 1-5 MB per segment is fine, 100 MB total is OK.
+# Tunable via BANKON_HISTORY_MB (per-segment) and BANKON_HISTORY_KEEP (segment count).
+MAX_BYTES = int(float(os.environ.get("BANKON_HISTORY_MB", "5")) * 1024 * 1024)   # 5 MB/segment default
+KEEP = int(os.environ.get("BANKON_HISTORY_KEEP", "20"))    # 20 × 5 MB = 100 MB ceiling (sane)
+
+# Price collection is SEPARATE storage — it is also public data, but a different concern from
+# connectivity evidence, so it never shares the .history file. (.pricehistory, same rotation.)
+PRICE = HIST_DIR / ".pricehistory"
 
 
-def _files():
-    out = [HIST] + [HIST.with_name(f".history.{i}") for i in range(1, KEEP)]
+def _files(base=None):
+    base = base or HIST
+    out = [base] + [base.with_name(f"{base.name}.{i}") for i in range(1, KEEP)]
     return [p for p in out if p.exists()]
 
 
-def _rotate():
-    if not HIST.exists() or HIST.stat().st_size < MAX_BYTES:
+def _rotate(base):
+    if not base.exists() or base.stat().st_size < MAX_BYTES:
         return
     for i in range(KEEP - 1, 0, -1):
-        src = HIST if i == 1 else HIST.with_name(f".history.{i-1}")
-        dst = HIST.with_name(f".history.{i}")
+        src = base if i == 1 else base.with_name(f"{base.name}.{i-1}")
+        dst = base.with_name(f"{base.name}.{i}")
         if src.exists():
             try: os.replace(src, dst)
             except OSError: pass
 
 
-def append(kind: str, **fields):
-    """Best-effort append — never raises into the UI thread."""
+def _append(base, kind, fields):
     try:
         HIST_DIR.mkdir(parents=True, exist_ok=True)
-        _rotate()
+        _rotate(base)
         rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "kind": kind}
         rec.update(fields)
-        with open(HIST, "a") as fh:
+        with open(base, "a") as fh:
             fh.write(json.dumps(rec, separators=(",", ":")) + "\n")
     except Exception:
         pass
+
+
+def append(kind: str, **fields):
+    """Connectivity evidence → .history. Best-effort — never raises into the UI thread."""
+    _append(HIST, kind, fields)
+
+
+def append_price(**fields):
+    """Price observations → .pricehistory (SEPARATE public store, same rotation policy)."""
+    _append(PRICE, "price", fields)
 
 
 def read_recent(n=500):
@@ -60,33 +76,60 @@ def read_recent(n=500):
     return recs[:n]
 
 
-def size_bytes():
-    return sum(p.stat().st_size for p in _files())
+def size_bytes(base=None):
+    return sum(p.stat().st_size for p in _files(base))
 
 
-def delete():
-    """Plain unlink of every segment. Returns count removed."""
+def delete(base=None):
+    """Plain unlink of every segment (both stores when base is None). Returns count removed."""
+    bases = [base] if base else [HIST, PRICE]
     n = 0
-    for p in _files():
-        try: p.unlink(); n += 1
-        except OSError: pass
+    for b in bases:
+        for p in _files(b):
+            try: p.unlink(); n += 1
+            except OSError: pass
     return n
 
 
-def shred():
-    """Secure removal: shred -u when present, else overwrite-with-random then unlink."""
+# Secure erase uses coreutils shred(1) — 7 overwrite passes + a final zero pass, then unlink.
+# https://manpages.debian.org/testing/coreutils/shred.1.en.html
+SHRED_PASSES = 7
+
+
+def shred(passes=SHRED_PASSES, cpu_pct=None):
+    """Secure removal of the .history evidence trail: coreutils shred(1) with N overwrite
+    passes (-n) + a zeroing pass (-z) + unlink (-u). Falls back to in-process overwrites
+    when shred isn't installed. https://manpages.debian.org/testing/coreutils/shred.1.en.html
+
+    Intensity: cpu_pct throttles how hard the wipe runs.
+      • None / casual  → niced, low-priority background (ionice idle, nice 19) — the default
+      • 93 (recommended) → cpulimit to ~93% when available, else niced
+      • 100 / immediate → no throttle, all-out
+    """
     import shutil as _sh
     n = 0
     tool = _sh.which("shred")
-    for p in _files():
+    casual = cpu_pct is None
+    files = _files(HIST) + _files(PRICE)     # wipe BOTH public stores
+    prefix = []
+    if tool:
+        if casual:                                             # background: don't fight the UI
+            if _sh.which("ionice"): prefix += ["ionice", "-c", "3"]
+            if _sh.which("nice"):   prefix += ["nice", "-n", "19"]
+        elif cpu_pct is not None and cpu_pct < 100 and _sh.which("cpulimit"):
+            prefix = ["cpulimit", "-l", str(int(cpu_pct)), "--"]   # cap CPU at the chosen ceiling
+        # cpu_pct == 100 → no prefix: immediate, all-out
+    for p in files:
         try:
             if tool:
-                subprocess.run([tool, "-u", "-z", "-n", "1", str(p)], timeout=30,
+                subprocess.run(prefix + [tool, "-u", "-z", "-n", str(passes), str(p)], timeout=600,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             else:
                 sz = p.stat().st_size
                 with open(p, "r+b") as fh:
-                    fh.write(os.urandom(sz)); fh.flush(); os.fsync(fh.fileno())
+                    for _ in range(passes):
+                        fh.seek(0); fh.write(os.urandom(sz)); fh.flush(); os.fsync(fh.fileno())
+                    fh.seek(0); fh.write(b"\x00" * sz); fh.flush(); os.fsync(fh.fileno())
                 p.unlink()
             n += 1
         except Exception:
