@@ -12,6 +12,8 @@ import { anchorHash, verifyAnchor } from './anchor.mjs';
 import { collectOnce, stats, DATABASE_URL } from './node-collector.mjs';
 import { addWallet, listWallets, getWallet } from './registry.mjs';
 import { apiAuth, rateLimit } from '../shared/security.mjs';
+import { swapRouter } from './swap.mjs';
+import { execFile as _execFile } from 'node:child_process';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -165,6 +167,37 @@ app.get('/api/wallet/:name/payment-request', async (req, res) => {
     const uri = bip21(address, { amount, label, message });
     ok(res, { address, uri, bip21: uri,
       request: { amount: amount ?? null, label: label ?? null, message: message ?? null } });
+  } catch (e) { fail(res, e); }
+});
+
+// RECEIVE FROM QR — render the BIP21 payment request as a scannable QR (SVG, self-contained).
+// Uses the system `qrencode` (libqrencode). ?format=svg (default) | txt (ASCII) | uri (just the string).
+function qrSvg(text) {
+  return new Promise((resolve, reject) => {
+    _execFile('qrencode', ['-o', '-', '-t', 'SVG', '-m', '2', '-l', 'M', text],
+      { maxBuffer: 1 << 20 }, (err, stdout) => err ? reject(err) : resolve(stdout));
+  });
+}
+function qrAscii(text) {
+  return new Promise((resolve, reject) => {
+    _execFile('qrencode', ['-o', '-', '-t', 'ANSIUTF8', '-m', '1', '-l', 'M', text],
+      { maxBuffer: 1 << 20 }, (err, stdout) => err ? reject(err) : resolve(stdout));
+  });
+}
+app.get('/api/wallet/:name/qr', async (req, res) => {
+  try {
+    const { amount, label, message, format } = req.query;
+    let address = req.query.address;
+    if (!address) address = await rpc('getnewaddress', [label ? String(label) : ''], req.params.name);
+    const uri = bip21(address, { amount, label, message });
+    const fmt = String(format || 'svg').toLowerCase();
+    if (fmt === 'uri') return ok(res, { address, uri });
+    if (fmt === 'txt') { try { return ok(res, { address, uri, ascii: await qrAscii(uri) }); }
+      catch { return fail(res, new Error('qrencode not installed (apt install qrencode)')); } }
+    try {
+      const svg = await qrSvg(uri);
+      res.type('image/svg+xml').set('Cache-Control', 'no-store').send(svg);
+    } catch { fail(res, new Error('qrencode not installed (apt install qrencode)')); }
   } catch (e) { fail(res, e); }
 });
 
@@ -360,6 +393,9 @@ if (COLLECT_MS && DATABASE_URL) {
   setInterval(tick, COLLECT_MS); setTimeout(tick, 5000);
   console.log(`BANKON node collector: every ${COLLECT_MS / 1000}s → ${DATABASE_URL.replace(/:[^:@/]+@/, ':***@')}`);
 }
+
+// atomic-swap (Bitcoin leg) routes — additive, built from Core primitives, non-custodial
+app.use(swapRouter());
 
 app.listen(PORT, '127.0.0.1', () =>
   console.log(`BANKON WaaS API on http://127.0.0.1:${PORT}  (non-custodial; node holds watch-only descriptors only)`));

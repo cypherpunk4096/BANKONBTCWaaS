@@ -37,6 +37,15 @@ archival — both fully validate; `chainAccuracyPct` = verified fraction of the 
 **payment verdict** (`PENDING` → `CONFIRMING` → **`VERIFIED`** at ≥6 conf). Returns a proof-grade
 `record` (status, amount, block hash/height/time, **raw block tx**) to store in the ICE `.history`
 for minting / further proof. → `{ ok, status, verified, confirmations, payment, nodeValidation, chainAccuracyPct, record }`
+### GET `/api/wallet/:name/qr?amount=&label=&format=svg|txt|uri` — receive from QR
+Scannable QR of the BIP21 payment request (via `qrencode`). `svg` (default, `image/svg+xml`) ·
+`txt` (ANSI, for terminals) · `uri` (the `bitcoin:` string). Any wallet scans it to pay.
+### Atomic swap (Bitcoin leg) — HTLC from Core primitives, non-custodial
+- **POST `/api/swap/htlc/new`** `{claimPubkey, refundPubkey, hashHex|preimageHex, locktime}` →
+  `{witnessScript, address, descriptor, watching}`. Builds an HTLC (hashlock + CLTV refund), derives
+  the P2WSH funding address via `decodescript`, and imports it **watch-only** so the node can accept BTC.
+- **GET `/api/swap/htlc/funding?address=`** → cheap `listunspent` check: `{funded, amountBtc, utxos, tipHeight}`.
+- **POST `/api/swap/htlc/preimage`** `{preimageHex}` → `{hashHex}`. Full flow: [proposals/atomic-swap-accept-btc.md](proposals/atomic-swap-accept-btc.md).
 ### GET `/api/fees` — fee tiers
 → `{ ok, fees:{ fast, medium, slow, minRelay }, unit:"sat/vB", note }` (falls back client-side during IBD)
 

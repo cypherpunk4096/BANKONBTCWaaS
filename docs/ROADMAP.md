@@ -103,6 +103,14 @@ request containing private fields).
 - ✅ **Exit hygiene** — exit is fast; recommends wiping the public `.history` before leaving, clears the RPC cache completely,
   and scrubs any private-key/signature material from memory (`scrub_memory`)
 - ✅ Retention: `.history` 5 MB × 20 = 100 MB ceiling (tunable); **price collection is separate public storage** (`.pricehistory`)
+- ✅ **Prune accuracy proven from creation** — `min`/**`minimal` (1 GB)**/`default`/`generous` tiers; `bankon-waas/test-prune-regtest.sh`
+  asserts every prune size validates to the **identical UTXO `muhash`** as archival (the measure); pruning changes storage, not accuracy
+- ✅ **VERIFIED payments** — `GET /api/wallet/:name/verify?txid=` separates node validation (pruned≡archival, `chainAccuracyPct`) from the
+  payment verdict (PENDING→CONFIRMING→VERIFIED ≥6 conf); proof-grade `record` (block + raw tx) for the ICE `.history` / minting
+- ✅ **Accept Bitcoin + atomic swap (BTC leg)** — `bankon-waas/swap.mjs`: HTLC (hashlock + CLTV refund) built from Core primitives,
+  non-custodial (client-side PSBT); watch-only funding detection; **receive from QR** via `qrencode` (`/api/wallet/:name/qr`).
+  Core has no price feed; native BTC swaps trustlessly (atomic swap) vs wBTC (custodial wrapped, EVM DEX). See
+  [proposals/atomic-swap-accept-btc.md](proposals/atomic-swap-accept-btc.md)
 - ⬜ **bankonOS shipping** — physical builds of the OS with the blockchains as a service
   (Bitcoin Core + BANKON WaaS pre-provisioned), on a **power-of-two GB ladder**:
 
