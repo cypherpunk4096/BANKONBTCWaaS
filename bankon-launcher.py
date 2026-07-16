@@ -235,6 +235,10 @@ class Launcher:
             vrow.pack_start(b, True, True, 0)
         box.pack_start(vrow, False, False, 0)
 
+        cpr = Gtk.Label()
+        cpr.set_markup("<span foreground='#5a6b7b' size='8000'>© 2026 ₿ANKON — all rights preserved</span>")
+        box.pack_end(cpr, False, False, 0)
+
         w.show_all()
         self._apply_logfx(self.logfx)          # pin the dark log background from launch
         self._set_view("r")                    # regular is the launch view

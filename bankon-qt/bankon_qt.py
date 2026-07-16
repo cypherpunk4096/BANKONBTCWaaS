@@ -4389,7 +4389,8 @@ class BannerBar(QtWidgets.QFrame):
         lay.addWidget(self.corebtn)
         lay.addStretch(1)
         self.diagR = QtWidgets.QLabel("⇅ —"); self.diagR.setStyleSheet(_dstyle); lay.addWidget(self.diagR)
-        self.setToolTip("Drag this banner to dock it above the tabs (top) or below them (bottom, default) — position is remembered")
+        self.setToolTip("Drag this banner to dock it above the tabs (top) or below them (bottom, default) — position is remembered\n"
+                        "© 2026 ₿ANKON — all rights preserved")
         self._press = None; self._core_up = None; self._diag = {}
         self.set_core(None, False, "₿itcoin Core state — probing…")
     def set_diag(self, **parts):
@@ -4552,6 +4553,10 @@ class Main(QtWidgets.QMainWindow):
         self.pausetemp.valueChanged.connect(self.ctl.pausetemp.setValue)
         self.ctl.pausetemp.valueChanged.connect(self.pausetemp.setValue)
 
+        # © rides the status bar as a PERMANENT widget — visible on every tab, not just Overview
+        _cpr = QtWidgets.QLabel("© 2026 ₿ANKON — all rights preserved  ")
+        _cpr.setStyleSheet("color:#5a6b7b;font-size:10px")
+        self.statusBar().addPermanentWidget(_cpr)
         self.timer = QtCore.QTimer(); self.timer.timeout.connect(self.do_refresh)
         self.health = QtCore.QTimer(); self.health.timeout.connect(self.poll_health); self.health.start(12000)  # gentle
         self.systimer = QtCore.QTimer(); self.systimer.timeout.connect(self.poll_sys); self.systimer.start(5000); self.poll_sys()
