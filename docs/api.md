@@ -31,6 +31,12 @@ Body (PUBLIC only — secrets are rejected):
 ### GET `/api/wallet/:name/payment-request?amount=&label=&message=[&address=]` — BIP21 payment request
 → `{ address, uri, bip21, request }`. A shareable `bitcoin:` URI (amount in BTC + label + message) — the payment-request layer Bitcoin Core doesn't provide. Uses a fresh address unless `address=` is given (explicit address needs no node → air-gap-safe). See [waas-beyond-core.md](waas-beyond-core.md).
 ### GET `/api/wallet/:name/history?n=20` — recent transactions
+### GET `/api/wallet/:name/verify?txid=…&minConf=6` — VERIFIED payment check
+Verify a **received** payment against your own node. Separates **node validation** (pruned or
+archival — both fully validate; `chainAccuracyPct` = verified fraction of the chain) from the
+**payment verdict** (`PENDING` → `CONFIRMING` → **`VERIFIED`** at ≥6 conf). Returns a proof-grade
+`record` (status, amount, block hash/height/time, **raw block tx**) to store in the ICE `.history`
+for minting / further proof. → `{ ok, status, verified, confirmations, payment, nodeValidation, chainAccuracyPct, record }`
 ### GET `/api/fees` — fee tiers
 → `{ ok, fees:{ fast, medium, slow, minRelay }, unit:"sat/vB", note }` (falls back client-side during IBD)
 

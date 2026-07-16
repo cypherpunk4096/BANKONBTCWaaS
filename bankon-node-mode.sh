@@ -6,11 +6,19 @@
 # Dry-run by default: prints the plan and disk impact. Pass --apply to edit
 # bitcoin.conf (a timestamped backup is always made first).
 #
-# Tiers:
-#   min       prune=550    (~0.55 GB blocks, ~12.5 GB total)  smallest transacting node
+# Tiers (validation ACCURACY is IDENTICAL across all of them — see the measure below):
+#   min       prune=550    (~0.55 GB blocks, ~12.5 GB total)  Core's hard floor
+#   minimal   prune=1024   (1 GB blocks, ~13 GB total)        recommended smallest ("1 GB minimal")
 #   default   prune=2048   (2 GB blocks, ~14 GB total)        BANKON default
 #   generous  prune=10000  (10 GB blocks, ~22 GB total)       deeper history
 #   full      prune off + txindex=1 (~720+ GB)                explorer / arbitrary txid lookup
+#
+# THE ACCURACY MEASURE — does a smaller prune lose validation accuracy? NO.
+#   Every prune size fully validates every block before discarding its file, and always keeps the
+#   complete UTXO chainstate. The proof is the UTXO-set hash (gettxoutsetinfo muhash): a 1 GB node
+#   and an archival node compute the SAME hash at the same height — byte-for-byte identical
+#   validation. bankon-waas/test-prune-regtest.sh proves this across 550…10000 from creation.
+#   What a smaller prune trades is REORG HEADROOM + local history served, never correctness.
 #
 # Usage:
 #   ./bankon-node-mode.sh default            # show plan (dry-run)
@@ -25,10 +33,11 @@ DATADIR="${BITCOIN_DATADIR:-$HOME/.bitcoin}"
 MODE="${1:-}"; APPLY=0; [ "${2:-}" = "--apply" ] && APPLY=1
 case "$MODE" in
   min)      PRUNE=550;   TXINDEX=0 ;;
+  minimal)  PRUNE=1024;  TXINDEX=0 ;;
   default)  PRUNE=2048;  TXINDEX=0 ;;
   generous) PRUNE=10000; TXINDEX=0 ;;
   full)     PRUNE=0;     TXINDEX=1 ;;
-  *) echo "usage: $0 <min|default|generous|full> [--apply]"; exit 1 ;;
+  *) echo "usage: $0 <min|minimal|default|generous|full> [--apply]"; exit 1 ;;
 esac
 
 # Current disk picture

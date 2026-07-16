@@ -61,7 +61,8 @@ Four gates, in order. Current node: **~43.6% synced** (height ~662k).
 binary backup (after the deleted-binary incident); evaluate `assumeutxo` (`loadtxoutset`) for a fast
 chainstate bootstrap if sync time is unacceptable.
 **G2 strategy:** ✅ **done — the pruned node is launched** (`~/.bitcoin-pruned`, `prune=2048`, `listen=0`
-outbound-only since the full node holds P2P :8334, RPC :8342) and is syncing in parallel with G1.
+outbound-only since the full node already holds the standard P2P :8333 / RPC :8332; the pruned node
+takes P2P :8334 / RPC :8342) and is syncing in parallel with G1.
 (`prune` and `txindex` are mutually exclusive → the full archival node keeps `txindex`; the pruned
 node is the lean WaaS tx backend.) Remaining: once it finishes IBD, cut the WaaS over with
 `BITCOIN_RPC_URL=http://127.0.0.1:8342` + the pruned cookie.

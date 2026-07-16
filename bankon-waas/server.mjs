@@ -174,6 +174,59 @@ app.get('/api/wallet/:name/history', async (req, res) => {
   catch (e) { fail(res, e); }
 });
 
+// VERIFIED — verify a RECEIVED Bitcoin payment against the local node and return a proof-grade
+// record. Cleanly separates two things the user asked to keep distinct:
+//   • node validation  — is the node itself trustworthy? (pruned or archival, both fully validate;
+//                         `chainAccuracyPct` = verificationprogress = how much of the chain is verified)
+//   • payment VERIFIED  — is THIS tx confirmed in a block? (status + confirmations + the block tx)
+// The returned `record` is what the client stores in the ICE `.history` for later minting / proof.
+app.get('/api/wallet/:name/verify', async (req, res) => {
+  const txid = req.query.txid;
+  const minConf = Math.max(1, Number(req.query.minConf) || 1);
+  if (!txid) return res.status(400).json({ error: 'need ?txid=' });
+  try {
+    const [gt, chain] = await Promise.all([
+      rpc('gettransaction', [txid, null, true], req.params.name),   // watch-only wallet tx + decoded
+      rpc('getblockchaininfo'),
+    ]);
+    const conf = gt.confirmations || 0;
+    const received = (gt.details || []).filter(d => d.category === 'receive');
+    const amountBtc = received.reduce((s, d) => s + (d.amount || 0), 0);
+    // node validation context — pruned validates identically to archival; accuracy = verified fraction
+    const chainAccuracyPct = +(100 * (chain.verificationprogress ?? 0)).toFixed(6);
+    const nodeValidation = chain.pruned
+      ? `pruned node (prune=${chain.pruneheight != null ? 'active' : '?'}) — full validation, identical accuracy to archival`
+      : 'archival node — full validation';
+    // payment verdict
+    let status = 'UNCONFIRMED';
+    if (conf >= minConf && conf >= 6) status = 'VERIFIED';
+    else if (conf >= minConf) status = 'CONFIRMING';
+    else if (conf >= 1) status = 'CONFIRMING';
+    else if (gt.inMempool || gt['in-active-chain'] === false) status = 'PENDING';
+    const verified = status === 'VERIFIED';
+    // proof-grade record for .history / minting: the block-anchored transaction
+    const record = {
+      kind: 'verified-payment', status, txid,
+      amountBtc, confirmations: conf,
+      blockhash: gt.blockhash || null, blockheight: gt.blockheight ?? null, blocktime: gt.blocktime ?? null,
+      addresses: received.map(d => d.address).filter(Boolean),
+      // the raw block transaction — the thing you mint/anchor as proof of receipt
+      rawtx: gt.hex || null,
+      nodeValidation, chainAccuracyPct,
+    };
+    ok(res, {
+      status, verified, confirmations: conf, minConf,
+      payment: { amountBtc, addresses: record.addresses, txid,
+                 block: gt.blockhash ? { hash: gt.blockhash, height: gt.blockheight, time: gt.blocktime } : null },
+      nodeValidation, chainAccuracyPct,
+      note: verified
+        ? 'VERIFIED — confirmed in a block by your own fully-validating node. record is proof-grade (mint/anchor).'
+        : `${status} — ${conf}/${minConf}+ confirmations (need 6 for VERIFIED). node has validated ${chainAccuracyPct}% of the chain.`,
+      record,   // ← store this in ICE .history for minting / further proof functions
+    });
+  } catch (e) { fail(res, e); }
+});
+
 // Build an UNSIGNED PSBT for the client to sign offline. Server never signs.
 app.post('/api/wallet/:name/send', async (req, res) => {
   try {
