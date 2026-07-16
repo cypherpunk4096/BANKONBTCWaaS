@@ -1,0 +1,9 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+test = "test"
+solc = "/usr/local/bin/solc"
+optimizer = true
+optimizer_runs = 10000
+fuzz = { runs = 256 }

@@ -1,0 +1,16 @@
+{
+  "name": "arrby-backend",
+  "version": "1.0.0",
+  "description": "ARRBY multi-chain monitoring backend: cross-chain finder, liquidation scanner, MEV-protected + flash-mint submission adapters.",
+  "main": "src/server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "ethers": "^6.13.2",
+    "express": "^4.19.2",
+    "ws": "^8.18.0"
+  },
+  "license": "Apache-2.0"
+}

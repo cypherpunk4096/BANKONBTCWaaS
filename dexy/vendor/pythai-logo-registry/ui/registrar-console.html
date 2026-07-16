@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PLR Registrar Console — PYTHAI Logo Registry</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,300;12..96,500;12..96,700&family=Archivo:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.13.2/ethers.umd.min.js"></script>
+<style>
+:root{
+  --ink:#0D1714;         /* deep viridian ink */
+  --ink-2:#13201C;       /* raised panel */
+  --ink-3:#1A2B26;       /* field wells */
+  --paper:#D8E4DE;       /* mineral paper */
+  --paper-dim:#8FA69D;   /* secondary text */
+  --verdigris:#5BC4A2;   /* verified / success */
+  --copper:#C97E52;      /* fees / pending */
+  --signal:#D65A4A;      /* revoked / errors */
+  --hairline:#26382F;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{background:var(--ink)}
+body{
+  font-family:'Archivo',sans-serif;color:var(--paper);
+  min-height:100vh;background:
+    radial-gradient(1200px 600px at 85% -10%, rgba(91,196,162,.06), transparent 60%),
+    radial-gradient(900px 500px at -10% 110%, rgba(201,126,82,.05), transparent 60%),
+    var(--ink);
+}
+a{color:var(--verdigris)}
+.mono{font-family:'IBM Plex Mono',monospace}
+
+/* ---------- header ---------- */
+header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:20px 32px;border-bottom:1px solid var(--hairline);
+}
+.brand{display:flex;align-items:baseline;gap:14px}
+.brand h1{
+  font-family:'Bricolage Grotesque',sans-serif;font-weight:700;
+  font-size:1.35rem;letter-spacing:.01em;
+}
+.brand h1 em{font-style:normal;color:var(--verdigris)}
+.brand .sub{font-family:'IBM Plex Mono',monospace;font-size:.7rem;color:var(--paper-dim);letter-spacing:.14em;text-transform:uppercase}
+#wallet-btn{
+  font-family:'IBM Plex Mono',monospace;font-size:.78rem;
+  background:transparent;color:var(--paper);border:1px solid var(--hairline);
+  padding:10px 18px;border-radius:2px;cursor:pointer;transition:border-color .15s;
+}
+#wallet-btn:hover,#wallet-btn:focus-visible{border-color:var(--verdigris);outline:none}
+#wallet-btn.connected{color:var(--verdigris);border-color:var(--verdigris)}
+
+/* ---------- shell ---------- */
+.shell{
+  display:grid;grid-template-columns:minmax(0,1.15fr) minmax(320px,.85fr);
+  gap:0;max-width:1180px;margin:0 auto;
+  border-left:1px solid var(--hairline);border-right:1px solid var(--hairline);
+  min-height:calc(100vh - 73px);
+}
+.console{padding:36px 40px;border-right:1px solid var(--hairline)}
+.ledger{padding:36px 32px;position:sticky;top:0;align-self:start}
+
+/* ---------- desk tabs ---------- */
+.desk-tabs{display:flex;gap:0;border:1px solid var(--hairline);border-radius:2px;overflow:hidden;margin-bottom:32px}
+.desk-tabs button{
+  flex:1;background:transparent;border:none;color:var(--paper-dim);
+  font-family:'Archivo',sans-serif;font-weight:600;font-size:.82rem;
+  padding:13px 8px;cursor:pointer;letter-spacing:.02em;
+  border-right:1px solid var(--hairline);transition:color .15s,background .15s;
+}
+.desk-tabs button:last-child{border-right:none}
+.desk-tabs button[aria-selected="true"]{background:var(--ink-2);color:var(--paper)}
+.desk-tabs button[aria-selected="true"] .fee{color:var(--copper)}
+.desk-tabs .fee{display:block;font-family:'IBM Plex Mono',monospace;font-size:.66rem;color:var(--paper-dim);margin-top:3px}
+.desk-tabs button:focus-visible{outline:2px solid var(--verdigris);outline-offset:-2px}
+
+/* ---------- forms ---------- */
+.pane{display:none}
+.pane.active{display:block;animation:rise .25s ease}
+@keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.pane.active{animation:none}}
+.pane h2{
+  font-family:'Bricolage Grotesque',sans-serif;font-weight:500;font-size:1.55rem;
+  margin-bottom:6px;letter-spacing:-.01em;
+}
+.pane .lede{color:var(--paper-dim);font-size:.9rem;line-height:1.55;margin-bottom:28px;max-width:52ch}
+.field{margin-bottom:20px}
+.field label{
+  display:block;font-family:'IBM Plex Mono',monospace;font-size:.68rem;
+  letter-spacing:.14em;text-transform:uppercase;color:var(--paper-dim);margin-bottom:8px;
+}
+.field input,.field select{
+  width:100%;background:var(--ink-3);border:1px solid var(--hairline);
+  color:var(--paper);font-family:'IBM Plex Mono',monospace;font-size:.86rem;
+  padding:12px 14px;border-radius:2px;transition:border-color .15s;
+}
+.field input:focus,.field select:focus{outline:none;border-color:var(--verdigris)}
+.field .hint{font-size:.74rem;color:var(--paper-dim);margin-top:6px}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+
+/* logo drop well */
+.drop{
+  border:1px dashed var(--hairline);border-radius:2px;background:var(--ink-3);
+  padding:26px;text-align:center;cursor:pointer;transition:border-color .15s;
+}
+.drop:hover,.drop.dragover{border-color:var(--copper)}
+.drop p{font-size:.82rem;color:var(--paper-dim)}
+.drop p strong{color:var(--paper)}
+.drop input{display:none}
+.drop .loaded{color:var(--verdigris);font-family:'IBM Plex Mono',monospace;font-size:.78rem}
+
+.submit-row{display:flex;align-items:center;gap:18px;margin-top:30px}
+.act{
+  font-family:'Archivo',sans-serif;font-weight:600;font-size:.88rem;
+  background:var(--verdigris);color:var(--ink);border:none;
+  padding:14px 28px;border-radius:2px;cursor:pointer;letter-spacing:.01em;
+  transition:filter .15s;
+}
+.act:hover{filter:brightness(1.08)}
+.act:focus-visible{outline:2px solid var(--paper);outline-offset:2px}
+.act:disabled{opacity:.45;cursor:not-allowed}
+.act.copper{background:var(--copper)}
+.fee-note{font-family:'IBM Plex Mono',monospace;font-size:.74rem;color:var(--copper)}
+
+/* ---------- ledger / seal ---------- */
+.ledger h3{
+  font-family:'IBM Plex Mono',monospace;font-size:.68rem;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--paper-dim);margin-bottom:18px;
+}
+.seal-wrap{
+  display:flex;flex-direction:column;align-items:center;
+  border:1px solid var(--hairline);border-radius:2px;background:var(--ink-2);
+  padding:30px 20px 24px;
+}
+#seal{width:190px;height:190px}
+.seal-status{
+  margin-top:16px;font-family:'IBM Plex Mono',monospace;font-size:.72rem;
+  letter-spacing:.22em;text-transform:uppercase;padding:6px 16px;
+  border:1px solid var(--copper);color:var(--copper);border-radius:2px;
+}
+.seal-status.verified{border-color:var(--verdigris);color:var(--verdigris)}
+.seal-status.revoked{border-color:var(--signal);color:var(--signal)}
+.seal-key{
+  margin-top:14px;font-family:'IBM Plex Mono',monospace;font-size:.64rem;
+  color:var(--paper-dim);word-break:break-all;text-align:center;line-height:1.6;
+  max-width:260px;
+}
+.receipt{margin-top:26px;border:1px solid var(--hairline);border-radius:2px;background:var(--ink-2)}
+.receipt .row{
+  display:flex;justify-content:space-between;padding:11px 16px;
+  border-bottom:1px solid var(--hairline);font-size:.78rem;
+}
+.receipt .row:last-child{border-bottom:none}
+.receipt .k{color:var(--paper-dim)}
+.receipt .v{font-family:'IBM Plex Mono',monospace}
+.receipt .v.fee{color:var(--copper)}
+#log{
+  margin-top:26px;font-family:'IBM Plex Mono',monospace;font-size:.72rem;
+  line-height:1.7;color:var(--paper-dim);max-height:180px;overflow-y:auto;
+}
+#log .ok{color:var(--verdigris)}
+#log .err{color:var(--signal)}
+
+@media (max-width:900px){
+  .shell{grid-template-columns:1fr}
+  .console{border-right:none;border-bottom:1px solid var(--hairline)}
+  .ledger{position:static}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <h1>PLR<em>.</em> Registrar Console</h1>
+    <span class="sub">PYTHAI Logo Registry · the layer</span>
+  </div>
+  <button id="wallet-btn">Connect wallet</button>
+</header>
+
+<div class="shell">
+  <main class="console">
+    <div class="desk-tabs" role="tablist" aria-label="Registrar actions">
+      <button role="tab" aria-selected="true" data-pane="submit">Register a logo<span class="fee">0.05 ETH</span></button>
+      <button role="tab" aria-selected="false" data-pane="update">Update a graphic<span class="fee">0.02 ETH</span></button>
+      <button role="tab" aria-selected="false" data-pane="chain">Onboard a chain<span class="fee">1.00 ETH</span></button>
+    </div>
+
+    <!-- SUBMIT -->
+    <section class="pane active" id="pane-submit" role="tabpanel">
+      <h2>Register a new token logo</h2>
+      <p class="lede">Commit a canonical logo to the registry. The image is hashed locally, pinned to Arweave by mindX permanently to Arweave, and enters the pipeline: mindX assessment, then DAIO ratification through Senatus. Your iNFT mints on submission.</p>
+      <div class="grid-2">
+        <div class="field">
+          <label for="s-chain">Chain</label>
+          <select id="s-chain"></select>
+        </div>
+        <div class="field">
+          <label for="s-token">Token contract address</label>
+          <input id="s-token" placeholder="0x…" spellcheck="false" autocomplete="off">
+        </div>
+      </div>
+      <div class="field">
+        <label>Logo file — 256×256 transparent PNG or SVG</label>
+        <div class="drop" id="s-drop" tabindex="0" role="button" aria-label="Choose logo file">
+          <input type="file" id="s-file" accept="image/png,image/svg+xml">
+          <p><strong>Drop the logo here</strong> or press Enter to browse.<br>Hashed in your browser — keccak256 commits before anything leaves this page.</p>
+        </div>
+      </div>
+      <div class="submit-row">
+        <button class="act" id="s-go" disabled>Register logo · pay 0.05 ETH</button>
+        <span class="fee-note">Fee routes to the Aerarium in the same transaction.</span>
+      </div>
+    </section>
+
+    <!-- UPDATE -->
+    <section class="pane" id="pane-update" role="tabpanel">
+      <h2>Update a verified graphic</h2>
+      <p class="lede">Replace the canonical image of a verified entry. The entry re-enters the full pipeline — mindX assessment, then DAIO ratification — the feed never serves art no agent has reviewed. Revision counter increments; wallet caches bust automatically.</p>
+      <div class="grid-2">
+        <div class="field">
+          <label for="u-chain">Chain</label>
+          <select id="u-chain"></select>
+        </div>
+        <div class="field">
+          <label for="u-token">Token contract address</label>
+          <input id="u-token" placeholder="0x…" spellcheck="false" autocomplete="off">
+        </div>
+      </div>
+      <div class="field">
+        <label>New logo file</label>
+        <div class="drop" id="u-drop" tabindex="0" role="button" aria-label="Choose replacement logo file">
+          <input type="file" id="u-file" accept="image/png,image/svg+xml">
+          <p><strong>Drop the new graphic here</strong> or press Enter to browse.</p>
+        </div>
+      </div>
+      <div class="submit-row">
+        <button class="act copper" id="u-go" disabled>Update graphic · pay 0.02 ETH</button>
+        <span class="fee-note">Re-enters pending review on payment.</span>
+      </div>
+    </section>
+
+    <!-- CHAIN -->
+    <section class="pane" id="pane-chain" role="tabpanel">
+      <h2>Onboard a new chain</h2>
+      <p class="lede">Buy your network into the layer. The chain enters the on-chain ALLCHAIN extension and SPINTRADE receives first-notification inside this same transaction — first listing, first liquidity, first market.</p>
+      <div class="grid-2">
+        <div class="field">
+          <label for="c-id">Chain ID</label>
+          <input id="c-id" placeholder="e.g. 747474" inputmode="numeric" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="c-name">Chain name</label>
+          <input id="c-name" placeholder="e.g. NEWCHAIN" autocomplete="off">
+        </div>
+      </div>
+      <div class="field">
+        <label for="c-rpc">Public RPC endpoint</label>
+        <input id="c-rpc" placeholder="https://rpc.newchain.xyz" spellcheck="false" autocomplete="off">
+        <p class="hint">mindX probes this endpoint during validation; a dead RPC deactivates the chain.</p>
+      </div>
+      <div class="submit-row">
+        <button class="act copper" id="c-go" disabled>Onboard chain · pay 1.00 ETH</button>
+        <span class="fee-note">SPINTRADE is notified atomically.</span>
+      </div>
+    </section>
+  </main>
+
+  <aside class="ledger">
+    <h3>Validation seal</h3>
+    <div class="seal-wrap">
+      <svg id="seal" viewBox="0 0 200 200" aria-label="Deterministic sigil derived from the entry key"></svg>
+      <div class="seal-status" id="seal-status">Awaiting entry</div>
+      <div class="seal-key mono" id="seal-key">entryKey(chainId, token) renders here as your sigil — the hash is the identity.</div>
+    </div>
+
+    <h3 style="margin-top:30px">Receipt</h3>
+    <div class="receipt" id="receipt">
+      <div class="row"><span class="k">Action</span><span class="v" id="r-action">—</span></div>
+      <div class="row"><span class="k">Fee</span><span class="v fee" id="r-fee">—</span></div>
+      <div class="row"><span class="k">Treasury</span><span class="v">Aerarium</span></div>
+      <div class="row"><span class="k">Logo keccak256</span><span class="v" id="r-hash" style="max-width:160px;overflow:hidden;text-overflow:ellipsis">—</span></div>
+      <div class="row"><span class="k">Tx</span><span class="v" id="r-tx">—</span></div>
+    </div>
+
+    <h3 style="margin-top:30px">Console log</h3>
+    <div id="log" aria-live="polite"></div>
+  </aside>
+</div>
+
+<script>
+/* ========================= configuration ========================= */
+const PLR_ADDRESS = "0x0000000000000000000000000000000000000000"; // set post-deploy
+const FEES = { submit: "0.05", update: "0.02", chain: "1.0" };
+const PLR_ABI = [
+  "function submitLogo(uint64 chainId, address token, bytes32 logoHash, string logoCID) payable returns (uint256)",
+  "function updateLogo(uint64 chainId, address token, bytes32 newHash, string newCID) payable",
+  "function onboardChain(uint64 chainId, string chainName, string rpcURL) payable",
+  "function canonicalLogo(uint64 chainId, address token) view returns (bool verified, bytes32 logoHash, string logoCID, uint32 revision)",
+  "function entries(uint256) view returns (uint64 chainId, address token, bytes32 logoHash, string logoCID, uint8 status, uint64 registeredAt, uint64 lastValidated, uint32 revision, address submitter)",
+  "function entryKey(uint64 chainId, address token) pure returns (bytes32)"
+];
+// Seed list mirrors ALLCHAIN; the live console hydrates from
+// https://agenticplace.pythai.net/allchain.json at load.
+const SEED_CHAINS = [
+  [1,"Ethereum"],[8453,"Base"],[42161,"Arbitrum One"],[10,"OP Mainnet"],
+  [137,"Polygon PoS"],[1284,"Moonbeam"],[56,"BNB Chain"],[43114,"Avalanche C"]
+];
+
+/* ============================ helpers ============================ */
+const $ = (id) => document.getElementById(id);
+const log = (msg, cls="") => {
+  const d = document.createElement("div");
+  if (cls) d.className = cls;
+  d.textContent = `› ${msg}`;
+  $("log").prepend(d);
+};
+
+let signer = null, provider = null;
+let state = { submitHash: null, submitBytes: null, updateHash: null, updateBytes: null };
+
+/* ------------------------- wallet ------------------------- */
+$("wallet-btn").addEventListener("click", async () => {
+  if (!window.ethereum) { log("No injected wallet found. Install MetaMask or open in a wallet browser.", "err"); return; }
+  try {
+    provider = new ethers.BrowserProvider(window.ethereum);
+    await provider.send("eth_requestAccounts", []);
+    signer = await provider.getSigner();
+    const addr = await signer.getAddress();
+    $("wallet-btn").textContent = addr.slice(0,6) + "…" + addr.slice(-4);
+    $("wallet-btn").classList.add("connected");
+    log(`Wallet connected: ${addr}`, "ok");
+    refreshButtons();
+  } catch (e) { log(`Wallet connection failed: ${e.message}`, "err"); }
+});
+
+/* ------------------------- tabs ------------------------- */
+document.querySelectorAll(".desk-tabs button").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".desk-tabs button").forEach(b => b.setAttribute("aria-selected","false"));
+    btn.setAttribute("aria-selected","true");
+    document.querySelectorAll(".pane").forEach(p => p.classList.remove("active"));
+    $("pane-" + btn.dataset.pane).classList.add("active");
+  });
+});
+
+/* --------------------- chain selects --------------------- */
+function fillChains(sel){
+  sel.innerHTML = SEED_CHAINS.map(([id,name]) =>
+    `<option value="${id}">${name} · ${id}</option>`).join("");
+}
+fillChains($("s-chain")); fillChains($("u-chain"));
+
+/* ------------------- file wells + hashing ------------------- */
+function wireDrop(dropId, fileId, hashKey, bytesKey){
+  const drop = $(dropId), file = $(fileId);
+  const load = async (f) => {
+    const buf = new Uint8Array(await f.arrayBuffer());
+    const hash = ethers.keccak256(buf);
+    state[hashKey] = hash; state[bytesKey] = buf;
+    drop.querySelector("p").innerHTML =
+      `<span class="loaded">${f.name} — ${(buf.length/1024).toFixed(1)} KB</span><br>keccak256: <span class="loaded">${hash.slice(0,18)}…</span>`;
+    $("r-hash").textContent = hash;
+    log(`Logo hashed locally: ${hash.slice(0,20)}…`, "ok");
+    drawSeal(hash); refreshButtons(); updateSealKey();
+  };
+  drop.addEventListener("click", () => file.click());
+  drop.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); }});
+  file.addEventListener("change", () => file.files[0] && load(file.files[0]));
+  ["dragover","dragenter"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("dragover"); }));
+  ["dragleave","drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("dragover"); }));
+  drop.addEventListener("drop", e => e.dataTransfer.files[0] && load(e.dataTransfer.files[0]));
+}
+wireDrop("s-drop","s-file","submitHash","submitBytes");
+wireDrop("u-drop","u-file","updateHash","updateBytes");
+
+/* ------------------- the validation seal ------------------- */
+/* Deterministic sigil: the entry key's bytes drive ring segments,
+   spokes, and node placement. Hash IS identity — rendered. */
+function drawSeal(hexSeed){
+  const svg = $("seal"); svg.innerHTML = "";
+  const bytes = hexSeed ? ethers.getBytes(hexSeed) : new Uint8Array(32);
+  const C = 100, ns = "http://www.w3.org/2000/svg";
+  const el = (t,a) => { const e = document.createElementNS(ns,t); for (const k in a) e.setAttribute(k,a[k]); svg.appendChild(e); return e; };
+
+  el("circle",{cx:C,cy:C,r:92,fill:"none",stroke:"#26382F","stroke-width":1});
+  el("circle",{cx:C,cy:C,r:78,fill:"none",stroke:"#26382F","stroke-width":1});
+
+  // ring segments from bytes 0..15
+  for (let i=0;i<16;i++){
+    const a0 = (i/16)*Math.PI*2, span = ((bytes[i]%160)+40)/255 * (Math.PI/9);
+    const r = 85, col = bytes[i]%3===0 ? "#C97E52" : "#5BC4A2";
+    const x0=C+r*Math.cos(a0), y0=C+r*Math.sin(a0);
+    const x1=C+r*Math.cos(a0+span), y1=C+r*Math.sin(a0+span);
+    el("path",{d:`M ${x0} ${y0} A ${r} ${r} 0 0 1 ${x1} ${y1}`,fill:"none",stroke:col,"stroke-width":3,"stroke-linecap":"round",opacity:.9});
+  }
+  // inner constellation from bytes 16..31
+  const pts=[];
+  for (let i=16;i<32;i++){
+    const ang=(bytes[i]/255)*Math.PI*2, rad=18+(bytes[(i+7)%32]%50);
+    pts.push([C+rad*Math.cos(ang), C+rad*Math.sin(ang)]);
+  }
+  for (let i=0;i<pts.length-1;i++){
+    el("line",{x1:pts[i][0],y1:pts[i][1],x2:pts[i+1][0],y2:pts[i+1][1],stroke:"#5BC4A2","stroke-width":.7,opacity:.45});
+  }
+  pts.forEach((p,i)=> el("circle",{cx:p[0],cy:p[1],r:i%4===0?2.6:1.4,fill:i%5===0?"#C97E52":"#D8E4DE"}));
+  el("circle",{cx:C,cy:C,r:3.4,fill:"#5BC4A2"});
+}
+drawSeal(null);
+
+/* ------------- entry key + on-chain status lookup ------------- */
+async function updateSealKey(){
+  const active = document.querySelector(".desk-tabs button[aria-selected='true']").dataset.pane;
+  const chainSel = active==="update" ? $("u-chain") : $("s-chain");
+  const tokenIn  = active==="update" ? $("u-token") : $("s-token");
+  const token = tokenIn.value.trim();
+  if (!ethers.isAddress(token)) return;
+  const key = ethers.solidityPackedKeccak256(["uint64","address"],[BigInt(chainSel.value), token]);
+  $("seal-key").textContent = `entryKey ${key}`;
+  drawSeal(key);
+  if (provider && PLR_ADDRESS !== "0x0000000000000000000000000000000000000000"){
+    try{
+      const plr = new ethers.Contract(PLR_ADDRESS, PLR_ABI, provider);
+      const [verified,,,rev] = await plr.canonicalLogo(BigInt(chainSel.value), token);
+      const st = $("seal-status");
+      st.textContent = verified ? `Ratified · rev ${rev}` : "Awaiting assessment / ratification";
+      st.className = "seal-status" + (verified ? " verified" : "");
+    }catch{ /* read-only lookup is best-effort */ }
+  }
+}
+["s-token","u-token"].forEach(id => $(id).addEventListener("input", () => { refreshButtons(); updateSealKey(); }));
+["s-chain","u-chain"].forEach(id => $(id).addEventListener("change", updateSealKey));
+["c-id","c-name","c-rpc"].forEach(id => $(id).addEventListener("input", refreshButtons));
+
+/* --------------------- enablement --------------------- */
+function refreshButtons(){
+  $("s-go").disabled = !(signer && ethers.isAddress($("s-token").value.trim()) && state.submitHash);
+  $("u-go").disabled = !(signer && ethers.isAddress($("u-token").value.trim()) && state.updateHash);
+  $("c-go").disabled = !(signer && $("c-id").value.trim() && $("c-name").value.trim() && $("c-rpc").value.trim().startsWith("http"));
+}
+
+/* --------------------- transactions --------------------- */
+function receipt(action, fee, tx){
+  $("r-action").textContent = action;
+  $("r-fee").textContent = fee + " ETH";
+  $("r-tx").textContent = tx ? tx.slice(0,10)+"…" : "—";
+}
+async function send(action, fee, fn){
+  try{
+    if (PLR_ADDRESS === "0x0000000000000000000000000000000000000000"){
+      log("PLR_ADDRESS not set — deploy the registry, then point this console at it.", "err");
+      receipt(action, fee, null); return;
+    }
+    const plr = new ethers.Contract(PLR_ADDRESS, PLR_ABI, signer);
+    log(`${action}: awaiting wallet signature…`);
+    const tx = await fn(plr);
+    receipt(action, fee, tx.hash);
+    log(`${action}: tx ${tx.hash.slice(0,14)}… broadcast. Waiting for confirmation…`);
+    await tx.wait();
+    log(`${action}: confirmed. Fee forwarded to the Aerarium.`, "ok");
+    $("seal-status").textContent = action==="Onboard chain" ? "Chain onboarded" : "Pending mindX assessment → DAIO ratification";
+    updateSealKey();
+  }catch(e){
+    log(`${action} failed: ${e.shortMessage || e.message}`, "err");
+  }
+}
+
+$("s-go").addEventListener("click", () => {
+  const chainId = BigInt($("s-chain").value), token = $("s-token").value.trim();
+  // CID placeholder: the console posts bytes to mindX for Arweave pinning;
+  // the CID lands in metadata. On-chain commitment is the keccak hash.
+  send("Register logo", FEES.submit, (plr) =>
+    plr.submitLogo(chainId, token, state.submitHash, "ar://pending-pin",
+      { value: ethers.parseEther(FEES.submit) }));
+});
+$("u-go").addEventListener("click", () => {
+  const chainId = BigInt($("u-chain").value), token = $("u-token").value.trim();
+  send("Update graphic", FEES.update, (plr) =>
+    plr.updateLogo(chainId, token, state.updateHash, "ar://pending-pin",
+      { value: ethers.parseEther(FEES.update) }));
+});
+$("c-go").addEventListener("click", () => {
+  send("Onboard chain", FEES.chain, (plr) =>
+    plr.onboardChain(BigInt($("c-id").value.trim()), $("c-name").value.trim(), $("c-rpc").value.trim(),
+      { value: ethers.parseEther(FEES.chain) }));
+});
+
+log("Registrar console ready. Connect a wallet to begin.");
+</script>
+</body>
+</html>

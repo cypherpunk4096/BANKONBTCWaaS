@@ -125,6 +125,32 @@ Scannable QR of the BIP21 payment request (via `qrencode`). `svg` (default, `ima
 - **POST `/api/node/netactive`** *(node control)* — `{ on }` AIRGAP switch (`setnetworkactive`).
 - **GET `/api/node/log?lines=N`** — `debug.log` tail (boot/sync stream).
 
+## DEXY API — `http://127.0.0.1:8091`
+
+⟲ DEXY — sovereign-custody BTC liquidity mover. Quotes/plans only: the destination is always
+the **user's own** BTC address (WaaS BTC Standard), venues pay it directly, DEXY never signs.
+`/api/pairs` is the unmodified chain-native pairs engine (SPINTRADE-compatible); external
+market data lives under `/api/dexy/*` with explicit `source:` labels. BigInt sats serialize
+as decimal strings.
+
+| Method + path | What it does |
+|---------------|--------------|
+| `GET /api/pairs` | chain-native SAT pairs (imported from bankon-waas, unmodified) |
+| `GET /api/dexy/cex` | CEX BTC-chain holdings — DeFiLlama proof-of-reserve |
+| `GET /api/dexy/venues` | native-BTC DEX depth + health (THORChain, Chainflip) |
+| `GET /api/dexy/project?moveUsd=&absorptionPct=&slipBps=` | CEX→DEX tranche/day schedule bounded by daily absorption |
+| `GET /api/dexy/quote?chain=&symbol=&contract=&decimals=&amount=&btcAddress=&maxSlipBps=&strict=` | per-venue quotes → native BTC at YOUR address (400 without a valid `btcAddress`) |
+| `POST /api/dexy/plan` | `{targetBtcSats, maxSpendNative, sourceAsset, btcAddress, maxSlipBps, wallet?, strict?}` → greedy multi-leg accumulation plan with deposit instructions |
+| `GET /api/dexy/status?venue=thorchain&txid=` | venue swap status (pending/confirmed/refunded) |
+| `GET /api/dexy/custody/wallets` | registered WaaS watch-only wallets (public metadata) |
+| `GET /api/dexy/custody/verify?address=&wallet=` | validity + own-wallet proof against the WaaS registry |
+| `ALL /api/dexy/arrby/*` | reverse proxy → ARRBY backend (`ARRBY_URL`, default :8787); 503 + start hint when down |
+| `/api/swap/htlc/new` `/funding` `/preimage` | trustless BTC HTLC leg (imported from bankon-waas, unmodified) |
+| `GET /api/health` | service + custody posture |
+
+Env: `BANKON_DEXY_PORT=8091` · `DEXY_STRICT_CUSTODY=1` (refuse non-registry destinations) ·
+`DEXY_ABSORPTION_PCT` · `DEXY_MAX_SLIP_BPS` · `DEXY_FIXTURES=1` (offline fixtures) · `ARRBY_URL`.
+
 ## Client-side modules (not HTTP — run in the browser/Node)
 - `keygen.mjs` — `generateWallet(type, strength)` → mnemonic + descriptors (PRIVATE stays local)
 - `sign.mjs` — `signPsbt(mnemonic, type, psbtBase64)` → `{ signedTxHex, inputsSigned }`

@@ -1,0 +1,1300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ARRBY — agnostic flash-loan arbitrage console</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.13.2/ethers.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<style>
+  :root{
+    --bg:#0A0C10;
+    --panel:#11141B;
+    --panel-2:#161A23;
+    --line:#232936;
+    --gold:#D4A017;
+    --gold-dim:#8A6B12;
+    --green:#3FBF7F;
+    --red:#E0555A;
+    --ink:#E8E6DE;
+    --ink-dim:#8B93A3;
+    --mono: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+    --display: 'Space Grotesk', 'Inter', sans-serif;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--display);-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:1180px;margin:0 auto;padding:28px 24px 80px;}
+  header{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;margin-bottom:28px;border-bottom:1px solid var(--line);padding-bottom:22px;}
+  .brand{display:flex;flex-direction:column;gap:6px;}
+  .brand .mark{font-family:var(--mono);font-size:12px;letter-spacing:.18em;color:var(--gold);text-transform:uppercase;}
+  .brand h1{margin:0;font-size:28px;font-weight:700;letter-spacing:-0.01em;}
+  .brand p{margin:0;color:var(--ink-dim);font-size:13.5px;max-width:560px;line-height:1.5;}
+  #connectBtn{font-family:var(--mono);font-size:13px;background:transparent;color:var(--gold);border:1px solid var(--gold-dim);padding:11px 18px;border-radius:3px;cursor:pointer;white-space:nowrap;transition:background .15s,color .15s;}
+  #connectBtn:hover{background:var(--gold);color:#0A0C10;}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:22px;}
+  @media(max-width:920px){.grid{grid-template-columns:1fr;}}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:22px;}
+  .panel.full{grid-column:1 / -1;}
+  .panel h2{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-dim);margin:0 0 18px;display:flex;align-items:center;gap:8px;}
+  .panel h2::before{content:'';width:6px;height:6px;background:var(--gold);border-radius:1px;display:inline-block;}
+  label{display:block;font-family:var(--mono);font-size:11.5px;color:var(--ink-dim);margin:14px 0 6px;}
+  label:first-of-type{margin-top:0;}
+  input,select,textarea{width:100%;background:var(--panel-2);border:1px solid var(--line);color:var(--ink);padding:10px 11px;border-radius:4px;font-family:var(--mono);font-size:13px;outline:none;}
+  textarea{resize:vertical;min-height:74px;line-height:1.5;}
+  input:focus,select:focus,textarea:focus{border-color:var(--gold-dim);}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+  .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;}
+  .hint{font-family:var(--mono);font-size:10.5px;color:#5B6273;margin-top:4px;line-height:1.55;}
+  .actions{display:flex;gap:12px;margin-top:20px;}
+  button.primary,button.ghost{font-family:var(--mono);font-size:13px;padding:12px 20px;border-radius:4px;cursor:pointer;border:1px solid var(--line);flex:1;}
+  button.primary{background:var(--gold);color:#0A0C10;border-color:var(--gold);font-weight:600;}
+  button.primary:disabled{opacity:.4;cursor:not-allowed;}
+  button.ghost{background:transparent;color:var(--ink);}
+  button.ghost:hover{border-color:var(--gold-dim);}
+  button.ghost.stop{color:var(--red);}
+
+  .ledger{display:flex;flex-direction:column;}
+  .step{display:grid;grid-template-columns:28px 1fr auto;gap:12px;align-items:start;padding:13px 0;border-bottom:1px dashed var(--line);}
+  .step:last-child{border-bottom:none;}
+  .step .num{font-family:var(--mono);font-size:11px;color:var(--ink-dim);padding-top:2px;}
+  .step .label{font-size:13.5px;}
+  .step .sub{font-family:var(--mono);font-size:11px;color:var(--ink-dim);margin-top:3px;word-break:break-all;}
+  .step .badge{font-family:var(--mono);font-size:10.5px;padding:3px 8px;border-radius:20px;white-space:nowrap;height:fit-content;}
+  .badge.pending{color:var(--ink-dim);border:1px solid var(--line);}
+  .badge.active{color:var(--gold);border:1px solid var(--gold-dim);}
+  .badge.done{color:var(--green);border:1px solid #1F5237;}
+  .badge.fail{color:var(--red);border:1px solid #5A2226;}
+
+  .profit-card{margin-top:18px;padding:18px;border-radius:6px;background:var(--panel-2);border:1px solid var(--line);text-align:center;}
+
+  /* ---- unified flow pipeline ---- */
+  .pipeline{display:flex;gap:0;align-items:stretch;margin:4px 0 4px;overflow-x:auto;padding-bottom:4px;}
+  .stage{flex:1;min-width:104px;position:relative;padding:12px 10px 12px 16px;border:1px solid var(--line);background:var(--panel-2);border-right:none;}
+  .stage:first-child{border-radius:6px 0 0 6px;}
+  .stage:last-child{border-right:1px solid var(--line);border-radius:0 6px 6px 0;}
+  .stage::after{content:'';position:absolute;top:50%;right:-9px;transform:translateY(-50%);width:0;height:0;border-top:9px solid transparent;border-bottom:9px solid transparent;border-left:9px solid var(--panel-2);z-index:2;}
+  .stage::before{content:'';position:absolute;top:50%;right:-11px;transform:translateY(-50%);width:0;height:0;border-top:11px solid transparent;border-bottom:11px solid transparent;border-left:11px solid var(--line);z-index:1;}
+  .stage:last-child::after,.stage:last-child::before{display:none;}
+  .stage .sname{font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-dim);}
+  .stage .sstate{font-family:var(--mono);font-size:12px;margin-top:5px;font-weight:600;}
+  .stage .stime{font-family:var(--mono);font-size:9.5px;color:#5B6273;margin-top:3px;height:12px;}
+  .stage.idle{opacity:.5;}
+  .stage.idle .sstate{color:var(--ink-dim);}
+  .stage.active{background:#1a1710;border-color:var(--gold-dim);}
+  .stage.active .sstate{color:var(--gold);}
+  .stage.active .sname{color:var(--gold);}
+  .stage.done{background:#0e1a13;border-color:#1F5237;}
+  .stage.done .sstate{color:var(--green);}
+  .stage.fail{background:#1e1113;border-color:#5A2226;}
+  .stage.fail .sstate{color:var(--red);}
+  @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.45;}}
+  .stage.active .sstate{animation:pulse 1.1s ease-in-out infinite;}
+
+  .flow-meta{display:flex;gap:20px;flex-wrap:wrap;margin-top:14px;font-family:var(--mono);font-size:11.5px;}
+  .flow-meta .kv{display:flex;flex-direction:column;gap:3px;}
+  .flow-meta .kv .k{color:var(--ink-dim);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;}
+  .flow-meta .kv .val{color:var(--ink);}
+  .flow-meta .kv .val.pos{color:var(--green);}
+  .flow-meta .kv .val.neg{color:var(--red);}
+  .flow-meta .kv .val.gold{color:var(--gold);}
+
+  .profit-card{margin-top:18px;padding:18px;border-radius:6px;background:var(--panel-2);border:1px solid var(--line);text-align:center;}
+  .profit-card .num{font-family:var(--mono);font-size:32px;font-weight:600;letter-spacing:-.01em;}
+  .profit-card .num.pos{color:var(--green);}
+  .profit-card .num.neg{color:var(--red);}
+  .profit-card .cap{font-family:var(--mono);font-size:10.5px;color:var(--ink-dim);letter-spacing:.1em;text-transform:uppercase;margin-top:6px;}
+
+  .quote-row{display:flex;justify-content:space-between;font-family:var(--mono);font-size:12.5px;padding:8px 0;border-bottom:1px solid var(--line);}
+  .quote-row:last-child{border-bottom:none;}
+  .quote-row .v{color:var(--gold);}
+
+  .log{margin-top:18px;background:#07080B;border:1px solid var(--line);border-radius:4px;padding:12px 14px;font-family:var(--mono);font-size:11.5px;color:#8FE3B0;max-height:180px;overflow-y:auto;white-space:pre-wrap;line-height:1.6;}
+  .log .err{color:var(--red);}
+  .log .info{color:var(--ink-dim);}
+
+  /* ---- finder ---- */
+  .finder-grid{display:grid;grid-template-columns:340px 1fr;gap:22px;}
+  @media(max-width:920px){.finder-grid{grid-template-columns:1fr;}}
+  .charts{display:flex;flex-direction:column;gap:18px;}
+  .chart-box{background:var(--panel-2);border:1px solid var(--line);border-radius:6px;padding:14px 14px 8px;}
+  .chart-box .cap{font-family:var(--mono);font-size:10.5px;color:var(--ink-dim);letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px;}
+  svg{display:block;width:100%;}
+  svg text{font-family:var(--mono);font-size:10px;fill:var(--ink-dim);}
+  .axis path,.axis line{stroke:var(--line);}
+  .grid-line{stroke:var(--line);stroke-dasharray:2,3;}
+  .best-line{fill:none;stroke:var(--gold);stroke-width:1.8;}
+  .zero-line{stroke:#5B6273;stroke-dasharray:4,4;stroke-width:1;}
+  .ref-dot{fill:var(--ink-dim);}
+  .bar.pos{fill:var(--green);}
+  .bar.neg{fill:var(--red);}
+  .bar-label{fill:var(--ink);font-size:10px;}
+  .best-banner{margin-top:16px;padding:14px;border-radius:6px;border:1px solid var(--gold-dim);background:linear-gradient(180deg,rgba(212,160,23,.06),transparent);font-family:var(--mono);font-size:12px;line-height:1.7;display:none;}
+  .best-banner b{color:var(--gold);}
+  footer{margin-top:30px;font-family:var(--mono);font-size:10.5px;color:#4A5063;text-align:center;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="brand">
+      <span class="mark">ARRBY · chain-agnostic console</span>
+      <h1>ARRBY — flash-loan arbitrage, watched live</h1>
+      <p>Scan router pairs for live spreads against DefiLlama reference pricing, then point the same numbers at any deployed <code>ARRBY</code> contract on any EVM chain with an Aave V3 pool — quote for free, execute atomically, watch it settle.</p>
+    </div>
+    <button id="connectBtn">Connect Wallet</button>
+  </header>
+
+  <!-- ============ OPPORTUNITY FINDER ============ -->
+  <div class="panel full" style="margin-bottom:22px;">
+    <h2>01 · Opportunity finder — DefiLlama reference vs. live router quotes</h2>
+    <div class="finder-grid">
+      <div>
+        <label>Read-only RPC URL (or leave blank to use wallet)</label>
+        <input id="fRpc" placeholder="https://arb1.arbitrum.io/rpc" />
+        <div class="hint">The finder only reads — getAmountsOut on each router. No wallet or gas needed if an RPC is provided.</div>
+
+        <label>DefiLlama chain slug</label>
+        <select id="fSlug">
+          <option value="ethereum">ethereum</option>
+          <option value="arbitrum" selected>arbitrum</option>
+          <option value="optimism">optimism</option>
+          <option value="polygon">polygon</option>
+          <option value="base">base</option>
+          <option value="avax">avax</option>
+        </select>
+
+        <div class="row2">
+          <div>
+            <label>Token A (borrow asset)</label>
+            <input id="fTokenA" placeholder="0x… USDC" />
+          </div>
+          <div>
+            <label>A decimals</label>
+            <input id="fDecA" value="6" />
+          </div>
+        </div>
+        <div class="row2">
+          <div>
+            <label>Token B (intermediate)</label>
+            <input id="fTokenB" placeholder="0x… WETH" />
+          </div>
+          <div>
+            <label>B decimals</label>
+            <input id="fDecB" value="18" />
+          </div>
+        </div>
+
+        <label>Routers to scan (one per line: label,address)</label>
+        <textarea id="fRouters" placeholder="sushiswap,0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506&#10;camelot,0xc873fEcbd354f5A56E00E710B90EF4201db2448d"></textarea>
+
+        <div class="row2">
+          <div>
+            <label>Notional (Token A units)</label>
+            <input id="fNotional" value="3000" />
+          </div>
+          <div>
+            <label>Scan every (seconds)</label>
+            <input id="fInterval" value="15" />
+          </div>
+        </div>
+
+        <label style="margin-top:20px;color:var(--gold);">Trigger — signal fires when spread holds above threshold</label>
+        <div class="row3">
+          <div>
+            <label>Threshold (bps)</label>
+            <input id="tThreshold" value="12" />
+          </div>
+          <div>
+            <label>Confirmations</label>
+            <input id="tConfirms" value="2" />
+          </div>
+          <div>
+            <label>Clear below (bps)</label>
+            <input id="tClear" value="6" />
+          </div>
+        </div>
+        <label>On signal</label>
+        <select id="tMode">
+          <option value="notify" selected>Notify only (banner + log)</option>
+          <option value="quote">Prefill config + on-chain Quote</option>
+          <option value="execute">Auto-execute (requires arming below)</option>
+        </select>
+        <div class="row2" style="margin-top:10px;align-items:center;">
+          <label style="margin:0;display:flex;align-items:center;gap:8px;cursor:pointer;">
+            <input type="checkbox" id="tArmed" style="width:auto;" /> Arm auto-execute this session
+          </label>
+          <span id="sigBadge" class="badge pending" style="justify-self:end;">idle</span>
+        </div>
+        <div class="hint">Confirmations = consecutive scans over threshold before firing; “clear below” is hysteresis so an oscillating spread doesn't re-fire every tick. Auto-execute needs a connected wallet, the contract address set in configuration, and the arm box ticked — and even then the contract's minProfit check (set to half the threshold) is the real gate: worst case is a reverted tx, gas lost, principal safe.</div>
+
+        <div class="actions">
+          <button class="primary" id="fStart">Start scanning</button>
+          <button class="ghost stop" id="fStop" disabled>Stop</button>
+        </div>
+
+        <div class="best-banner" id="bestBanner"></div>
+      </div>
+
+      <div class="charts">
+        <div class="chart-box">
+          <div class="cap">Best round-trip spread over time (bps of notional) · gold = best pair · dots = DefiLlama-implied fair spread (0)</div>
+          <svg id="spreadChart" height="200"></svg>
+        </div>
+        <div class="chart-box">
+          <div class="cap">Round-trip profit per router pair, latest scan (Token A units, net of Aave 5bps premium)</div>
+          <svg id="pairChart" height="220"></svg>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ CROSS-CHAIN MONITOR ============ -->
+  <div class="panel full" style="margin-bottom:22px;">
+    <h2>02 · Cross-chain monitor — backend-fed, multi-chain leaderboard</h2>
+    <div class="hint" style="margin-bottom:14px;">
+      This connects to the ARRBY backend (<code>backend/</code>) over WebSocket. The backend runs one signal scanner
+      per configured chain concurrently and ranks them together — this shows you which chain has the best same-chain
+      flash-loan opportunity <em>right now</em>, so execution stays a single atomic transaction on whichever chain wins.
+      It is not an atomic cross-chain trade — bridging isn't instant, so a genuine buy-here-sell-there-across-chains
+      trade carries settlement risk this monitor doesn't take on. See technical.md's cross-chain section.
+    </div>
+    <div class="row2">
+      <div>
+        <label>Backend WebSocket URL</label>
+        <input id="backendWs" placeholder="ws://localhost:8787/ws" value="ws://localhost:8787/ws" />
+      </div>
+      <div style="display:flex;align-items:flex-end;gap:10px;">
+        <button class="ghost" id="backendConnect" style="flex:1;">Connect</button>
+        <span id="backendBadge" class="badge pending">disconnected</span>
+      </div>
+    </div>
+
+    <div class="finder-grid" style="margin-top:16px;">
+      <div>
+        <div class="cap" style="font-family:var(--mono);font-size:10.5px;color:var(--ink-dim);letter-spacing:.1em;text-transform:uppercase;margin-bottom:10px;">Leaderboard (best bps per chain)</div>
+        <div id="chainTable" style="font-family:var(--mono);font-size:12px;"></div>
+
+        <div class="cap" style="font-family:var(--mono);font-size:10.5px;color:var(--ink-dim);letter-spacing:.1em;text-transform:uppercase;margin:18px 0 10px;">Liquidation watch (health factor ≤ warn level)</div>
+        <div id="liqTable" style="font-family:var(--mono);font-size:12px;">no data yet</div>
+      </div>
+      <div class="charts">
+        <div class="chart-box">
+          <div class="cap">Best bps by chain — live</div>
+          <svg id="chainBarChart" height="260"></svg>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ UNIFIED FLOW PIPELINE ============ -->
+  <div class="panel full" style="margin-bottom:22px;">
+    <h2>03 · Flow — detect → confirm → quote → execute → settle, in real time</h2>
+    <div class="hint" style="margin-bottom:14px;">
+      One continuous view of an opportunity's whole life. The finder and cross-chain monitor feed the left of this
+      pipeline; a wallet execution drives the right. Each stage lights up as it happens and records how long it took,
+      so you watch a trade flow from "spotted" to "profit in the contract" without switching panels.
+    </div>
+    <div class="pipeline" id="pipeline">
+      <div class="stage idle" data-stage="detect"><div class="sname">01 Detect</div><div class="sstate">idle</div><div class="stime"></div></div>
+      <div class="stage idle" data-stage="confirm"><div class="sname">02 Confirm</div><div class="sstate">—</div><div class="stime"></div></div>
+      <div class="stage idle" data-stage="quote"><div class="sname">03 Quote</div><div class="sstate">—</div><div class="stime"></div></div>
+      <div class="stage idle" data-stage="submit"><div class="sname">04 Submit</div><div class="sstate">—</div><div class="stime"></div></div>
+      <div class="stage idle" data-stage="mine"><div class="sname">05 Mining</div><div class="sstate">—</div><div class="stime"></div></div>
+      <div class="stage idle" data-stage="legs"><div class="sname">06 Swaps</div><div class="sstate">—</div><div class="stime"></div></div>
+      <div class="stage idle" data-stage="repay"><div class="sname">07 Repay</div><div class="sstate">—</div><div class="stime"></div></div>
+      <div class="stage idle" data-stage="settle"><div class="sname">08 Settle</div><div class="sstate">—</div><div class="stime"></div></div>
+    </div>
+    <div class="flow-meta">
+      <div class="kv"><span class="k">Opportunity</span><span class="val" id="fmOpp">—</span></div>
+      <div class="kv"><span class="k">Expected profit</span><span class="val" id="fmExpected">—</span></div>
+      <div class="kv"><span class="k">Tx hash</span><span class="val" id="fmTx">—</span></div>
+      <div class="kv"><span class="k">Blocks waited</span><span class="val" id="fmBlocks">—</span></div>
+      <div class="kv"><span class="k">Realized profit</span><span class="val" id="fmRealized">—</span></div>
+      <div class="kv"><span class="k">Total elapsed</span><span class="val" id="fmElapsed">—</span></div>
+    </div>
+  </div>
+
+  <div class="grid">
+
+    <!-- ============ CONFIGURATION ============ -->
+    <div class="panel">
+      <h2>04 · Configuration</h2>
+
+      <label>Network</label>
+      <select id="chainSelect">
+        <option value="1">Ethereum Mainnet (1)</option>
+        <option value="42161">Arbitrum One (42161)</option>
+        <option value="10">Optimism (10)</option>
+        <option value="137">Polygon PoS (137)</option>
+        <option value="8453">Base (8453)</option>
+        <option value="43114">Avalanche C-Chain (43114)</option>
+        <option value="0">Custom chain ID…</option>
+      </select>
+
+      <label>ARRBY contract address</label>
+      <input id="contractAddr" placeholder="0x… (from your Foundry deploy)" />
+
+      <label>Borrowed asset (ERC-20)</label>
+      <input id="assetAddr" placeholder="0x… e.g. USDC on this chain" />
+
+      <div class="row2">
+        <div>
+          <label>Amount to borrow</label>
+          <input id="amount" placeholder="3000" />
+        </div>
+        <div>
+          <label>Asset decimals</label>
+          <input id="decimals" value="6" />
+        </div>
+      </div>
+
+      <label>Router A (buy leg)</label>
+      <input id="routerA" placeholder="0x… V2-style router" />
+      <label>Path A → intermediate (comma-separated addresses)</label>
+      <input id="pathA" placeholder="0xUSDC,0xWETH" />
+
+      <label>Router B (sell leg)</label>
+      <input id="routerB" placeholder="0x… V2-style router" />
+      <label>Path intermediate → A (comma-separated addresses)</label>
+      <input id="pathB" placeholder="0xWETH,0xUSDC" />
+
+      <div class="row2">
+        <div>
+          <label>Minimum profit (asset units)</label>
+          <input id="minProfit" value="0" />
+        </div>
+        <div>
+          <label>Deadline (minutes from now)</label>
+          <input id="deadlineMin" value="5" />
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="ghost" id="quoteBtn">Quote (read-only)</button>
+        <button class="primary" id="executeBtn" disabled>Execute Flash Loan</button>
+      </div>
+      <div class="hint" style="margin-top:10px;">Quote calls the contract's <code>quoteArbitrage</code> view — zero gas. Execute is a real transaction; the trade reverts atomically if profit misses your minimum.</div>
+    </div>
+
+    <!-- ============ LIVE LEDGER ============ -->
+    <div class="panel">
+      <h2>05 · Live ledger</h2>
+      <div class="ledger">
+        <div class="step"><div class="num">01</div><div><div class="label">Wallet connected</div><div class="sub" id="s1sub">waiting…</div></div><div class="badge pending" id="s1badge">pending</div></div>
+        <div class="step"><div class="num">02</div><div><div class="label">Flash loan requested from Aave V3 Pool</div><div class="sub" id="s2sub">—</div></div><div class="badge pending" id="s2badge">pending</div></div>
+        <div class="step"><div class="num">03</div><div><div class="label">Leg A executed — buy on Router A</div><div class="sub" id="s3sub">—</div></div><div class="badge pending" id="s3badge">pending</div></div>
+        <div class="step"><div class="num">04</div><div><div class="label">Leg B executed — sell on Router B</div><div class="sub" id="s4sub">—</div></div><div class="badge pending" id="s4badge">pending</div></div>
+        <div class="step"><div class="num">05</div><div><div class="label">Principal + premium repaid</div><div class="sub" id="s5sub">—</div></div><div class="badge pending" id="s5badge">pending</div></div>
+        <div class="step"><div class="num">06</div><div><div class="label">Transaction confirmed on-chain</div><div class="sub" id="s6sub">—</div></div><div class="badge pending" id="s6badge">pending</div></div>
+      </div>
+
+      <div class="profit-card">
+        <div class="num" id="profitNum">—</div>
+        <div class="cap">net profit (asset units)</div>
+      </div>
+
+      <div id="quotePanel" style="display:none;margin-top:16px;">
+        <div class="quote-row"><span>Gross returned</span><span class="v" id="qGross">—</span></div>
+        <div class="quote-row"><span>Amount owed (principal + premium)</span><span class="v" id="qOwed">—</span></div>
+        <div class="quote-row"><span>Expected profit</span><span class="v" id="qProfit">—</span></div>
+      </div>
+
+      <div class="log" id="log">// the Flow pipeline above shows the whole lifecycle; this log is the detailed event stream. Scan for opportunities, or configure a run directly and hit Quote/Execute.</div>
+    </div>
+
+  </div>
+
+  <!-- ============ AUTOEARN + TREASURY ============ -->
+  <div class="panel full" style="margin-top:22px;">
+    <h2>06 · Autoearn &amp; treasury — unattended earning with guardrails</h2>
+    <div class="hint" style="margin-bottom:14px;">
+      Autoearn runs the whole detect→execute loop for you, but it can't invent profit: every execution still passes the
+      contract's on-chain minProfit check, so a bad iteration just reverts (gas spent, principal safe). The value it adds
+      is <em>unattended operation with hard rails</em> — a per-run notional cap, a cooldown, a consecutive-failure circuit
+      breaker, optional compounding, and periodic treasury sweeps. For real headless operation use
+      <code>integrations/autoearn.js</code>; this panel mirrors its controls and its live state.
+    </div>
+    <div class="finder-grid">
+      <div>
+        <div class="row3">
+          <div><label>Notional (asset units)</label><input id="aeNotional" value="3000" /></div>
+          <div><label>Threshold (bps)</label><input id="aeThreshold" value="12" /></div>
+          <div><label>Cooldown (s)</label><input id="aeCooldown" value="20" /></div>
+        </div>
+        <div class="row3">
+          <div><label>Max consec. fails</label><input id="aeMaxFails" value="3" /></div>
+          <div><label>Max runtime (h)</label><input id="aeMaxRuntime" value="8" /></div>
+          <div><label>Sweep every N wins</label><input id="aeSweepN" value="5" /></div>
+        </div>
+        <div class="row2" style="margin-top:12px;align-items:center;">
+          <label style="margin:0;display:flex;align-items:center;gap:8px;cursor:pointer;">
+            <input type="checkbox" id="aeCompound" style="width:auto;" /> Compound (grow notional from profit, capped ×3)
+          </label>
+          <label style="margin:0;display:flex;align-items:center;gap:8px;cursor:pointer;">
+            <input type="checkbox" id="aeArmed" style="width:auto;" /> Arm real execution
+          </label>
+        </div>
+
+        <div style="margin-top:16px;padding:14px;border-radius:6px;background:var(--panel-2);border:1px solid var(--line);">
+          <div class="cap" style="font-family:var(--mono);font-size:10.5px;color:var(--ink-dim);letter-spacing:.1em;text-transform:uppercase;margin-bottom:10px;">Treasury (on-chain)</div>
+          <div class="quote-row"><span>Beneficiary</span><span class="v" id="tvBeneficiary">— (call setTreasury)</span></div>
+          <div class="quote-row"><span>Treasury share</span><span class="v" id="tvBps">—</span></div>
+          <div class="quote-row"><span>Cumulative profit (asset)</span><span class="v" id="tvCumulative">—</span></div>
+          <div class="quote-row"><span>Contract balance (asset)</span><span class="v" id="tvBalance">—</span></div>
+          <div class="actions" style="margin-top:12px;">
+            <button class="ghost" id="tvRefresh">Refresh treasury</button>
+            <button class="ghost" id="tvSweep">Sweep now</button>
+          </div>
+          <div class="hint" style="margin-top:8px;">Reads cumulativeProfit + balanceOf from the ARRBY contract at the address in section 04. Sweep splits the balance per the on-chain treasury share and needs the owner wallet.</div>
+        </div>
+
+        <div class="actions" style="margin-top:16px;">
+          <button class="primary" id="aeStart">Start autoearn</button>
+          <button class="ghost stop" id="aeStop" disabled>Halt</button>
+          <span id="aeBadge" class="badge pending" style="align-self:center;">idle</span>
+        </div>
+      </div>
+
+      <div class="charts">
+        <div class="chart-box">
+          <div class="cap">Cumulative realized profit this session (asset units)</div>
+          <svg id="earnChart" height="180"></svg>
+        </div>
+        <div class="flow-meta" style="padding:4px 2px;">
+          <div class="kv"><span class="k">Session profit</span><span class="val gold" id="aeProfit">0</span></div>
+          <div class="kv"><span class="k">Executions</span><span class="val" id="aeCount">0</span></div>
+          <div class="kv"><span class="k">Consec. fails</span><span class="val" id="aeFails">0</span></div>
+          <div class="kv"><span class="k">Current notional</span><span class="val" id="aeCurNotional">—</span></div>
+          <div class="kv"><span class="k">Breaker</span><span class="val" id="aeBreaker">armed rails</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer>ARRBY · Apache-2.0 · no admin keys, no upgradeable proxy · cypherpunk2048 standard · reference pricing by DefiLlama (coins.llama.fi)</footer>
+</div>
+
+<script>
+/* ============================== shared ============================== */
+const ARRBY_ABI = [
+  "function initiateArbitrage(address asset, uint256 amount, (address routerA,address routerB,address[] pathAtoB,address[] pathBtoA,uint256 minProfit,uint256 deadline) arb) external",
+  "function quoteArbitrage(address asset, uint256 amount, (address routerA,address routerB,address[] pathAtoB,address[] pathBtoA,uint256 minProfit,uint256 deadline) arb) external view returns (uint256 grossReturned, uint256 amountOwed, int256 expectedProfit)",
+  "event ArbitrageInitiated(address indexed asset, uint256 amount, address routerA, address routerB, uint256 minProfit, uint256 deadline)",
+  "event ArbitrageExecuted(address indexed asset, uint256 amountBorrowed, uint256 premium, uint256 grossReturned, uint256 profit, address routerA, address routerB)",
+  "function cumulativeProfit(address) view returns (uint256)",
+  "function treasury() view returns (address)",
+  "function treasuryBps() view returns (uint16)",
+  "function sweepTreasury(address token) external",
+  "function setMaxNotional(uint256) external"
+];
+const ERC20_BAL_ABI = ["function balanceOf(address) view returns (uint256)"];
+const ROUTER_ABI = [
+  "function getAmountsOut(uint256 amountIn, address[] path) view returns (uint256[] amounts)"
+];
+const AAVE_PREMIUM_BPS = 5n; // display assumption; the contract reads the real value on-chain
+
+let provider, signer, userAddr;
+
+/* ============================== flow pipeline engine ==============================
+ * A single source of truth for the "detect → confirm → quote → submit → mine →
+ * legs → repay → settle" lifecycle. Every other part of the UI (finder, signal
+ * trigger, quote(), execute()) calls flow.mark(stage, state, detail) instead of
+ * poking at DOM directly, so the whole workflow animates as one continuous thing
+ * with per-stage timing.
+ */
+const STAGES = ['detect','confirm','quote','submit','mine','legs','repay','settle'];
+const flow = {
+  t0: null,               // ms timestamp when this attempt's DETECT began
+  stageStart: {},         // per-stage start ms
+  active: false,
+  reset() {
+    this.t0 = null; this.stageStart = {}; this.active = false;
+    for (const s of STAGES) {
+      const el = document.querySelector(`.stage[data-stage="${s}"]`);
+      el.className = 'stage idle';
+      el.querySelector('.sstate').textContent = s === 'detect' ? 'idle' : '—';
+      el.querySelector('.stime').textContent = '';
+    }
+    for (const id of ['fmOpp','fmExpected','fmTx','fmBlocks','fmRealized','fmElapsed']) $(id).textContent = '—';
+    $('fmExpected').className = 'val'; $('fmRealized').className = 'val';
+  },
+  _el(stage) { return document.querySelector(`.stage[data-stage="${stage}"]`); },
+  mark(stage, state, label) {
+    const el = this._el(stage);
+    if (!el) return;
+    el.className = 'stage ' + state; // idle | active | done | fail
+    if (label) el.querySelector('.sstate').textContent = label;
+    const now = performance.now();
+    if (state === 'active') {
+      if (!this.stageStart[stage]) this.stageStart[stage] = now;
+      if (stage === 'detect' && this.t0 === null) { this.t0 = now; this.active = true; }
+    } else if ((state === 'done' || state === 'fail') && this.stageStart[stage]) {
+      const dt = now - this.stageStart[stage];
+      el.querySelector('.stime').textContent = dt < 1000 ? Math.round(dt) + 'ms' : (dt/1000).toFixed(1) + 's';
+    }
+    if (this.t0 !== null) $('fmElapsed').textContent = ((now - this.t0)/1000).toFixed(1) + 's';
+  },
+  meta(id, value, cls) { const el = $(id); el.textContent = value; if (cls) el.className = 'val ' + cls; },
+  // convenience: mark every stage from `fromIdx` onward as failed (a revert kills the rest)
+  failFrom(stage) {
+    const idx = STAGES.indexOf(stage);
+    for (let i = idx; i < STAGES.length; i++) {
+      const el = this._el(STAGES[i]);
+      if (el.classList.contains('done')) continue;
+      el.className = 'stage fail';
+      if (el.querySelector('.sstate').textContent === '—' || el.querySelector('.sstate').textContent === 'idle')
+        el.querySelector('.sstate').textContent = 'aborted';
+    }
+  }
+};
+
+const $ = id => document.getElementById(id);
+const log = (msg, cls) => {
+  const el = $('log');
+  const line = document.createElement('div');
+  if (cls) line.className = cls;
+  line.textContent = (new Date()).toLocaleTimeString() + '  ' + msg;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+};
+const setBadge = (n, state, text) => { const b = $('s'+n+'badge'); b.className = 'badge '+state; b.textContent = text || state; };
+const setSub = (n, text) => { $('s'+n+'sub').textContent = text; };
+
+async function connect() {
+  if (!window.ethereum) { log('No injected wallet found. Install MetaMask or similar.', 'err'); return; }
+  provider = new ethers.BrowserProvider(window.ethereum);
+  await provider.send('eth_requestAccounts', []);
+  signer = await provider.getSigner();
+  userAddr = await signer.getAddress();
+  $('connectBtn').textContent = userAddr.slice(0,6) + '…' + userAddr.slice(-4);
+  setBadge(1, 'done', 'connected'); setSub(1, userAddr);
+  log('Wallet connected: ' + userAddr);
+  $('executeBtn').disabled = false;
+  const wanted = parseInt($('chainSelect').value, 10);
+  if (wanted) {
+    try { await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x' + wanted.toString(16) }] }); }
+    catch (e) { log("Chain switch declined — continuing on wallet's current chain.", 'info'); }
+  }
+}
+
+/* ============================== execute / quote ============================== */
+function buildArbParams() {
+  const pathA = $('pathA').value.split(',').map(s => s.trim()).filter(Boolean);
+  const pathB = $('pathB').value.split(',').map(s => s.trim()).filter(Boolean);
+  const decimals = parseInt($('decimals').value || '18', 10);
+  const amount = ethers.parseUnits($('amount').value || '0', decimals);
+  const minProfit = ethers.parseUnits($('minProfit').value || '0', decimals);
+  const deadline = Math.floor(Date.now() / 1000) + parseInt($('deadlineMin').value || '5', 10) * 60;
+  return {
+    asset: $('assetAddr').value.trim(),
+    amount, decimals,
+    arb: { routerA: $('routerA').value.trim(), routerB: $('routerB').value.trim(), pathAtoB: pathA, pathBtoA: pathB, minProfit, deadline }
+  };
+}
+
+async function quote(fromFlow) {
+  try {
+    const p = provider || new ethers.BrowserProvider(window.ethereum);
+    const c = new ethers.Contract($('contractAddr').value.trim(), ARRBY_ABI, p);
+    const { asset, amount, arb, decimals } = buildArbParams();
+    flow.mark('quote', 'active', 'reading…');
+    log('Reading quoteArbitrage()… no gas spent.');
+    const [gross, owed, profit] = await c.quoteArbitrage(asset, amount, arb);
+    $('quotePanel').style.display = 'block';
+    $('qGross').textContent = ethers.formatUnits(gross, decimals);
+    $('qOwed').textContent = ethers.formatUnits(owed, decimals);
+    const profitFmt = ethers.formatUnits(profit, decimals);
+    $('qProfit').textContent = profitFmt;
+    $('qProfit').style.color = profit >= 0n ? 'var(--green)' : 'var(--red)';
+    flow.meta('fmExpected', profitFmt + ' (asset units)', profit >= 0n ? 'pos' : 'neg');
+    flow.mark('quote', profit >= 0n ? 'done' : 'fail', profit >= 0n ? 'profitable' : 'negative');
+    log('Quote OK — expected profit: ' + profitFmt + ' asset units.');
+    return profit;
+  } catch (e) {
+    flow.mark('quote', 'fail', 'reverted');
+    log('Quote failed: ' + (e.reason || e.shortMessage || e.message || e), 'err');
+    return null;
+  }
+}
+
+// Best-effort human-readable reason for a revert, matched from what ethers
+// already surfaces. The custom errors (Unprofitable, Expired, BadPath) come
+// through in e.reason / e.shortMessage on most providers.
+function decodeArrbyError(e) {
+  const msg = (e?.reason || e?.shortMessage || e?.message || '').toLowerCase();
+  if (msg.includes('unprofitable')) return 'Unprofitable — spread gone by execution';
+  if (msg.includes('expired')) return 'Expired — deadline passed before mining';
+  if (msg.includes('badpath')) return 'BadPath — swap path mismatch';
+  if (msg.includes('user rejected') || msg.includes('user denied')) return 'Rejected in wallet';
+  return null;
+}
+
+async function execute(fromFlow) {
+  let blockSub = null;
+  try {
+    if (!signer) { log('Connect a wallet first.', 'err'); return; }
+    const c = new ethers.Contract($('contractAddr').value.trim(), ARRBY_ABI, signer);
+    const { asset, amount, arb, decimals } = buildArbParams();
+
+    // ---- SUBMIT ----
+    flow.mark('submit', 'active', 'signing…');
+    setBadge(2, 'active', 'submitting…');
+    log('Submitting initiateArbitrage() transaction…');
+    $('executeBtn').disabled = true;
+
+    const tx = await c.initiateArbitrage(asset, amount, arb);
+    flow.mark('submit', 'done', 'sent');
+    flow.meta('fmTx', tx.hash.slice(0, 10) + '…' + tx.hash.slice(-6));
+    setSub(2, tx.hash); log('Tx sent: ' + tx.hash);
+    setBadge(2, 'done', 'requested');
+
+    // ---- MINE (live block-by-block feedback) ----
+    flow.mark('mine', 'active', 'pending…');
+    setBadge(3, 'active', 'awaiting receipt…'); setBadge(4, 'active', 'awaiting receipt…');
+    const startBlock = await (provider).getBlockNumber();
+    let blocksWaited = 0;
+    blockSub = (bn) => {
+      blocksWaited = bn - startBlock;
+      flow.meta('fmBlocks', String(Math.max(0, blocksWaited)));
+      flow._el('mine').querySelector('.sstate').textContent = 'block +' + Math.max(0, blocksWaited);
+    };
+    provider.on('block', blockSub);
+
+    const receipt = await tx.wait();
+    provider.off('block', blockSub); blockSub = null;
+
+    if (receipt.status === 1) {
+      flow.mark('mine', 'done', 'mined');
+      flow.mark('legs', 'done', 'both filled');
+      flow.mark('repay', 'done', 'repaid');
+      setBadge(3, 'done', 'confirmed in tx'); setBadge(4, 'done', 'confirmed in tx');
+      setBadge(5, 'done', 'repaid'); setSub(5, 'principal + premium pulled by lender in same tx');
+      setBadge(6, 'done', 'success'); setSub(6, 'block ' + receipt.blockNumber);
+
+      const iface = new ethers.Interface(ARRBY_ABI);
+      let found = false;
+      for (const rawLog of receipt.logs) {
+        try {
+          const parsed = iface.parseLog(rawLog);
+          if (parsed && parsed.name === 'ArbitrageExecuted') {
+            found = true;
+            const profit = ethers.formatUnits(parsed.args.profit, decimals);
+            $('profitNum').textContent = '+' + profit;
+            $('profitNum').className = 'num pos';
+            flow.mark('settle', 'done', '+' + Number(profit).toFixed(4));
+            flow.meta('fmRealized', '+' + profit + ' (asset units)', 'pos');
+            log('ArbitrageExecuted — profit ' + profit + ' asset units.');
+            autoearnOnEarn(Number(profit));
+          }
+        } catch (_) {}
+      }
+      if (!found) {
+        flow.mark('settle', 'done', 'settled');
+        log('Tx succeeded but no ArbitrageExecuted event decoded — check the contract address.', 'info');
+      }
+    } else {
+      flow.mark('mine', 'done', 'mined');
+      flow.failFrom('legs');
+      flow.meta('fmRealized', 'reverted', 'neg');
+      ['3','4','5','6'].forEach(n => setBadge(n, 'fail', 'reverted'));
+      $('profitNum').textContent = 'REVERTED';
+      $('profitNum').className = 'num neg';
+      log('Transaction reverted on-chain — unprofitable at execution or a leg failed. Only gas was spent.', 'err');
+      autoearnOnFail();
+    }
+  } catch (e) {
+    if (blockSub && provider) provider.off('block', blockSub);
+    const why = decodeArrbyError(e);
+    // Which stage failed? If we never got a hash, it died at submit; else at mine/settle.
+    if (flow._el('submit').classList.contains('active')) flow.mark('submit', 'fail', 'rejected');
+    flow.failFrom(flow._el('mine').classList.contains('done') ? 'legs' : 'mine');
+    flow.meta('fmRealized', why || 'failed', 'neg');
+    log('Execution failed: ' + (why || e.reason || e.shortMessage || e.message || e), 'err');
+    ['2','3','4','5','6'].forEach(n => setBadge(n, 'fail'));
+  } finally { $('executeBtn').disabled = false; }
+}
+
+/* ============================== opportunity finder ============================== */
+const finder = {
+  timer: null,
+  history: [],       // [{t: Date, bestBps: number}]
+  latestPairs: [],   // [{label, profit, buy, sell, buyAddr, sellAddr}]
+  running: false,
+  // isolated trigger state machine (same logic as integrations/arby_signal.js)
+  sigState: 'IDLE',  // IDLE | WATCHING | SIGNAL
+  consecutive: 0
+};
+
+function setSigBadge(state, extra) {
+  const b = $('sigBadge');
+  const map = { IDLE: ['pending','idle'], WATCHING: ['active','watching'], SIGNAL: ['done','SIGNAL'] };
+  const [cls, txt] = map[state] || map.IDLE;
+  b.className = 'badge ' + cls;
+  b.textContent = extra ? `${txt} ${extra}` : txt;
+}
+
+function advanceSignal(best) {
+  const threshold = parseFloat($('tThreshold').value || '12');
+  const clearBps = parseFloat($('tClear').value || String(threshold / 2));
+  const confirms = Math.max(1, parseInt($('tConfirms').value || '2', 10));
+
+  if (finder.sigState === 'WATCHING') {
+    // DETECT stage reflects "we're seeing a candidate at/above threshold"
+    if (best.bps >= threshold) {
+      finder.consecutive += 1;
+      setSigBadge('WATCHING', `${finder.consecutive}/${confirms}`);
+      // start a fresh flow attempt on the first qualifying tick
+      if (finder.consecutive === 1) {
+        flow.reset();
+        flow.mark('detect', 'done', best.bps.toFixed(1) + ' bps');
+        flow.meta('fmOpp', best.label + ' @ ' + best.bps.toFixed(1) + ' bps');
+      }
+      flow.mark('confirm', 'active', `${finder.consecutive}/${confirms}`);
+      if (finder.consecutive >= confirms) {
+        finder.sigState = 'SIGNAL';
+        setSigBadge('SIGNAL');
+        flow.mark('confirm', 'done', 'confirmed');
+        onSignalFired(best, threshold);
+      }
+    } else {
+      if (finder.consecutive > 0) {
+        // candidate evaporated before confirming — abort this flow attempt
+        flow.mark('confirm', 'fail', 'lost');
+      }
+      finder.consecutive = 0;
+      setSigBadge('WATCHING');
+    }
+  } else if (finder.sigState === 'SIGNAL') {
+    if (best.bps < clearBps) {
+      finder.sigState = 'WATCHING';
+      finder.consecutive = 0;
+      setSigBadge('WATCHING');
+      log(`Signal cleared — spread decayed below ${clearBps} bps. Re-armed.`);
+    }
+  }
+}
+
+async function onSignalFired(best, threshold) {
+  log(`SIGNAL: ${best.label} at ${best.bps.toFixed(1)} bps (threshold ${threshold}).`);
+  const mode = $('tMode').value;
+  if (mode === 'notify') {
+    flow.mark('quote', 'idle', 'notify only');
+    return;
+  }
+
+  // prefill config from the signal; minProfit = half the threshold
+  useBest();
+  const decA = parseInt($('fDecA').value || '6', 10);
+  const notionalF = parseFloat($('fNotional').value || '0');
+  $('minProfit').value = (notionalF * threshold / 2 / 10000).toFixed(Math.min(decA, 8));
+
+  if (mode === 'quote') { await quote(true); return; }
+
+  if (mode === 'execute') {
+    if (!$('tArmed').checked) { log('Signal wanted to execute but auto-execute is not armed — quoting instead.', 'info'); await quote(true); return; }
+    if (!signer) { log('Signal wanted to execute but no wallet is connected — quoting instead.', 'info'); await quote(true); return; }
+    if (!$('contractAddr').value.trim()) { log('Signal wanted to execute but no ARRBY contract address is set.', 'err'); return; }
+    const expected = await quote(true);
+    if (expected === null || expected <= 0n) { log('Auto-execute stood down — contract quote not profitable.', 'info'); return; }
+    log('Auto-executing from signal…');
+    await execute(true);
+  }
+}
+
+function parseRouters() {
+  return $('fRouters').value.split('\n').map(l => l.trim()).filter(Boolean).map(l => {
+    const [label, addr] = l.split(',').map(s => s.trim());
+    return { label: label || (addr ? addr.slice(0,8) : '?'), addr };
+  }).filter(r => r.addr && r.addr.startsWith('0x'));
+}
+
+function finderProvider() {
+  const rpc = $('fRpc').value.trim();
+  if (rpc) return new ethers.JsonRpcProvider(rpc);
+  if (provider) return provider;
+  if (window.ethereum) return new ethers.BrowserProvider(window.ethereum);
+  return null;
+}
+
+async function fetchLlamaPrices(slug, tokenA, tokenB) {
+  // DefiLlama keys coins as "{chain}:{lowercased address}"
+  const keyA = `${slug}:${tokenA.toLowerCase()}`, keyB = `${slug}:${tokenB.toLowerCase()}`;
+  const url = `https://coins.llama.fi/prices/current/${keyA},${keyB}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('DefiLlama HTTP ' + res.status);
+  const data = await res.json();
+  // match case-insensitively in case the API echoes checksummed input
+  const lookup = k => {
+    if (data.coins?.[k]) return data.coins[k].price;
+    const hit = Object.keys(data.coins || {}).find(x => x.toLowerCase() === k);
+    return hit ? data.coins[hit].price : null;
+  };
+  return { priceA: lookup(keyA), priceB: lookup(keyB) };
+}
+
+async function scanOnce() {
+  const p = finderProvider();
+  if (!p) { log('Finder: provide an RPC URL or connect a wallet.', 'err'); stopScan(); return; }
+
+  const slug = $('fSlug').value;
+  const tokenA = $('fTokenA').value.trim();
+  const tokenB = $('fTokenB').value.trim();
+  const decA = parseInt($('fDecA').value || '18', 10);
+  const decB = parseInt($('fDecB').value || '18', 10);
+  const routers = parseRouters();
+  if (!tokenA || !tokenB || routers.length < 2) {
+    log('Finder: need Token A, Token B, and at least two routers.', 'err'); stopScan(); return;
+  }
+
+  const notional = ethers.parseUnits($('fNotional').value || '1000', decA);
+  const notionalF = parseFloat($('fNotional').value || '1000');
+
+  // 1. DefiLlama reference prices (informational: is the on-chain spread real or is one pool just stale/thin?)
+  let ref = { priceA: null, priceB: null };
+  try { ref = await fetchLlamaPrices(slug, tokenA, tokenB); }
+  catch (e) { log('Finder: DefiLlama fetch failed (' + e.message + ') — continuing with router quotes only.', 'info'); }
+
+  // 2. Quote every router both directions
+  const pathAB = [tokenA, tokenB], pathBA = [tokenB, tokenA];
+  const quotes = [];
+  for (const r of routers) {
+    try {
+      const c = new ethers.Contract(r.addr, ROUTER_ABI, p);
+      const outAB = await c.getAmountsOut(notional, pathAB);      // how much B for notional A
+      const bOut = outAB[outAB.length - 1];
+      quotes.push({ ...r, bOut });
+    } catch (e) {
+      quotes.push({ ...r, bOut: null });
+      log(`Finder: ${r.label} A→B quote failed (${e.shortMessage || e.message})`, 'info');
+    }
+  }
+
+  // 3. For every ordered pair (buy on X, sell on Y), compute the full round trip
+  const premium = (notional * AAVE_PREMIUM_BPS) / 10000n;
+  const pairs = [];
+  for (const buy of quotes) {
+    if (buy.bOut === null) continue;
+    for (const sell of quotes) {
+      if (sell.addr === buy.addr) continue;
+      try {
+        const c = new ethers.Contract(sell.addr, ROUTER_ABI, p);
+        const outBA = await c.getAmountsOut(buy.bOut, pathBA);
+        const gross = outBA[outBA.length - 1];
+        const profitRaw = gross - notional - premium;
+        const profit = parseFloat(ethers.formatUnits(profitRaw, decA));
+        pairs.push({
+          label: `${buy.label} → ${sell.label}`,
+          buyAddr: buy.addr, sellAddr: sell.addr,
+          profit,
+          bps: notionalF > 0 ? (profit / notionalF) * 10000 : 0
+        });
+      } catch (e) { /* pair quote failed; skip quietly, already logged direction failures */ }
+    }
+  }
+
+  if (!pairs.length) { log('Finder: no valid pair quotes this scan.', 'info'); return; }
+
+  pairs.sort((a, b) => b.profit - a.profit);
+  finder.latestPairs = pairs;
+  const best = pairs[0];
+  finder.history.push({ t: new Date(), bestBps: best.bps });
+  if (finder.history.length > 120) finder.history.shift();
+
+  advanceSignal(best);
+
+  // 4. Banner + charts
+  const banner = $('bestBanner');
+  banner.style.display = 'block';
+  const refLine = (ref.priceA && ref.priceB)
+    ? `DefiLlama ref: A $${ref.priceA.toFixed(4)} · B $${ref.priceB.toFixed(2)} (fair B/A ≈ ${(ref.priceB / ref.priceA).toFixed(2)})`
+    : 'DefiLlama ref unavailable this scan';
+  banner.innerHTML =
+    `Best pair: <b>${best.label}</b> — round-trip <b>${best.profit >= 0 ? '+' : ''}${best.profit.toFixed(4)}</b> Token A ` +
+    `(<b>${best.bps.toFixed(1)} bps</b>, net of 5 bps Aave premium, before gas)<br>` +
+    refLine + `<br>` +
+    `<button class="ghost" style="margin-top:8px;padding:7px 14px;font-size:11.5px;" onclick="useBest()">Send best pair to configuration ↓</button>`;
+
+  drawSpreadChart();
+  drawPairChart();
+  log(`Finder: best ${best.label} at ${best.bps.toFixed(1)} bps (${pairs.length} pairs scanned).`);
+}
+
+function useBest() {
+  const best = finder.latestPairs[0];
+  if (!best) return;
+  $('routerA').value = best.buyAddr;
+  $('routerB').value = best.sellAddr;
+  $('assetAddr').value = $('fTokenA').value.trim();
+  $('decimals').value = $('fDecA').value;
+  $('amount').value = $('fNotional').value;
+  $('pathA').value = `${$('fTokenA').value.trim()},${$('fTokenB').value.trim()}`;
+  $('pathB').value = `${$('fTokenB').value.trim()},${$('fTokenA').value.trim()}`;
+  log('Configuration prefilled from best pair: ' + best.label + '. Review, Quote, then Execute.');
+  document.querySelector('.grid').scrollIntoView({ behavior: 'smooth' });
+}
+
+function startScan() {
+  if (finder.running) return;
+  finder.running = true;
+  finder.sigState = 'WATCHING'; finder.consecutive = 0; setSigBadge('WATCHING');
+  $('fStart').disabled = true; $('fStop').disabled = false;
+  const iv = Math.max(5, parseInt($('fInterval').value || '15', 10)) * 1000;
+  log('Finder: scanning every ' + (iv/1000) + 's…');
+  scanOnce();
+  finder.timer = setInterval(scanOnce, iv);
+}
+function stopScan() {
+  finder.running = false;
+  finder.sigState = 'IDLE'; finder.consecutive = 0; setSigBadge('IDLE');
+  clearInterval(finder.timer);
+  $('fStart').disabled = false; $('fStop').disabled = true;
+  log('Finder: stopped.');
+}
+
+/* ============================== D3 charts ============================== */
+function chartDims(svgEl, marg) {
+  const w = svgEl.clientWidth || svgEl.parentNode.clientWidth;
+  const h = +svgEl.getAttribute('height');
+  return { w, h, iw: w - marg.l - marg.r, ih: h - marg.t - marg.b };
+}
+
+function drawSpreadChart() {
+  const svg = d3.select('#spreadChart');
+  svg.selectAll('*').remove();
+  const data = finder.history;
+  if (data.length < 2) return;
+
+  const m = { t: 10, r: 14, b: 22, l: 44 };
+  const { w, h, iw, ih } = chartDims(svg.node(), m);
+  const g = svg.append('g').attr('transform', `translate(${m.l},${m.t})`);
+
+  const x = d3.scaleTime().domain(d3.extent(data, d => d.t)).range([0, iw]);
+  const thrForDomain = parseFloat($('tThreshold').value || '12');
+  const yExt = d3.extent(data, d => d.bestBps);
+  const pad = Math.max(1, (yExt[1] - yExt[0]) * 0.15);
+  const y = d3.scaleLinear()
+    .domain([Math.min(yExt[0] - pad, -1), Math.max(yExt[1] + pad, thrForDomain * 1.15, 1)])
+    .nice().range([ih, 0]);
+
+  g.append('g').attr('class', 'axis').attr('transform', `translate(0,${ih})`)
+    .call(d3.axisBottom(x).ticks(5).tickFormat(d3.timeFormat('%H:%M:%S')));
+  g.append('g').attr('class', 'axis').call(d3.axisLeft(y).ticks(5).tickFormat(d => d + ' bps'));
+
+  // zero line = DefiLlama-fair / breakeven-before-gas reference
+  g.append('line').attr('class', 'zero-line')
+    .attr('x1', 0).attr('x2', iw).attr('y1', y(0)).attr('y2', y(0));
+
+  // trigger threshold line
+  const thr = parseFloat($('tThreshold').value || '12');
+  if (thr >= y.domain()[0] && thr <= y.domain()[1]) {
+    g.append('line')
+      .attr('x1', 0).attr('x2', iw).attr('y1', y(thr)).attr('y2', y(thr))
+      .attr('stroke', 'var(--red)').attr('stroke-dasharray', '6,4').attr('stroke-width', 1);
+    g.append('text').attr('x', iw - 4).attr('y', y(thr) - 4)
+      .attr('text-anchor', 'end').attr('fill', 'var(--red)')
+      .text('trigger ' + thr + ' bps');
+  }
+  g.selectAll('.ref-dot').data(data).join('circle')
+    .attr('class', 'ref-dot').attr('r', 1.5)
+    .attr('cx', d => x(d.t)).attr('cy', y(0));
+
+  g.append('path').datum(data).attr('class', 'best-line')
+    .attr('d', d3.line().x(d => x(d.t)).y(d => y(d.bestBps)).curve(d3.curveMonotoneX));
+
+  // latest point marker
+  const last = data[data.length - 1];
+  g.append('circle').attr('cx', x(last.t)).attr('cy', y(last.bestBps)).attr('r', 3.5)
+    .attr('fill', last.bestBps >= 0 ? 'var(--green)' : 'var(--red)');
+}
+
+function drawPairChart() {
+  const svg = d3.select('#pairChart');
+  svg.selectAll('*').remove();
+  const data = finder.latestPairs.slice(0, 8); // top 8 pairs
+  if (!data.length) return;
+
+  const m = { t: 8, r: 60, b: 6, l: 150 };
+  const { w, h, iw, ih } = chartDims(svg.node(), m);
+  const g = svg.append('g').attr('transform', `translate(${m.l},${m.t})`);
+
+  const y = d3.scaleBand().domain(data.map(d => d.label)).range([0, ih]).padding(0.28);
+  const ext = d3.extent(data, d => d.profit);
+  const x = d3.scaleLinear().domain([Math.min(0, ext[0]), Math.max(0, ext[1])]).nice().range([0, iw]);
+
+  g.append('line').attr('class', 'zero-line').attr('x1', x(0)).attr('x2', x(0)).attr('y1', 0).attr('y2', ih);
+
+  g.selectAll('.bar').data(data).join('rect')
+    .attr('class', d => 'bar ' + (d.profit >= 0 ? 'pos' : 'neg'))
+    .attr('y', d => y(d.label))
+    .attr('height', y.bandwidth())
+    .attr('x', d => Math.min(x(0), x(d.profit)))
+    .attr('width', d => Math.abs(x(d.profit) - x(0)) || 1)
+    .attr('rx', 2);
+
+  g.selectAll('.pair-name').data(data).join('text')
+    .attr('x', -8).attr('y', d => y(d.label) + y.bandwidth()/2 + 3)
+    .attr('text-anchor', 'end').text(d => d.label);
+
+  g.selectAll('.bar-label').data(data).join('text')
+    .attr('class', 'bar-label')
+    .attr('x', d => (d.profit >= 0 ? x(d.profit) + 6 : x(d.profit) - 6))
+    .attr('text-anchor', d => d.profit >= 0 ? 'start' : 'end')
+    .attr('y', d => y(d.label) + y.bandwidth()/2 + 3)
+    .text(d => (d.profit >= 0 ? '+' : '') + d.profit.toFixed(3));
+}
+
+/* ============================== backend cross-chain monitor ============================== */
+const backend = { ws: null, leaderboard: [], liquidations: {} };
+
+function setBackendBadge(state) {
+  const b = $('backendBadge');
+  const map = { disconnected: 'pending', connecting: 'active', connected: 'done', error: 'fail' };
+  b.className = 'badge ' + (map[state] || 'pending');
+  b.textContent = state;
+}
+
+function connectBackend() {
+  const url = $('backendWs').value.trim();
+  if (!url) return;
+  if (backend.ws) { try { backend.ws.close(); } catch (_) {} }
+
+  setBackendBadge('connecting');
+  const ws = new WebSocket(url);
+  backend.ws = ws;
+
+  ws.onopen = () => { setBackendBadge('connected'); log('Backend connected: ' + url); };
+  ws.onclose = () => setBackendBadge('disconnected');
+  ws.onerror = () => { setBackendBadge('error'); log('Backend WebSocket error — is the server running? (cd backend && npm start)', 'err'); };
+
+  ws.onmessage = (evt) => {
+    let msg;
+    try { msg = JSON.parse(evt.data); } catch (_) { return; }
+    if (msg.type === 'leaderboard') { backend.leaderboard = msg.data; renderChainTable(); renderChainBarChart(); }
+    else if (msg.type === 'tick') { /* leaderboard message follows every tick from the manager; nothing extra to do */ }
+    else if (msg.type === 'liquidations') { backend.liquidations = msg.data; renderLiqTable(); }
+    else if (msg.type === 'signal') {
+      log(`Backend SIGNAL — ${msg.data.chain}: ${msg.data.best.label} ${msg.data.best.bps.toFixed(1)}bps`);
+      // reflect a backend-detected opportunity on the flow's detect stage (informational —
+      // execution from a backend signal still goes through signal_runner.js, not this browser)
+      flow.reset();
+      flow.mark('detect', 'done', msg.data.chain + ' ' + msg.data.best.bps.toFixed(1) + 'bps');
+      flow.mark('confirm', 'done', 'backend');
+      flow.meta('fmOpp', `${msg.data.chain}: ${msg.data.best.label}`);
+    }
+    else if (msg.type === 'clear') { log(`Backend clear — ${msg.data.chain} spread decayed.`); }
+    else if (msg.type === 'error') { /* per-quote errors are frequent/expected on public RPCs; skip logging each one */ }
+  };
+}
+
+function renderChainTable() {
+  const rows = backend.leaderboard;
+  const el = $('chainTable');
+  if (!rows.length) { el.textContent = 'no chains reporting yet'; return; }
+  el.innerHTML = rows.map(r => {
+    const bps = r.best?.bps ?? 0;
+    const color = bps >= 0 ? 'var(--green)' : 'var(--red)';
+    return `<div class="quote-row"><span>${r.chain} (chain ${r.chainId})</span><span class="v" style="color:${color}">${bps.toFixed(1)} bps · ${r.best?.label || ''}</span></div>`;
+  }).join('');
+}
+
+function renderLiqTable() {
+  const el = $('liqTable');
+  const chains = Object.keys(backend.liquidations || {});
+  if (!chains.length) { el.textContent = 'no watchlist configured, or nothing below the warn threshold'; return; }
+  let rows = [];
+  for (const chain of chains) {
+    const entries = backend.liquidations[chain];
+    if (!Array.isArray(entries)) continue;
+    for (const e of entries) rows.push({ chain, ...e });
+  }
+  if (!rows.length) { el.textContent = 'no accounts below the warn health factor right now'; return; }
+  rows.sort((a, b) => a.healthFactor - b.healthFactor);
+  el.innerHTML = rows.map(r => {
+    const color = r.liquidatable ? 'var(--red)' : 'var(--gold)';
+    const tag = r.liquidatable ? 'LIQUIDATABLE' : 'warning';
+    return `<div class="quote-row"><span>${r.chain} · ${r.user.slice(0,10)}…</span><span class="v" style="color:${color}">HF ${r.healthFactor.toFixed(3)} (${tag})</span></div>`;
+  }).join('');
+}
+
+function renderChainBarChart() {
+  const svg = d3.select('#chainBarChart');
+  svg.selectAll('*').remove();
+  const data = backend.leaderboard;
+  if (!data.length) return;
+
+  const m = { t: 10, r: 40, b: 30, l: 90 };
+  const { w, h, iw, ih } = chartDims(svg.node(), m);
+  const g = svg.append('g').attr('transform', `translate(${m.l},${m.t})`);
+
+  const y = d3.scaleBand().domain(data.map(d => d.chain)).range([0, ih]).padding(0.3);
+  const bpsVals = data.map(d => d.best?.bps ?? 0);
+  const ext = d3.extent(bpsVals);
+  const x = d3.scaleLinear().domain([Math.min(0, ext[0]), Math.max(0, ext[1], 1)]).nice().range([0, iw]);
+
+  g.append('g').attr('class', 'axis').call(d3.axisLeft(y));
+  g.append('g').attr('class', 'axis').attr('transform', `translate(0,${ih})`).call(d3.axisBottom(x).ticks(5).tickFormat(d => d + 'bps'));
+  g.append('line').attr('class', 'zero-line').attr('x1', x(0)).attr('x2', x(0)).attr('y1', 0).attr('y2', ih);
+
+  g.selectAll('.bar').data(data).join('rect')
+    .attr('class', d => 'bar ' + ((d.best?.bps ?? 0) >= 0 ? 'pos' : 'neg'))
+    .attr('y', d => y(d.chain))
+    .attr('height', y.bandwidth())
+    .attr('x', d => Math.min(x(0), x(d.best?.bps ?? 0)))
+    .attr('width', d => Math.abs(x(d.best?.bps ?? 0) - x(0)) || 1)
+    .attr('rx', 2);
+}
+
+window.addEventListener('resize', () => { drawSpreadChart(); drawPairChart(); renderChainBarChart(); drawEarnChart(); });
+
+/* ============================== treasury + autoearn ============================== */
+async function refreshTreasury() {
+  try {
+    const addr = $('contractAddr').value.trim();
+    const asset = ($('assetAddr').value.trim() || $('fTokenA').value.trim());
+    if (!addr || !asset) { log('Set the ARRBY contract address (04) and asset first.', 'err'); return; }
+    const p = provider || new ethers.BrowserProvider(window.ethereum);
+    const c = new ethers.Contract(addr, ARRBY_ABI, p);
+    const decA = parseInt(($('decimals').value || $('fDecA').value || '18'), 10);
+    const [ben, bps, cum] = await Promise.all([c.treasury(), c.treasuryBps(), c.cumulativeProfit(asset)]);
+    const token = new ethers.Contract(asset, ERC20_BAL_ABI, p);
+    const bal = await token.balanceOf(addr);
+    $('tvBeneficiary').textContent = ben.slice(0, 10) + '…' + ben.slice(-6);
+    $('tvBps').textContent = (Number(bps) / 100).toFixed(2) + '% to treasury';
+    $('tvCumulative').textContent = ethers.formatUnits(cum, decA);
+    $('tvBalance').textContent = ethers.formatUnits(bal, decA);
+    log('Treasury refreshed.');
+  } catch (e) { log('Treasury read failed: ' + (e.reason || e.shortMessage || e.message || e), 'err'); }
+}
+
+async function sweepNow() {
+  try {
+    if (!signer) { log('Connect a wallet (owner) to sweep.', 'err'); return; }
+    const addr = $('contractAddr').value.trim();
+    const asset = ($('assetAddr').value.trim() || $('fTokenA').value.trim());
+    const c = new ethers.Contract(addr, ARRBY_ABI, signer);
+    log('Sweeping treasury…');
+    const tx = await c.sweepTreasury(asset);
+    await tx.wait();
+    log('Swept. Tx: ' + tx.hash);
+    refreshTreasury();
+  } catch (e) { log('Sweep failed: ' + (e.reason || e.shortMessage || e.message || e), 'err'); }
+}
+
+// Browser-side autoearn: reuses the finder's scan loop + the flow pipeline.
+// This is a convenience mirror of integrations/autoearn.js for interactive
+// use; for true unattended operation run the Node version.
+const autoearn = {
+  on: false, profit: 0, count: 0, fails: 0, notional: 0, series: [], lastExec: 0, halted: false
+};
+
+function setAeBadge(state, txt) {
+  const b = $('aeBadge');
+  const map = { idle: 'pending', running: 'active', halted: 'fail' };
+  b.className = 'badge ' + (map[state] || 'pending');
+  b.textContent = txt || state;
+}
+
+function startAutoearn() {
+  if (autoearn.on) return;
+  // wire the trigger controls in section 01 from the autoearn inputs, then start scanning
+  $('tThreshold').value = $('aeThreshold').value;
+  $('tMode').value = $('aeArmed').checked ? 'execute' : 'quote';
+  $('tArmed').checked = $('aeArmed').checked;
+  $('fNotional').value = $('aeNotional').value;
+
+  autoearn.on = true; autoearn.halted = false;
+  autoearn.profit = 0; autoearn.count = 0; autoearn.fails = 0;
+  autoearn.notional = parseFloat($('aeNotional').value || '0');
+  autoearn.series = [];
+  $('aeCurNotional').textContent = autoearn.notional.toString();
+  setAeBadge('running', $('aeArmed').checked ? 'running (armed)' : 'running (quote-only)');
+  $('aeStart').disabled = true; $('aeStop').disabled = false;
+  $('aeBreaker').textContent = 'rails active';
+  log('Autoearn started — ' + ($('aeArmed').checked ? 'armed for real execution.' : 'quote-only (not armed).'));
+  if (!finder.running) startScan();
+}
+
+function haltAutoearn(reason) {
+  autoearn.on = false; autoearn.halted = true;
+  setAeBadge('halted', 'halted');
+  $('aeStart').disabled = false; $('aeStop').disabled = true;
+  $('aeBreaker').textContent = reason || 'halted';
+  log('Autoearn halted: ' + (reason || 'manual') + '. Session profit ' + autoearn.profit.toFixed(4) + '.', 'info');
+}
+
+// hook: called from execute()'s success path when autoearn is running
+function autoearnOnEarn(profitNum) {
+  if (!autoearn.on) return;
+  autoearn.profit += profitNum;
+  autoearn.count += 1;
+  autoearn.fails = 0;
+  autoearn.series.push({ t: new Date(), cum: autoearn.profit });
+  $('aeProfit').textContent = autoearn.profit.toFixed(4);
+  $('aeCount').textContent = String(autoearn.count);
+  $('aeFails').textContent = '0';
+  if ($('aeCompound').checked) {
+    const base = parseFloat($('aeNotional').value || '0');
+    autoearn.notional = Math.min(base + autoearn.profit, base * 3);
+    $('fNotional').value = autoearn.notional.toFixed(2);
+    $('aeCurNotional').textContent = autoearn.notional.toFixed(2);
+  }
+  drawEarnChart();
+}
+
+function autoearnOnFail() {
+  if (!autoearn.on) return;
+  autoearn.fails += 1;
+  $('aeFails').textContent = String(autoearn.fails);
+  const maxFails = parseInt($('aeMaxFails').value || '3', 10);
+  if (autoearn.fails >= maxFails) { stopScan(); haltAutoearn(`circuit breaker: ${maxFails} consecutive fails`); }
+}
+
+function drawEarnChart() {
+  const svg = d3.select('#earnChart');
+  svg.selectAll('*').remove();
+  const data = autoearn.series;
+  if (data.length < 1) return;
+  const m = { t: 10, r: 14, b: 22, l: 46 };
+  const { iw, ih } = chartDims(svg.node(), m);
+  const g = svg.append('g').attr('transform', `translate(${m.l},${m.t})`);
+  const x = d3.scaleTime().domain(d3.extent(data, d => d.t)).range([0, iw]);
+  const y = d3.scaleLinear().domain([0, Math.max(d3.max(data, d => d.cum) * 1.15, 1)]).nice().range([ih, 0]);
+  g.append('g').attr('class', 'axis').attr('transform', `translate(0,${ih})`).call(d3.axisBottom(x).ticks(4).tickFormat(d3.timeFormat('%H:%M:%S')));
+  g.append('g').attr('class', 'axis').call(d3.axisLeft(y).ticks(4));
+  g.append('path').datum(data).attr('fill', 'none').attr('stroke', 'var(--gold)').attr('stroke-width', 1.8)
+    .attr('d', d3.line().x(d => x(d.t)).y(d => y(d.cum)).curve(d3.curveMonotoneX));
+  g.append('path').datum(data).attr('fill', 'rgba(212,160,23,0.10)')
+    .attr('d', d3.area().x(d => x(d.t)).y0(ih).y1(d => y(d.cum)).curve(d3.curveMonotoneX));
+}
+
+/* ============================== wire up ============================== */
+$('connectBtn').addEventListener('click', connect);
+$('quoteBtn').addEventListener('click', () => {
+  flow.reset();
+  flow.mark('detect', 'done', 'manual');
+  flow.mark('confirm', 'done', 'skipped');
+  flow.meta('fmOpp', 'manual configuration');
+  quote(true);
+});
+$('executeBtn').addEventListener('click', async () => {
+  // if the flow isn't already mid-attempt (e.g. user hit Execute directly), seed it
+  if (!flow.active || flow._el('settle').classList.contains('done') || flow._el('settle').classList.contains('fail')) {
+    flow.reset();
+    flow.mark('detect', 'done', 'manual');
+    flow.mark('confirm', 'done', 'skipped');
+    flow.meta('fmOpp', 'manual configuration');
+    await quote(true);
+  }
+  execute(true);
+});
+$('fStart').addEventListener('click', startScan);
+$('fStop').addEventListener('click', stopScan);
+$('backendConnect').addEventListener('click', connectBackend);
+$('tvRefresh').addEventListener('click', refreshTreasury);
+$('tvSweep').addEventListener('click', sweepNow);
+$('aeStart').addEventListener('click', startAutoearn);
+$('aeStop').addEventListener('click', () => { stopScan(); haltAutoearn('manual'); });
+</script>
+</body>
+</html>

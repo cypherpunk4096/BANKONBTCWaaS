@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>⟲ DEXY — sovereign ₿TC liquidity</title>
+<style>
+  :root { --bg:#0c0c0c; --panel:#141414; --line:#262626; --fg:#e8e2d8; --dim:#8a8478; --btc:#f7931a; --ok:#0ac18e; --warn:#e0a52c; --bad:#e05252; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); color:var(--fg); font:14px/1.45 system-ui,sans-serif; padding:14px; max-width:1100px; margin:0 auto; }
+  header { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:14px; }
+  h1 { font-size:19px; } h1 b { color:var(--btc); }
+  header small { color:var(--dim); }
+  header a { color:var(--btc); text-decoration:none; margin-left:auto; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(330px,1fr)); gap:12px; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:var(--btc); margin-bottom:8px; }
+  h2 small { color:var(--dim); text-transform:none; letter-spacing:0; font-weight:normal; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  td,th { padding:3px 6px; text-align:left; border-bottom:1px solid var(--line); }
+  th { color:var(--dim); font-weight:normal; }
+  td.num,th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .bar { height:6px; background:var(--btc); border-radius:3px; min-width:2px; }
+  .dim { color:var(--dim); } .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+  input,select,button { background:#0f0f0f; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:6px 8px; font:inherit; }
+  input:focus { border-color:var(--btc); outline:none; }
+  button { cursor:pointer; border-color:var(--btc); color:var(--btc); }
+  button:hover { background:var(--btc); color:#000; }
+  form { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px; }
+  form input { flex:1 1 90px; min-width:0; }
+  .addr { flex:3 1 260px !important; }
+  .badge { padding:2px 8px; border-radius:10px; font-size:12px; border:1px solid var(--line); }
+  .note { font-size:12px; color:var(--dim); margin-top:6px; }
+  .wide { grid-column:1 / -1; }
+  pre { font-size:12px; overflow-x:auto; color:var(--dim); }
+  footer { margin-top:16px; font-size:12px; color:var(--dim); text-align:center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>⟲ <b>DEXY</b> — sovereign ₿TC liquidity</h1>
+  <small>CEX→DEX · DEX→DEX → <b style="color:var(--btc)">YOUR keys</b>, never wrapped ₿TC</small>
+  <a href="/arrby">ARRBY (EVM DEX→DEX) ↗</a>
+</header>
+
+<div class="grid">
+  <section>
+    <h2>CEX ₿TC custody <small id="cexMeta">— proof-of-reserve (DeFiLlama)</small></h2>
+    <table id="cexTable"><tr><td class="dim">loading…</td></tr></table>
+  </section>
+
+  <section>
+    <h2>Native ₿TC DEX depth <small id="venueMeta">— THORChain · Chainflip</small></h2>
+    <table id="venueTable"><tr><td class="dim">loading…</td></tr></table>
+    <div class="note">The gap between these two panels IS the liquidity-sovereignty problem DEXY schedules around.</div>
+  </section>
+
+  <section class="wide">
+    <h2>CEX → self-custody projection</h2>
+    <form onsubmit="return project(event)">
+      <input id="moveUsd" type="number" placeholder="move USD (e.g. 10000000)" value="10000000" min="1">
+      <input id="absorption" type="number" step="0.01" placeholder="absorption/day" value="0.10" title="max fraction of DEX depth to add per day">
+      <button>Project</button>
+    </form>
+    <div id="projNotes"></div>
+    <table id="projTable"></table>
+  </section>
+
+  <section class="wide">
+    <h2>Accumulate native ₿TC → your address <small>— venues pay YOU directly, DEXY never signs</small></h2>
+    <form onsubmit="return quote(event)">
+      <select id="preset">
+        <option value="ETH|USDC|0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48|6">ETH · USDC</option>
+        <option value="ETH|ETH||18">ETH · ETH</option>
+        <option value="SOL|SOL||9">SOL · SOL</option>
+      </select>
+      <input id="amount" placeholder="amount (base units)" value="5000000000">
+      <input id="btcAddress" class="addr" placeholder="YOUR ₿TC address (your keys)">
+      <button type="button" onclick="pickWallet()">My WaaS wallets</button>
+      <button type="button" onclick="verify()">Verify</button>
+      <button>Quote</button>
+    </form>
+    <span id="custodyBadge" class="badge dim">destination unverified</span>
+    <table id="quoteTable"></table>
+    <div class="note">Execute each leg from <b>your own wallet</b> before <code>expiresAt</code> — deposit addresses rotate. Trustless BTC leg available at <code>/api/swap/htlc/*</code>.</div>
+  </section>
+</div>
+
+<footer>© 2026 ₿ANKON — non-custodial · chain-native <a href="/api/pairs" style="color:var(--btc)">/api/pairs</a> (SPINTRADE) · <a href="/api/health" style="color:var(--btc)">health</a></footer>
+
+<script>
+const $ = id => document.getElementById(id);
+const j = async (url, opts) => (await fetch(url, opts)).json();
+const usd = n => n >= 1e9 ? '$'+(n/1e9).toFixed(1)+'B' : n >= 1e6 ? '$'+(n/1e6).toFixed(1)+'M' : '$'+Math.round(n).toLocaleString();
+
+async function loadCex() {
+  try {
+    const r = await j('/api/dexy/cex');
+    if (!r.ok || !r.holdings.length) throw 0;
+    const max = r.holdings[0].btcChainUsd;
+    $('cexTable').innerHTML = r.holdings.map(h =>
+      `<tr><td>${h.cex}</td><td class="num">${usd(h.btcChainUsd)}</td><td style="width:40%"><div class="bar" style="width:${(100*h.btcChainUsd/max).toFixed(1)}%"></div></td></tr>`).join('');
+    if (r.stale) $('cexMeta').innerHTML += ' <span class="warn">(stale cache)</span>';
+  } catch { $('cexTable').innerHTML = '<tr><td class="dim">offline — no CEX data (network or fixtures needed)</td></tr>'; }
+}
+
+async function loadVenues() {
+  try {
+    const r = await j('/api/dexy/venues');
+    if (!r.ok) throw 0;
+    const rows = r.depths.map(d =>
+      `<tr><td>${d.venue}</td><td class="num">${usd(d.btcSideUsd)}</td><td>${d.stale ? '<span class="warn">stale</span>' : '<span class="ok">live</span>'}</td></tr>`);
+    const down = r.health.filter(h => !h.reachable).map(h =>
+      `<tr><td>${h.venue}</td><td class="num dim">—</td><td class="bad">unreachable</td></tr>`);
+    $('venueTable').innerHTML = rows.concat(down).join('') || '<tr><td class="dim">no venues reachable</td></tr>';
+  } catch { $('venueTable').innerHTML = '<tr><td class="dim">offline</td></tr>'; }
+}
+
+async function project(e) {
+  e.preventDefault();
+  $('projTable').innerHTML = '<tr><td class="dim">projecting…</td></tr>'; $('projNotes').textContent = '';
+  try {
+    const r = await j(`/api/dexy/project?moveUsd=${$('moveUsd').value}&absorptionPct=${$('absorption').value}`);
+    if (!r.ok) throw new Error(r.error);
+    const p = r.projection;
+    $('projNotes').innerHTML = `<div class="note">depth ${usd(p.dexDepthUsd)} · absorbs ${usd(p.dailyAbsorptionUsd)}/day · <b>${p.days} day(s)</b> · est. slip ${usd(p.estSlipCostUsd)}${r.stale?' · <span class="warn">stale data</span>':''}</div>`
+      + p.notes.map(n => `<div class="note">• ${n}</div>`).join('');
+    $('projTable').innerHTML = '<tr><th>day</th><th>venue</th><th class="num">withdraw → your address</th></tr>'
+      + p.schedule.slice(0, 40).map(s => `<tr><td>${s.day}</td><td>${s.venue}</td><td class="num">${usd(s.usd)}</td></tr>`).join('')
+      + (p.schedule.length > 40 ? `<tr><td colspan="3" class="dim">… ${p.schedule.length - 40} more tranches</td></tr>` : '');
+  } catch (err) { $('projTable').innerHTML = ''; $('projNotes').innerHTML = `<div class="note bad">${err.message || 'projection unavailable offline'}</div>`; }
+  return false;
+}
+
+async function pickWallet() {
+  try {
+    const r = await j('/api/dexy/custody/wallets');
+    const w = (r.wallets || []).find(x => x.firstAddress);
+    if (!w) return alert('No WaaS wallets registered yet — create one at http://127.0.0.1:8088 (your keys, minted in-browser).');
+    $('btcAddress').value = w.firstAddress; verify();
+  } catch { alert('WaaS registry unreachable'); }
+}
+
+async function verify() {
+  const a = $('btcAddress').value.trim(); if (!a) return;
+  const b = $('custodyBadge');
+  b.className = 'badge dim'; b.textContent = 'verifying…';
+  try {
+    const r = await j(`/api/dexy/custody/verify?address=${encodeURIComponent(a)}`);
+    if (!r.valid) { b.className = 'badge bad'; b.textContent = '✗ invalid address'; return; }
+    if (r.ownWallet) { b.className = 'badge ok'; b.textContent = `✓ YOUR wallet "${r.ownWallet.name}" — sovereign`; }
+    else { b.className = 'badge warn'; b.textContent = '△ valid, but not in your WaaS registry — confirm you hold its keys'; }
+  } catch { b.className = 'badge bad'; b.textContent = 'node unreachable'; }
+}
+
+async function quote(e) {
+  e.preventDefault();
+  const [chain, symbol, contract, decimals] = $('preset').value.split('|');
+  const q = new URLSearchParams({ chain, symbol, decimals, amount: $('amount').value, btcAddress: $('btcAddress').value.trim() });
+  if (contract) q.set('contract', contract);
+  $('quoteTable').innerHTML = '<tr><td class="dim">quoting venues…</td></tr>';
+  try {
+    const r = await j('/api/dexy/quote?' + q);
+    if (!r.ok) throw new Error(r.error);
+    verify();
+    $('quoteTable').innerHTML = '<tr><th>venue</th><th class="num">expected sats → you</th><th class="num">slip bps</th><th>deposit</th></tr>'
+      + (r.quotes.length ? r.quotes.map(x =>
+        `<tr><td>${x.venue}${x.oracleOnly ? ' <span class="dim">(oracle)</span>' : ''}</td>
+         <td class="num">${BigInt(x.expectedBtcSats).toLocaleString()}</td><td class="num">${x.slipBps}</td>
+         <td class="dim">${x.deposit ? x.deposit.depositAddress.slice(0, 18) + '… ' + (x.deposit.memo || '') : '—'}</td></tr>`).join('')
+        : '<tr><td colspan="4" class="dim">no venue under slip cap</td></tr>');
+  } catch (err) { $('quoteTable').innerHTML = `<tr><td class="bad">${err.message}</td></tr>`; }
+  return false;
+}
+
+loadCex(); loadVenues();
+</script>
+</body>
+</html>

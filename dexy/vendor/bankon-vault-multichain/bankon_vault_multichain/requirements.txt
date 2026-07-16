@@ -1,0 +1,4 @@
+pyshamir>=1.0
+web3>=6.0
+py-algorand-sdk>=2.0
+algorand-python>=2.0   # algopy, for compiling the mirror

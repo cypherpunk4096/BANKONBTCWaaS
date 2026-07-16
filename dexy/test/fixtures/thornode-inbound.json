@@ -1,0 +1,5 @@
+[
+  { "chain": "BTC", "address": "bc1qthorinboundxxxxxxxxxxxxxxxxxxxxxxxxxxx", "halted": false, "global_trading_paused": false, "chain_trading_paused": false },
+  { "chain": "ETH", "address": "0x1111111111111111111111111111111111111111", "router": "0x2222222222222222222222222222222222222222", "halted": false, "global_trading_paused": false, "chain_trading_paused": false },
+  { "chain": "SOL", "address": "So11111111111111111111111111111111111112", "halted": false, "global_trading_paused": false, "chain_trading_paused": false }
+]

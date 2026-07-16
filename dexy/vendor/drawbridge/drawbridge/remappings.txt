@@ -1,0 +1,4 @@
+forge-std/=lib/forge-std/src/
+solmate/=lib/solmate/src/
+@layerzerolabs/oapp-evm/=lib/devtools/packages/oapp-evm/
+@pythnetwork/pyth-sdk-solidity/=lib/pyth-sdk-solidity/

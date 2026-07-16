@@ -4,6 +4,39 @@ All notable changes to the BANKON tools monorepo. Component versions are indepen
 **bankon-vault** (`bankon_vault.core.VAULT_VERSION`), **bankon-ord** (`bankon_ord.__version__`),
 **bankonOS installer** (`bankonos/install.sh`).
 
+## 2026-07-15 — ⟲ DEXY: sovereign-custody BTC liquidity mover (dexy 1.0.0)
+
+The `dexy/` tool-drop becomes a first-class BANKON module on **:8091** (opt-in: `bankon dexy`),
+built for one outcome: Bitcoin liquidity moving from CEX custody and between DEX venues into
+**self-custody** — native BTC landing at addresses whose keys the user holds (WaaS BTC
+Standard), **never wrapped BTC**, never a server-side key.
+
+- **CEX→DEX projection** (`/api/dexy/project`): DeFiLlama proof-of-reserve (Binance ≈ $38.7B on
+  the BTC chain) vs live native-BTC DEX depth (THORNode + Chainflip) → a tranche/day withdrawal
+  schedule bounded by a daily absorption limit — the liquidity move as a schedule, not a hope.
+- **Native-BTC accumulation** (`/api/dexy/quote`, `/api/dexy/plan`): parallel quotes across
+  THORChain (dual-node inbound cross-check — May-2026 vault-poisoning defense, kept verbatim),
+  Maya, Chainflip (plain HTTP, zero SDK deps) + MetaMask as a quote-only oracle; greedy tranche
+  split under `maxSlipBps`. Venues pay the **user's address directly**; the user executes each
+  leg from their own wallet. `DEXY_STRICT_CUSTODY=1` refuses destinations not in the WaaS registry.
+- **Modular reuse, nothing overwritten**: `/api/pairs` is `pairsRouter()` imported from
+  bankon-waas unmodified (chain-native, SPINTRADE drop-in); the trustless BTC HTLC leg is
+  `swapRouter()` unmodified; same `rejectPrivate` non-custodial guard.
+- **DEX→DEX (EVM)**: ARRBY flash-loan arbitrage kit vendored (`dexy/vendor/arrby/`), console at
+  `/arrby`, backend proxied at `/api/dexy/arrby/*` — quote-only server-side, execution in the
+  user's own browser wallet.
+- **Included ecosystem**: all seven tool archives extracted under `dexy/vendor/` (originals kept
+  in `vendor/_archives/`) with Phase-2+ attach points catalogued in `dexy/docs/INTEGRATIONS.md`
+  (x402 rails, vault-multichain, drawbridge, logo-registry/SpintradeDesk, fulmen Lightning,
+  sBTC clean-room — bridge-out only, never a custody end state).
+- Registered everywhere a module lives: `bankon dexy`, `bankon.sh` component, `bankon.env.example`
+  block, `systemd/bankon-dexy.service`, `installers.md`, `docs/api.md`, `docs/proposals/dexy.md`.
+
+Verified: `dexy/test/test-dexy-offline.mjs` — 23/23 checks (projector math, PoR fixtures, venue
+quotes, greedy planner) with zero network; `dexy/test/test-dexy-regtest.sh` — PASS on an isolated
+regtest node (chain-native pairs at the regtest tip, projection, sovereign quote gate 400s a
+missing/invalid destination, HTLC funding accepted watch-only, `privkey` body rejected 400).
+
 ## 2026-07-14 — 🜚 Ordinals everywhere: WaaS tab + Qt full interaction (waas 0.2.0)
 
 Ordinals now has a tab on **every BANKON surface**, all riding the one shared webbridge and the

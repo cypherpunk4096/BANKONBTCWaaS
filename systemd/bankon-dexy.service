@@ -1,0 +1,17 @@
+[Unit]
+Description=BANKON DEXY (sovereign-custody BTC liquidity mover — CEX→DEX · DEX→DEX)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/bankon-tools/dexy
+ExecStart=/usr/bin/env node server.mjs
+Environment=BANKON_DEXY_PORT=8091
+# Refuse destinations not registered in the WaaS watch-only registry:
+# Environment=DEXY_STRICT_CUSTODY=1
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

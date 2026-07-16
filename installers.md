@@ -22,6 +22,7 @@ to that terminal. None need root unless noted.
 | `bankon-qt.sh` | Launch the BANKON Qt diagnostics UI (original launcher). | |
 | `bankon-eth.sh` | Launch the **BANKON.ETH** WaaS (EVM twin of bankon-waas), standalone. | |
 | `bankon-algo.sh` | Launch the **BANKON ALGO** WaaS (Algorand twin of bankon-waas), standalone. | |
+| `bankon dexy` | Launch **⟲ DEXY** — sovereign-custody BTC liquidity mover (CEX→DEX projection · native-BTC DEX accumulation · ARRBY EVM DEX→DEX) on :8091. | Opt-in like algo/eth; quotes/plans only — destination is always YOUR address, DEXY never signs |
 
 **Quick start**
 ```bash
@@ -78,6 +79,7 @@ Each spins up an isolated regtest node — safe, no mainnet exposure.
 | `bankon-waas/test-e2e-regtest.sh` | Full **non-custodial WaaS loop** on an isolated regtest node. |
 | `bankon-waas/test-multisig-regtest.sh` | Register & fund a **2-of-3 watch-only multisig** on regtest. |
 | `bankon-waas/test-anchor-regtest.sh` | **OP_RETURN canonical anchor** roundtrip on an isolated regtest. |
+| `dexy/test/test-dexy-regtest.sh` | **⟲ DEXY e2e**: chain-native pairs from the regtest tip, CEX→DEX projection (fixtures, zero network), sovereign quote gate, HTLC accept, non-custodial guard. |
 
 ---
 
