@@ -5008,6 +5008,10 @@ class Main(QtWidgets.QMainWindow):
         self.inv_chk.setToolTip("Polarity inversion ('reverse video'): invert the entire window's theme.\n"
                                 "Computed from the dark palette — see docs/design.md → Polarity inversion.")
         self.inv_chk.toggled.connect(self._toggle_invert); bar.addWidget(self.inv_chk)
+        self.blackice_chk = QtWidgets.QCheckBox(" 🖤 blackICE")     # transparent · black font · black outlines
+        self.blackice_chk.setToolTip("blackICE theme — transparent fields, black font, thin prominent black outline "
+                                     "on every field (mutually exclusive with ◐ invert).")
+        self.blackice_chk.toggled.connect(self._toggle_blackice); bar.addWidget(self.blackice_chk)
         self.status_lbl = QtWidgets.QLabel("  ● checking…"); self.status_lbl.setStyleSheet("color:#8aa0b4; " + CHIP); bar.addWidget(self.status_lbl)
         self.core_lbl = QtWidgets.QLabel(" ● CORE"); bar.addWidget(self.core_lbl)
         self.core_lbl.setToolTip("₿itcoin Core monitor — orange ON · red OFF · green ring = connecting/feeding")
@@ -5057,11 +5061,14 @@ class Main(QtWidgets.QMainWindow):
         self.apply_rate(); self.poll_health(); self.do_refresh()
     def current(self): return self.tabs.currentWidget()
     def _toggle_invert(self, on):
-        # Whole-window polarity flip in one call — the app stylesheet is the single styling root,
-        # so swapping it inverts every tab at once (that's why this is cheap and total).
-        global QSS_INVERTED
-        if on and QSS_INVERTED is None: QSS_INVERTED = invert_qss(QSS)
-        QtWidgets.QApplication.instance().setStyleSheet(QSS_INVERTED if on else QSS)
+        # invert + blackICE are mutually exclusive themes; enabling one clears the other
+        if on and self.blackice_chk.isChecked():
+            self.blackice_chk.blockSignals(True); self.blackice_chk.setChecked(False); self.blackice_chk.blockSignals(False)
+        apply_theme("invert" if on else "dark")
+    def _toggle_blackice(self, on):
+        if on and self.inv_chk.isChecked():
+            self.inv_chk.blockSignals(True); self.inv_chk.setChecked(False); self.inv_chk.blockSignals(False)
+        apply_theme("blackice" if on else "dark")
     def _style_spin_chk(self, on):
         # state is unmistakable at ALL times: candle green + ON while attached, red OFF otherwise
         self.spin_chk.setText(" ⟲ SPINTRADE ON" if on else " ⟲ SPINTRADE OFF")
@@ -5389,6 +5396,53 @@ def invert_qss(qss):
     return re.sub(r"#([0-9a-fA-F]{6})\b", inv, qss)
 
 QSS_INVERTED = None   # computed lazily on first toggle (startup stays instant)
+
+# 🖤 blackICE theme — the "black ICE" look: TRANSPARENT fields, BLACK font, and a thin yet
+# prominent BLACK outline on every field. Paper-light translucent ground so black text reads;
+# window opacity carries the "transparent" feel under software rendering (no GL translucency).
+BLACKICE_QSS = """
+  * { background: transparent; color: #000000;
+      font-family:"DejaVu Sans","Noto Sans CJK SC","FreeSans",sans-serif; }
+  QMainWindow, QWidget, QTabWidget::pane, QScrollArea, QStackedWidget { background: #f4f4ef; }
+  QTabWidget::pane { border: 1px solid #000000; border-radius: 4px; }
+  /* every FIELD: transparent fill, thin prominent black outline */
+  QFrame, QLineEdit, QComboBox, QAbstractSpinBox, QPlainTextEdit, QTextEdit,
+  QTableWidget, QTreeWidget, QListWidget, QGroupBox, QProgressBar,
+  QLabel#titlebar, QFrame#titlebar, QFrame#oracleframe, QFrame#scienceframe, QFrame#ragebox {
+      background: transparent; color: #000000;
+      border: 1px solid #000000; border-radius: 4px; }
+  QLabel { background: transparent; color: #000000; border: 0; }
+  QLabel#titletext, QLabel#oracletitle { color: #000000; font-weight: 800; }
+  QPushButton { background: transparent; color: #000000; border: 1px solid #000000;
+      border-radius: 6px; padding: 4px 12px; font-weight: 700; }
+  QPushButton:hover { background: rgba(0,0,0,0.06); border: 2px solid #000000; }
+  QPushButton:disabled { color: #6a6a6a; border: 1px solid #9a9a9a; }
+  QTabBar::tab { background: transparent; color: #000000; border: 1px solid #000000;
+      border-bottom: 0; padding: 6px 14px; margin-right: 1px; }
+  QTabBar::tab:selected { border-bottom: 2px solid #000000; font-weight: 800; }
+  QHeaderView::section { background: transparent; color: #000000; border: 1px solid #000000; }
+  QProgressBar::chunk { background: rgba(0,0,0,0.18); }
+  QToolBar { background: transparent; border-bottom: 2px solid #000000; }
+  QCheckBox, QRadioButton { color: #000000; background: transparent; }
+  QToolTip { color:#000; background:#f4f4ef; border:1px solid #000; }
+"""
+
+
+def apply_theme(mode):
+    """One switch for the whole window: 'dark' (default) · 'invert' · 'blackice'."""
+    global QSS_INVERTED
+    app = QtWidgets.QApplication.instance()
+    win = app.activeWindow() or (app.topLevelWidgets()[0] if app.topLevelWidgets() else None)
+    if mode == "blackice":
+        app.setStyleSheet(QSS + BLACKICE_QSS)
+        if win: win.setWindowOpacity(0.92)          # the "transparent" feel, software-safe
+    else:
+        if mode == "invert":
+            if QSS_INVERTED is None: QSS_INVERTED = invert_qss(QSS)
+            app.setStyleSheet(QSS_INVERTED)
+        else:
+            app.setStyleSheet(QSS)
+        if win: win.setWindowOpacity(1.0)
 
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv); app.setStyle("Fusion")
