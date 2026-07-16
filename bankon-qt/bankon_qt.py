@@ -4130,7 +4130,7 @@ class IceTab(QtWidgets.QWidget):
     ₿luetooth/Wi-Fi/WWAN/NFC, via pkexec). The toolkit: geo/IP forensics (offline GeoLite2),
     Net Map cross-links, 18-decimal precision metrics, the exportable/shreddable `.history`
     connectivity evidence trail, and EtherApe live wire capture.
-    Namesake: ICE, coined by Tom Maddox, popularized by William Gibson — see docs/ice.md."""
+    Namesake: ICE, coined by Tom Maddox, popularized by William Gibson — see docs/ICE.md."""
     ICE_APP = os.path.expanduser("~/ICE/ice.py")
     RADIOS = [("bluetooth", "₿luetooth"), ("wifi", "Wi-Fi"), ("wwan", "Cellular"), ("nfc", "NFC")]
     def __init__(self):
@@ -4141,7 +4141,7 @@ class IceTab(QtWidgets.QWidget):
         scroll.setWidget(body); outer.addWidget(scroll)
         h = QtWidgets.QLabel("🧊 ICE — Intrusion Countermeasures Electronics")
         h.setStyleSheet("font-weight:700;font-size:15px;color:#00BFFF"); v.addWidget(h)
-        sub = QtWidgets.QLabel('"…ice from ICE, Intrusion Countermeasures Electronics." — W. Gibson, Burning Chrome (1982) · docs/ice.md')
+        sub = QtWidgets.QLabel('"…ice from ICE, Intrusion Countermeasures Electronics." — W. Gibson, Burning Chrome (1982) · docs/ICE.md')
         sub.setStyleSheet("color:#5a6b7b;font-size:10px"); v.addWidget(sub)
         # ---- the wall (unchanged behavior): CPU heat + radio kill ----
         self.temp = QtWidgets.QLabel("CPU: — °C"); self.temp.setStyleSheet("font-size:22px;font-weight:700"); v.addWidget(self.temp)

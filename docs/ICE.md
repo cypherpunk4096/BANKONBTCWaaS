@@ -9,14 +9,21 @@ to generate and sign Bitcoin keys — which is exactly what BANKON's non-custodi
   system tray. Its own repo, **GPLv3** (client-controlled crypto/security code stays free and
   auditable, the same principle as BANKON's client crypto). Follows the
   [cypherpunk2048](https://github.com/cypherpunk2048) standard: local-first, nothing leaves the machine.
-- **Inside BANKON:** the Qt app's **🧊 ICE tab** surfaces live CPU temperature, an **AIRGAP** button,
-  and a "Restore radios" button, and can launch the full controller. It is the wall between the
-  network and the wallet: no wallet data is ever involved in ICE itself.
+- **Inside BANKON:** the Qt app's **🧊 ICE tab** surfaces the wall (CPU temp, AIRGAP, restore
+  radios) plus a forensic toolkit and a UI-interception shield (see §1F). No wallet data is ever
+  involved in ICE itself.
 
 > **Why it exists.** BANKON never custodies keys — they are minted and signed **client-side**. The
 > most dangerous instants in that model are *key generation* and *signing*, when a secret briefly
 > lives in memory. ICE lets you take the host RF-dark and thermally stable for exactly those
 > instants, so a secret can't leak over a radio and the machine can't throttle or crash mid-operation.
+
+**The name.** ICE = *Intrusion Countermeasures Electronics*, coined by **Tom Maddox** (per the
+Jargon File and Gibson's own acknowledgement) and popularized by **William Gibson** in "Burning
+Chrome" (*Omni*, 1982 — "…ice from ICE, Intrusion Countermeasures Electronics") and *Neuromancer*
+(Ace, 1984), where **black ICE** strikes back at the intruder. BANKON's ICE takes that posture: a
+passive wall (thermal/radio/UI gates) plus active countermeasures (boot/ban, evidence trail, the
+*blackICE* roadmap in §6). Short quotes used with attribution; full passages are in the books.
 
 ---
 
@@ -89,6 +96,25 @@ track, raised bevelled centre disc, drag to turn · scroll to nudge — software
 - **CPU cap knob** — the max-performance % (electric-blue arc), synced with the presets.
 - **Thermostat knob** — bitcoin-orange arc to the draggable **target**, a thin heat-coloured inner
   arc for the **current** temperature, centre shows target big + `now N°C` small (heat-coloured).
+
+### F. Qt ICE tab — forensic toolkit, transport switches, UI shield
+The Qt **🧊 ICE tab** (`bankon-qt/bankon_qt.py::IceTab`) adds, beside the CPU/AIRGAP wall:
+- **🛡 UI-interception shield** (`ICEShield`) — an app-wide event filter that drops input the window
+  system didn't originate (synthetic/injected mouse+keys, UI automation) and denies the
+  accessibility bridge (`QT_ACCESSIBILITY=0`/`NO_AT_BRIDGE=1`). Honest scope: it can't stop OS
+  screenshots or kernel injection, so it **persistently recommends AIRGAP** (banner turns green once
+  radios are dark). Live block tally; arm/disarm logged to `.history`.
+- **🔀 transport switches** (`services/ice_transport.py`) — VPN · ₿luetooth · Ethernet · Infrared
+  on/off, present in this tab and ⟲ SPINTRADE only; OS-backed shared state, pkexec-escalated.
+- **🔎 geo/IP forensics** (offline GeoLite2 City+ASN, distance from node) · **◎ show on Net Map**
+  cross-link · **📐 18-dp precision metrics** (shared Decimal core with ₿TC.oracle) ·
+  **🕸 EtherApe** live wire capture.
+- **📜 connectivity evidence `.history`** — JSONL at `~/.bankon/.history`, rotating 5 MB × 20
+  (100 MB ceiling; `BANKON_HISTORY_MB`/`BANKON_HISTORY_KEEP`). Export CSV/JSON, **⧉ mint** the
+  digest as an Ordinal/anchor (gas measured in SAT, then the tx is followed from the local node),
+  and secure-erase via coreutils [shred(1)](https://manpages.debian.org/testing/coreutils/shred.1.en.html)
+  — 'care' (default) = 7 passes; wipe intensity casual / 93% / 100%. Price data is a separate public
+  store (`.pricehistory`). *(Distinct from the Console/GTK datadir-location `.history` in §D2.)*
 
 ---
 
