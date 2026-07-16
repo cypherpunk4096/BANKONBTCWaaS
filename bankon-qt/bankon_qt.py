@@ -4452,6 +4452,126 @@ class BannerBar(QtWidgets.QFrame):
         super().mouseReleaseEvent(e)
 
 
+class SpintradeTab(QtWidgets.QWidget):
+    """⟲ SPINTRADE — OPTIONAL module with ABSOLUTE attach/detach (toolbar toggle: built on
+    enable, destroyed on disable — no timers, no polling, zero footprint when off).
+    The ₿itcoin blockchain expressed as chain-native trading pairs, PRICES IN SAT:
+    SATPAY (what an on-chain payment costs right now), the SAT/vB blockspace book
+    (mempool = order book, last block = last fill), ₿TC/BLOCK, SAT/HASH, ₿TC/DAY.
+    No external feed, no fiat — the venue is the blockchain. Data: WaaS /api/pairs
+    (bankon-waas/pairs.mjs proposal module) when up; direct node RPC otherwise."""
+    def __init__(self):
+        super().__init__(); v = QtWidgets.QVBoxLayout(self)
+        h = QtWidgets.QLabel("⟲ SPINTRADE — chain-native pairs · prices in SAT")
+        h.setStyleSheet("color:#F7931A;font-weight:800;font-size:15px;letter-spacing:1px"); v.addWidget(h)
+        pol = QtWidgets.QLabel("no external feed · no fiat · the blockchain is the venue — mempool = order book · last block = last fill")
+        pol.setStyleSheet("color:#5a6b7b;font-size:10px"); v.addWidget(pol)
+        # SATPAY hero — the headline price in SAT
+        hero = QtWidgets.QFrame(); hero.setStyleSheet("QFrame{border:2px solid #F7931A;border-radius:10px}")
+        hv = QtWidgets.QVBoxLayout(hero)
+        ht = QtWidgets.QLabel("SATPAY — price of an on-chain payment, right now")
+        ht.setStyleSheet("color:#F7931A;font-weight:700;border:0"); hv.addWidget(ht)
+        self.satpay = QtWidgets.QLabel("— sat")
+        self.satpay.setStyleSheet("color:#eef3f8;font-family:'DejaVu Sans Mono',monospace;font-size:30px;font-weight:800;border:0")
+        self.satpay.setToolTip("typical payment = 140 vB (1 input · 2 outputs, P2WPKH) × the next-block SAT/vB ask")
+        hv.addWidget(self.satpay)
+        self.satpay_ladder = QtWidgets.QLabel("ladder: —")
+        self.satpay_ladder.setStyleSheet("color:#8aa0b4;font-family:'DejaVu Sans Mono',monospace;border:0")
+        hv.addWidget(self.satpay_ladder)
+        v.addWidget(hero)
+        # pairs board
+        self.board = QtWidgets.QPlainTextEdit(); self.board.setReadOnly(True)
+        self.board.setStyleSheet("font-family:'DejaVu Sans Mono',monospace;font-size:12px;background:#05080d")
+        v.addWidget(self.board, 1)
+        self.src = QtWidgets.QLabel("source: —"); self.src.setStyleSheet("color:#5a6b7b;font-size:10px"); v.addWidget(self.src)
+    def refresh(self):
+        # ICE compatibility: when the 🧊 wall is up (AIRGAP / setnetworkactive=false) the venue
+        # suspends honestly instead of quoting a dark network
+        spawn("getnetworkinfo", self._gate, self._node_down, timeout=8)
+    def _node_down(self, _e):
+        self.satpay.setText("— sat")
+        self.board.setPlainText("node unreachable — no venue without the blockchain")
+        self.src.setText("source: none (₿itcoin Core down)")
+    def _gate(self, ni, _stale):
+        if ni.get("networkactive") is False:
+            self.satpay.setText("⛔ AIRGAP")
+            self.satpay_ladder.setText("ladder: suspended")
+            self.board.setPlainText("🧊 ICE wall engaged — setnetworkactive=false.\n"
+                                    "SPINTRADE suspends while the network is dark: no fresh mempool, no honest quotes.\n"
+                                    "Restore the network (Control → AIRGAP, or ICE) to resume.")
+            self.src.setText("source: suspended by ICE AIRGAP — SPINTRADE and the wall are compatible by design")
+            return
+        def waas():
+            import urllib.request as _u
+            with _u.urlopen(WAAS_URL + "/api/pairs", timeout=8) as r:
+                return json.loads(r.read())
+        spawn_fn(waas, lambda d: self._render(d, "WaaS /api/pairs (bankon-waas/pairs.mjs)"),
+                 lambda _e: spawn_fn(self._local_pairs, lambda d: self._render(d, "direct node RPC (WaaS down)")))
+    @staticmethod
+    def _local_pairs():
+        """Same pair definitions as pairs.mjs, computed straight from the node — exact ints."""
+        tip = rpc("getbestblockhash", timeout=8)
+        hdr = rpc("getblockheader", [tip], timeout=8)
+        st = rpc("getblockstats", [tip], timeout=10)
+        mp = rpc("getmempoolinfo", timeout=8)
+        asks = {}
+        for k, blocks in (("nextBlock", 1), ("3blk", 3), ("6blk", 6), ("1day", 144)):
+            try:
+                f = (rpc("estimatesmartfee", [blocks], timeout=8) or {}).get("feerate")
+                asks[k] = max(1, round(f * 1e5)) if f else None
+            except Exception:
+                asks[k] = None
+        fees, sub = int(st.get("totalfee", 0) or 0), int(st.get("subsidy", 0) or 0)
+        work = work_from_bits(int(hdr.get("bits", "0"), 16))
+        sat_hash = dec18(fees, work) if work else None
+        return {"ok": True, "asOfBlock": st.get("height"),
+                "pairs": [
+                    {"pair": "SAT/vB", "book": {"asks": asks,
+                        "floor_minRelay": max(1, round((mp.get("mempoolminfee") or 0) * 1e5))},
+                     "lastFill": {"block": st.get("height"),
+                                  "feerate_percentiles_p10_p90": st.get("feerate_percentiles"),
+                                  "avg": st.get("avgfeerate"), "unit": "sat/vB"}},
+                    {"pair": "SATPAY", "last": asks["nextBlock"] * 140 if asks.get("nextBlock") else None,
+                     "ladder": {k: (v * 140 if v else None) for k, v in asks.items()}, "typicalVb": 140, "unit": "sat"},
+                    {"pair": "₿TC/BLOCK", "subsidy": btc18(sub), "fees": btc18(fees),
+                     "last": btc18(sub + fees), "lastSat": sub + fees, "unit": "₿TC"},
+                    {"pair": "SAT/HASH", "last": sat_hash, "expectedHashes": str(work), "unit": "sat (18 dp)"},
+                    {"pair": "₿TC/DAY", "last": btc18(sub * 144), "lastSat": sub * 144, "unit": "₿TC"},
+                    {"pair": "vB/BLOCK", "last": 1000000,
+                     "lastBlockUsed": round((st.get("total_weight") or 0) / 4), "unit": "vB"},
+                ]}
+    def _render(self, d, src):
+        if not d or not d.get("ok"):
+            self.src.setText("source: unavailable — " + str((d or {}).get("error", "no data"))); return
+        P = {p["pair"]: p for p in d.get("pairs", [])}
+        sp = P.get("SATPAY", {})
+        self.satpay.setText(f"{sp.get('last'):,} sat" if sp.get("last") else "— sat (no estimate yet)")
+        lad = sp.get("ladder") or {}
+        self.satpay_ladder.setText("ladder:  " + "  ·  ".join(
+            f"{k} {v:,} sat" if v else f"{k} —" for k, v in lad.items()))
+        lines = []
+        sv = P.get("SAT/vB", {})
+        b = sv.get("book", {}); a = b.get("asks", {}); lf = sv.get("lastFill", {})
+        lines.append("SAT/vB     blockspace market (asks by depth · floor · last fill)")
+        lines.append(f"           asks: next {a.get('nextBlock') or '—'} · 3blk {a.get('3blk') or '—'} · "
+                     f"6blk {a.get('6blk') or '—'} · 1day {a.get('1day') or '—'}   floor {b.get('floor_minRelay','—')}")
+        lines.append(f"           last fill @ block {lf.get('block','—')}: p10-p90 {lf.get('feerate_percentiles_p10_p90','—')} · avg {lf.get('avg','—')}")
+        bb = P.get("₿TC/BLOCK", {})
+        _sat = f"   = {bb['lastSat']:,} sat" if bb.get("lastSat") else ""
+        lines.append(f"₿TC/BLOCK  reward last block: {bb.get('last','—')} ₿TC{_sat}")
+        lines.append(f"           subsidy {bb.get('subsidy','—')} + fees {bb.get('fees','—')}")
+        sh = P.get("SAT/HASH", {})
+        lines.append(f"SAT/HASH   {sh.get('last','—')}   (expected hashes {int(sh.get('expectedHashes') or 0):.3e})"
+                     if sh.get("expectedHashes") else f"SAT/HASH   {sh.get('last','—')}")
+        dy = P.get("₿TC/DAY", {})
+        _dsat = f"   = {dy['lastSat']:,} sat" if dy.get("lastSat") else ""
+        lines.append(f"₿TC/DAY    issuance {dy.get('last','—')} ₿TC{_dsat}")
+        vb = P.get("vB/BLOCK", {})
+        lines.append(f"vB/BLOCK   supply {vb.get('last','—'):,} vB · last block used {vb.get('lastBlockUsed') or '—':,} vB")
+        self.board.setPlainText("\n".join(lines))
+        self.src.setText(f"source: {src} · as of block {d.get('asOfBlock','—')} · prices in SAT · exact to 18 dp")
+
+
 class Main(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__(); self.setWindowTitle("₿ANKON ₿ITCOIN Wallet as a Service")
@@ -4488,6 +4608,7 @@ class Main(QtWidgets.QMainWindow):
         self.map = NetworkMapTab()
         self.geo = None          # Geo Map is OPTIONAL (toolbar toggle, default OFF) — built lazily so
                                  # its GeoIP lookups + globe spin-timer cost nothing unless enabled.
+        self.spin = None         # ⟲ SPINTRADE is OPTIONAL — always starts OFF; consent-gated attach.
         self.ords = OrdinalsTab()   # 🜚 Ordinals — a STANDARD tab (idle-free: no timers; work only on click)
         self.oracle = OracleTab()
         self.con = ConsoleTab()
@@ -4519,6 +4640,14 @@ class Main(QtWidgets.QMainWindow):
         self.geo_chk = QtWidgets.QCheckBox(" 🌍 Geo Map")          # optional GeoIP map tab — default OFF
         self.geo_chk.setToolTip("Show the Geo Map tab (needs geoip/*.mmdb). Off by default.")
         self.geo_chk.toggled.connect(self._toggle_geo); bar.addWidget(self.geo_chk)
+        # ⟲ SPINTRADE — optional module, ALWAYS starts OFF; the client chooses to open it and
+        # consents through the innerstand gate first. Absolute attach/detach: built on enable,
+        # destroyed on disable.
+        self.spin_chk = QtWidgets.QCheckBox(" ⟲ SPINTRADE OFF")
+        self.spin_chk.setToolTip("Open SPINTRADE — the blockchain as chain-native trading pairs, prices in SAT.\n"
+                                 "Starts OFF every session; enabling asks for your informed consent first.")
+        self.spin_chk.toggled.connect(self._toggle_spintrade); bar.addWidget(self.spin_chk)
+        self._style_spin_chk(False)                       # OFF is obvious at all times
         self.inv_chk = QtWidgets.QCheckBox(" ◐ invert")           # polarity inversion — whole window
         self.inv_chk.setToolTip("Polarity inversion ('reverse video'): invert the entire window's theme.\n"
                                 "Computed from the dark palette — see docs/design.md → Polarity inversion.")
@@ -4577,6 +4706,41 @@ class Main(QtWidgets.QMainWindow):
         global QSS_INVERTED
         if on and QSS_INVERTED is None: QSS_INVERTED = invert_qss(QSS)
         QtWidgets.QApplication.instance().setStyleSheet(QSS_INVERTED if on else QSS)
+    def _style_spin_chk(self, on):
+        # state is unmistakable at ALL times: candle green + ON while attached, red OFF otherwise
+        self.spin_chk.setText(" ⟲ SPINTRADE ON" if on else " ⟲ SPINTRADE OFF")
+        self.spin_chk.setStyleSheet("QCheckBox{color:%s;font-weight:800}" % ("#16C784" if on else "#f85149"))
+    def _toggle_spintrade(self, on):
+        from services import history_service as H
+        if on:
+            if self.spin is None:
+                # the innerstand gate: the client consents BEFORE the module attaches
+                m = QtWidgets.QMessageBox(self)
+                m.setWindowTitle("Open SPINTRADE — innerstand first")
+                m.setText("⟲ SPINTRADE\n\nThis software is used to swap cryptocurrency for other assets.")
+                m.setInformativeText("What you will see is the ₿itcoin blockchain expressed as chain-native "
+                                     "trading pairs, priced in SAT (including SATPAY — the live cost of an "
+                                     "on-chain payment). No external feed, no fiat: the venue is the blockchain.\n\n"
+                                     "SPINTRADE starts OFF every session, turns candle green while ON, suspends "
+                                     "under the 🧊 ICE AIRGAP, and its attach/detach is recorded in the .history "
+                                     "evidence trail.\n\nOpen SPINTRADE?")
+                m.setStandardButtons(QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
+                m.setDefaultButton(QtWidgets.QMessageBox.No)
+                if m.exec() != QtWidgets.QMessageBox.Yes:
+                    self.spin_chk.blockSignals(True); self.spin_chk.setChecked(False); self.spin_chk.blockSignals(False)
+                    self._style_spin_chk(False)
+                    return
+                self.spin = SpintradeTab()
+            i = self.tabs.indexOf(self.oracle) + 1
+            self.tabs.insertTab(i, self.spin, "⟲ SPINTRADE")
+            self.tabs.setCurrentWidget(self.spin)          # currentChanged → refresh
+            H.append("spintrade", state="attached", consent="yes")
+        elif self.spin is not None:
+            i = self.tabs.indexOf(self.spin)
+            if i != -1: self.tabs.removeTab(i)
+            self.spin.deleteLater(); self.spin = None      # ABSOLUTE detach — nothing keeps running
+            H.append("spintrade", state="detached")
+        self._style_spin_chk(on)
     def _toggle_geo(self, on):
         # Build the Geo Map on enable (insert right after Net Map); destroy on disable so its
         # globe spin-timer + GeoIP work fully stop — "default off = nothing running".
