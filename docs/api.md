@@ -144,6 +144,7 @@ as decimal strings.
 | `GET /api/dexy/status?venue=thorchain&txid=` | venue swap status (pending/confirmed/refunded) |
 | `GET /api/dexy/custody/wallets` | registered WaaS watch-only wallets (public metadata) |
 | `GET /api/dexy/custody/verify?address=&wallet=` | validity + own-wallet proof against the WaaS registry |
+| `GET /api/dexy/facilitator/quote?gasFeeWei=` (or `?gasUnits=&gasPriceWei=`) | BANKON toll quote — golden ratio (φ/10) of the gas fee, 18 dp, held in bankon.eth. Mirrors `contracts/BankonToll.sol` |
 | `ALL /api/dexy/arrby/*` | reverse proxy → ARRBY backend (`ARRBY_URL`, default :8787); 503 + start hint when down |
 | `/api/swap/htlc/new` `/funding` `/preimage` | trustless BTC HTLC leg (imported from bankon-waas, unmodified) |
 | `GET /api/health` | service + custody posture |

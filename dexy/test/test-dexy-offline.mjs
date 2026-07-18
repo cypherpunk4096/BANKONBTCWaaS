@@ -82,5 +82,21 @@ console.log('5) planAccumulation — greedy split, sovereign destination');
   check('final leg trims instead of overshooting silently', trimmed.legs.length === 1 && trimmed.shortfallSats === 0n);
 }
 
+console.log('6) BankonToll — golden-ratio toll math (mirrors contracts/BankonToll.sol, 18 dp)');
+{
+  const { tollOnGasFee, tollOnGas, quoteToll, PHI_E18 } = await import('../facilitator.mjs');
+  check('φ constant is the golden ratio to 18 dp', PHI_E18 === 1_618_033_988_749_894_848n);
+  // 0.0001 ETH gas fee → 0.000016180339887498 ETH toll (the spec example, exact).
+  check('0.0001 ETH gas → 16180339887498 wei', tollOnGasFee(10n ** 14n) === 16_180_339_887_498n);
+  // 1 ETH gas fee → 0.161803398874989484 ETH (φ/10).
+  check('1 ETH gas → 161803398874989484 wei', tollOnGasFee(10n ** 18n) === 161_803_398_874_989_484n);
+  // 100k gas @ 1 gwei == 0.0001 ETH gas fee.
+  check('tollOnGas(100k, 1gwei) matches', tollOnGas(100_000n, 10n ** 9n) === 16_180_339_887_498n);
+  const q = quoteToll({ gasFeeWei: 10n ** 14n });
+  check('quote total = gasFee + toll', q.totalWei === (10n ** 14n + 16_180_339_887_498n).toString());
+  check('quote held in bankon.eth treasury', /bankon\.eth/.test(q.heldIn));
+  check('toll matches JS mirror ↔ Solidity (both φ/10 to 18 dp)', q.bankonTollWei === '16180339887498');
+}
+
 console.log(failed ? `\n${failed}/${n} checks FAILED` : `\nall ${n} checks passed — offline, zero network`);
 process.exit(failed ? 1 : 0);

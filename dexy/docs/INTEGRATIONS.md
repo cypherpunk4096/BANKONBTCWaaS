@@ -7,6 +7,7 @@ inspectable, and wired in later phases without touching Phase-1 files.
 
 | Piece | Vendored at | Attach | Status |
 |-------|-------------|--------|--------|
+| **BANKON toll** — golden-ratio tollkeeper (bridge/facilitation/mint) | `contracts/BankonToll.sol`, `BankonFacilitator.sol`, `BankonMinter.sol` | `forge test`; adopt via `is BankonToll` + `tolled`; off-chain quote `dexy/facilitator.mjs` + `/api/dexy/facilitator/quote` | **ACTIVE** — toll = gasFee × φ/10 (18 dp) → bankon.eth |
 | **dexy accumulator/projector** (TS original) | `vendor/dexy-v1.0.0/` | ported to house `.mjs`: `dexy.mjs`, `aggregator.mjs`, `venues/*` | **ACTIVE (Phase 1)** — reference only |
 | **ARRBY** — EVM flash-loan DEX→DEX arbitrage (Solidity + backend + console) | `vendor/arrby/` | console served at `/arrby`; backend (`:8787`, `cd vendor/arrby/arrby/backend && npm start`) proxied at `/api/dexy/arrby/*`; contracts deploy via Foundry per `vendor/arrby/arrby/README` | **ACTIVE (console/proxy)** — backend manual-start; execution only in the user's browser wallet |
 | **x402 payment rails** (PYTHAI v2.1.0, Algorand/EVM HTTP-402) | `vendor/pythai-x402-payment-rails/` | Phase 2: port `settlement.ts`/`receipt.ts` from `vendor/dexy-v1.0.0/dexy/src/` and gate settlement on a confirmed x402 receipt via bankon-algo (:4444) | attach point |

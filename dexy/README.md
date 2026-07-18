@@ -24,6 +24,11 @@ quotes; **you execute from your own wallet**.
   from bankon-waas unmodified (no external feed, no fiat there — external data lives under
   `/api/dexy/*` with `source:` labels).
 - **Trustless BTC leg** — `/api/swap/htlc/*` (bankon-waas swap.mjs, unmodified).
+- **BANKON toll** — the golden-ratio tollkeeper for bridge/facilitation/mint: every facilitated
+  transfer takes `toll = gasFee × φ/10` (golden ratio, 18 dp) on top of gas, held in
+  bankon.eth. Contracts in `contracts/` (`forge test`), quoted at
+  `/api/dexy/facilitator/quote`. The `BankonFacilitator` escrow holds the client's asset
+  through the transfer; `BankonMinter`/`BankonMinterFactory` show the `tolled` adoption pattern.
 
 ## Sovereign custody
 

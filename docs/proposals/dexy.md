@@ -37,6 +37,7 @@ port but never a pair.
 | Trustless BTC HTLC leg | `bankon-waas/swap.mjs` (imported, unmodified) | `app.use(swapRouter())` — one line | remove the mount line |
 | DEXY web UI | `dexy/public/index.html` | served statically at :8091 | delete the file |
 | ARRBY console (EVM DEX→DEX) | `dexy/public/arrby.html` + `dexy/vendor/arrby/` | `/arrby` page + `/api/dexy/arrby/*` proxy (backend manual-start, quote-only) | delete `vendor/arrby/` |
+| BANKON toll contracts (golden-ratio tollkeeper) | `dexy/contracts/BankonToll.sol` (+ `BankonFacilitator` `BankonMinter`) + `dexy/facilitator.mjs` | `forge test`; `is BankonToll` + `tolled`; `/api/dexy/facilitator/quote` | delete `dexy/contracts/` |
 | Vendored ecosystem (drawbridge, pythai-x402, vault-multichain, logo-registry, …) | `dexy/vendor/<name>/` + `dexy/vendor/_archives/*.zip` | Phase-2+ attach points, documented in `dexy/docs/INTEGRATIONS.md` | delete the vendor dir |
 | Launcher hook | `bankon` (`dexy)` case + stop/status lines) | already additive | remove the case |
 | Installer hook | `bankon.sh` (`dexy` in COMPONENTS + npm loop) | `./bankon.sh --only dexy` | remove from the loop |

@@ -22,6 +22,7 @@ import { fetchCexBtcHoldings, fetchDexBtcDepth, projectTransfer, dexyReport } fr
 import { planAccumulation, quoteAll } from './aggregator.mjs';
 import { thorchainStatus } from './venues/thorchain.mjs';
 import { verifyDestination, requireSovereign, strictCustody, listOwnWallets } from './custody.mjs';
+import { quoteToll } from './facilitator.mjs';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -173,6 +174,22 @@ app.get('/api/dexy/custody/verify', async (req, res) => {
     if (!address) return badRequest(res, 'address required');
     ok(res, { address, strictMode: strictCustody(), ...(await verifyDestination(String(address), { wallet: wallet || null })) });
   } catch (e) { fail(res, e); }
+});
+
+// ── BANKON toll quote (golden ratio of gas → bankon.eth treasury) ────────────
+// Off-chain mirror of contracts/BankonToll.sol. Quote the toll before a client
+// sends any BANKON facilitation/bridge/mint tx. Pass ?gasFeeWei= or ?gasUnits=&gasPriceWei=.
+app.get('/api/dexy/facilitator/quote', (req, res) => {
+  try {
+    const { gasFeeWei, gasUnits, gasPriceWei } = req.query;
+    if (gasFeeWei == null && (gasUnits == null || gasPriceWei == null))
+      return badRequest(res, 'pass gasFeeWei, or both gasUnits and gasPriceWei');
+    ok(res, {
+      source: 'BankonToll (on-chain contract mirror)',
+      contract: 'dexy/contracts/BankonToll.sol',
+      ...quoteToll({ gasFeeWei, gasUnits, gasPriceWei }),
+    });
+  } catch (e) { badRequest(res, String(e.message || e)); }
 });
 
 // ── ARRBY (EVM DEX→DEX) reverse proxy — quote-only server-side ───────────────

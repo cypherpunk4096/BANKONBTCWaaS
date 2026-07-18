@@ -4,6 +4,29 @@ All notable changes to the BANKON tools monorepo. Component versions are indepen
 **bankon-vault** (`bankon_vault.core.VAULT_VERSION`), **bankon-ord** (`bankon_ord.__version__`),
 **bankonOS installer** (`bankonos/install.sh`).
 
+## 2026-07-17 — ⚱ BANKON toll: golden-ratio tollkeeper for bridge/facilitation/mint (dexy 1.1.0)
+
+An on-chain toll leg for the DEXY module: **every BANKON facilitation** — bridge services, the
+asset-escrow facilitator, and any minter / minter factory — pays the **golden ratio of its own
+gas fee**, to 18-decimal precision, on top of gas, held in the BANKON treasury (bankon.eth).
+
+- `toll = gasFee × φ/10` where φ = `1.618033988749894848` (exact to 18 dp). Worked example
+  from the spec: a **0.0001 ETH** gas fee tolls `0.000016180339887498 ETH` (`16180339887498` wei).
+- `contracts/BankonToll.sol` — reusable tollkeeper base: `PHI_E18`/`PHI_DIV` constants,
+  `tollOnGasFee()`/`previewToll()`, the `tolled` modifier, `_collectToll()` (forwards toll →
+  immutable `bankonTreasury`, refunds excess). Any contract adopts the toll with `is BankonToll`
+  + one `tolled` keyword.
+- `contracts/BankonFacilitator.sol` — escrow that **holds the client's asset** (native ETH or
+  ERC-20) through the transfer and tolls the treasury; `nonReentrant`.
+- `contracts/BankonMinter.sol` — example ERC-20 minter (`tolled` mint) + `BankonMinterFactory`
+  (`tolled` deploy), so the toll is inescapable across the minter-factory hierarchy.
+- `facilitator.mjs` + `GET /api/dexy/facilitator/quote` — off-chain 18-dp mirror to quote the
+  toll before sending. Apache-2.0, Solidity 0.8.26, no proxy / no admin key (cypherpunk2048).
+
+Verified: `forge test` — 6/6 (exact φ/10 math incl. the 0.0001-ETH example, facilitator holds &
+releases native + ERC-20 and tolls the treasury, underpaid toll reverts, minter + factory tolled);
+`test-dexy-offline.mjs` — 30/30 (adds 7 toll checks asserting the JS mirror equals the Solidity math).
+
 ## 2026-07-15 — ⟲ DEXY: sovereign-custody BTC liquidity mover (dexy 1.0.0)
 
 The `dexy/` tool-drop becomes a first-class BANKON module on **:8091** (opt-in: `bankon dexy`),
