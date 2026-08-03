@@ -27,6 +27,7 @@ ZMQ_SEQ   = "tcp://127.0.0.1:28335"   # sequence
 class ZmqService(QtCore.QThread):
     block  = QtCore.Signal(str, int)    # block hash (big-endian display hex), sequence
     tx     = QtCore.Signal(str)         # raw-tx activity marker (size); off by default
+    txraw  = QtCore.Signal(object)      # full raw tx bytes (with_tx only) — for exact parsing
     status = QtCore.Signal(bool, str)   # connected?, message
 
     def __init__(self, parent=None, with_tx=False):
@@ -53,7 +54,7 @@ class ZmqService(QtCore.QThread):
             try: sock.close(0)
             except Exception: pass
             return
-        self.status.emit(True, "subscribed hashblock")
+        self.status.emit(True, "subscribed hashblock + rawtx" if self._with_tx else "subscribed hashblock")
         while not self._stop:
             try:
                 parts = sock.recv_multipart()
@@ -67,6 +68,7 @@ class ZmqService(QtCore.QThread):
                 self.block.emit(body[::-1].hex(), seq)   # LE → BE for display
             elif topic == b"rawtx":
                 self.tx.emit(str(len(body)))
+                self.txraw.emit(bytes(body))
         try: sock.close(0)
         except Exception: pass
         self.status.emit(False, "stopped")
