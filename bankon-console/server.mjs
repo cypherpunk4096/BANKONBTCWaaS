@@ -568,7 +568,7 @@ app.get('/api/netactivity', async (req, res) => {
   // Circuit-breaker-safe: if RPC is choked during IBD we just skip the enrichment.
   const isoLocal = t => { try { return new Date(t * 1000).toISOString().replace('T', ' ').slice(0, 19); }
                           catch { return ''; } };
-  let peerMap = {}, peerEvents = [];
+  let peerMap = {}, peerEvents = [], liveOk = false;
   try {
     const pr = await rpcCached('full', 'getpeerinfo', [], null, 4000);
     const pi = Array.isArray(pr) ? pr : (pr && pr.value) || [];   // rpcCached wraps as {value,stale,asOf}
@@ -589,6 +589,7 @@ app.get('/api/netactivity', async (req, res) => {
         subver: (p.subver || '').replace(/\//g, ''), reason: '',
         text: `live peer ${p.addr || ''} (${p.connection_type || ''})` });
     }
+    liveOk = true;
   } catch { /* RPC busy — live peer snapshot unavailable, fall back to log-only */ }
   try {
     const raw = execSync(
@@ -659,7 +660,9 @@ app.get('/api/netactivity', async (req, res) => {
       if (e.conntype) conntypes[e.conntype] = (conntypes[e.conntype] || 0) + 1;
       if (e.transport && transports[e.transport] != null) transports[e.transport]++;
     }
-    res.json({ ok: true, events: merged, livePeers: peerEvents.length,
+    // livePeers is the AUTHORITATIVE current-connection count (getpeerinfo) — null when RPC
+    // was choked, never a false 0. tally counts log EVENTS over the window, not current peers.
+    res.json({ ok: true, events: merged, livePeers: liveOk ? peerEvents.length : null,
                tally, nets, conntypes, transports, local: [...new Set(local)] });
   } catch (e) { res.json({ ok: false, error: String(e.message || e), events: [], tally: {}, local: [] }); }
 });

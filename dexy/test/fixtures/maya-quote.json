@@ -1,0 +1,1 @@
+{ "expected_amount_out": "4880000", "memo": "=:BTC.BTC:DESTINATION:4830000", "inbound_address": "0x3333333333333333333333333333333333333333", "fees": { "slippage_bps": 35 } }

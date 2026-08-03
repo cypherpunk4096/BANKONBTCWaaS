@@ -1,0 +1,68 @@
+{
+  "ethereum": {
+    "chainId": 1,
+    "rpcEnv": "ETH_RPC_URL",
+    "aavePool": "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2",
+    "flashMint": {
+      "lender": "0x60744434d6339a6B27d73d9Eda62b6F66a0a04FA",
+      "protocol": "DssFlash (MakerDAO/Sky)",
+      "token": "DAI",
+      "tokenAddress": "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+      "feeBps": 0,
+      "note": "Verified: flashFee() returns 0 for DAI. Use ARRBY3156.sol against this lender instead of ARRBY.sol/Aave when the borrow asset is DAI — strictly cheaper."
+    },
+    "routers": {
+      "uniswapV2": "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D",
+      "sushiswap": "0xd9e1cE17f2641f24aE83637ab66a2cca9C378B9F"
+    }
+  },
+  "arbitrum": {
+    "chainId": 42161,
+    "rpcEnv": "ARBITRUM_RPC_URL",
+    "aavePool": "0x794a61358D6845594F94dc1DB02A252b5b4814aD",
+    "routers": {
+      "sushiswap": "0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506",
+      "camelot": "0xc873fEcbd354f5A56E00E710B90EF4201db2448d"
+    }
+  },
+  "optimism": {
+    "chainId": 10,
+    "rpcEnv": "OPTIMISM_RPC_URL",
+    "aavePool": "0x794a61358D6845594F94dc1DB02A252b5b4814aD",
+    "routers": {
+      "velodrome": "0x9c12939390052919aF3155f41Bf4160Fd3666A6f"
+    }
+  },
+  "polygon": {
+    "chainId": 137,
+    "rpcEnv": "POLYGON_RPC_URL",
+    "aavePool": "0x794a61358D6845594F94dc1DB02A252b5b4814aD",
+    "routers": {
+      "quickswap": "0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff",
+      "sushiswap": "0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506"
+    }
+  },
+  "base": {
+    "chainId": 8453,
+    "rpcEnv": "BASE_RPC_URL",
+    "aavePool": "0xA238Dd80C259a72e81d7e4664a9801593F98d1c5",
+    "routers": {
+      "aerodrome": "0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43"
+    }
+  },
+  "avalanche": {
+    "chainId": 43114,
+    "rpcEnv": "AVALANCHE_RPC_URL",
+    "aavePool": "0x794a61358D6845594F94dc1DB02A252b5b4814aD",
+    "routers": {
+      "traderjoe": "0x60aE616a2155Ee3d9A68541Ba4544862310933d4"
+    }
+  },
+  "_notes": [
+    "aavePool is the single address that must be swapped per chain — everything else in the contract is identical bytecode.",
+    "Router addresses need only satisfy IV2Router (swapExactTokensForTokens + getAmountsOut) — any Uniswap-V2 fork works.",
+    "Chains without an Aave V3 deployment (e.g. very new L2s) can substitute a Balancer V2 Vault flash loan (0% fee) — same contract shape, swap IPool for IBalancerVault; ask if you want that variant generated.",
+    "Cross-reference / extend this file against your own chain registry at agenticplace.pythai.net/allchain.html — same JSON shape, more chains.",
+    "See integrations/chainmap_sync.js to sync this file from ALLCHAIN automatically once its data endpoint is confirmed."
+  ]
+}

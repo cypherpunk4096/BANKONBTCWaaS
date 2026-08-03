@@ -1,0 +1,7 @@
+[
+  { "name": "ethereum", "chain_id": 1,     "rpc": "https://ethereum-rpc.publicnode.com" },
+  { "name": "base",     "chain_id": 8453,  "rpc": "https://base-rpc.publicnode.com" },
+  { "name": "arbitrum", "chain_id": 42161, "rpc": "https://arbitrum-one-rpc.publicnode.com" },
+  { "name": "optimism", "chain_id": 10,    "rpc": "https://optimism-rpc.publicnode.com" },
+  { "name": "polygon",  "chain_id": 137,   "rpc": "https://polygon-bor-rpc.publicnode.com" }
+]

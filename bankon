@@ -19,6 +19,7 @@
 #   bankon optimize      auto-tune the node conf (dbcache/par/rpc) to this hardware  [full|pruned]
 #   bankon algo          BANKON ALGO WaaS (Algorand twin) on :4444  [up|stop|status]
 #   bankon eth           BANKON.ETH WaaS (EVM twin) on :4448  [up|stop|status]
+#   bankon dexy          ⟲ DEXY sovereign BTC liquidity (CEX→DEX · DEX→DEX) on :8091  [up|stop|status]
 #   bankon permaweb      bridge pgvectorscale → Arweave permaweb  [run|verify|watch]
 #
 set -uo pipefail
@@ -164,6 +165,7 @@ case "$cmd" in
     pkill -f "bankon-console/server.mjs" 2>/dev/null && ok "Console stopped" || warn "Console not running"
     pkill -f "bankon-algo/server.mjs" 2>/dev/null && ok "ALGO WaaS stopped" || warn "ALGO WaaS not running"
     pkill -f "bankon-eth/server.mjs" 2>/dev/null && ok "ETH WaaS stopped" || warn "ETH WaaS not running"
+    pkill -f "dexy/server.mjs" 2>/dev/null && ok "DEXY stopped" || warn "DEXY not running"
     ;;
   status)
     if node_running; then
@@ -177,6 +179,7 @@ case "$cmd" in
     svc_up "$CONSOLE_PORT" && ok "Console: up on :$CONSOLE_PORT" || warn "Console: down"
     svc_up "${BANKON_ALGO_PORT:-4444}" && ok "ALGO:    up on :${BANKON_ALGO_PORT:-4444}" || warn "ALGO:    down (bankon algo)"
     svc_up "${BANKON_ETH_PORT:-4448}" && ok "ETH:     up on :${BANKON_ETH_PORT:-4448}" || warn "ETH:     down (bankon eth)"
+    svc_up "${BANKON_DEXY_PORT:-8091}" && ok "DEXY:    up on :${BANKON_DEXY_PORT:-8091}" || warn "DEXY:    down (bankon dexy)"
     ;;
   doctor)
     command -v bitcoind >/dev/null && ok "bitcoind: $(bitcoind --version 2>/dev/null|head -1)" || err "bitcoind not on PATH ($BTC_DIR/bin)"
@@ -251,6 +254,15 @@ EOF
       stop)  pkill -f "bankon-eth/server.mjs" 2>/dev/null && ok "ETH WaaS stopped" || warn "ETH WaaS not running" ;;
       status) svc_up "$ETH_PORT" && ok "ETH WaaS: up on :$ETH_PORT" || warn "ETH WaaS: down" ;;
       *) echo "usage: bankon eth [up|stop|status]"; exit 1 ;;
+    esac ;;
+  dexy)  # ⟲ DEXY — sovereign-custody BTC liquidity mover (CEX→DEX · DEX→DEX → YOUR keys, never wrapped BTC)
+    DEXY_DIR="$HERE/dexy"; DEXY_PORT="${BANKON_DEXY_PORT:-8091}"
+    case "${2:-up}" in
+      up|"") start_svc dexy "$DEXY_DIR" "$DEXY_PORT"
+             ok "DEXY:       $(c '4;36' http://127.0.0.1:$DEXY_PORT)  (pairs ✓ SPINTRADE · htlc ✓ · arrby ${ARRBY_URL:-:8787})" ;;
+      stop)  pkill -f "dexy/server.mjs" 2>/dev/null && ok "DEXY stopped" || warn "DEXY not running" ;;
+      status) svc_up "$DEXY_PORT" && ok "DEXY: up on :$DEXY_PORT" || warn "DEXY: down" ;;
+      *) echo "usage: bankon dexy [up|stop|status]"; exit 1 ;;
     esac ;;
   permaweb)  # web2→web3 bridge: pgvectorscale → Arweave permaweb (uses bankon.env config)
     BR="$WAAS_DIR/permaweb-bridge"

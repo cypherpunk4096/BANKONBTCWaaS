@@ -1,0 +1,19 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+      - name: Install deps
+        run: make install
+      - name: Build (reproducible bytecode)
+        run: forge build --sizes
+      - name: Test
+        run: forge test -vv
+      - name: Fuzz
+        run: forge test --fuzz-runs 10000
+      - name: Formatting
+        run: forge fmt --check

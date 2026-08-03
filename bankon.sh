@@ -38,7 +38,7 @@ while [ $# -gt 0 ]; do case "$1" in
 esac; done
 
 # default component set (units are opt-in)
-COMPONENTS="${ONLY:-prereqs,core,waas,console,qt,qr}"
+COMPONENTS="${ONLY:-prereqs,core,waas,console,qt,qr,dexy}"
 want(){ case ",$COMPONENTS," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 run(){ if [ "$DRY" = 1 ]; then printf '    %s %s\n' "$(c '2' 'would run:')" "$*"; else eval "$@"; fi; }
 
@@ -89,9 +89,9 @@ if want core; then
 fi
 
 # ── WaaS + Console node deps ───────────────────────────────────────────────────
-for comp in waas console; do
+for comp in waas console dexy; do
   want "$comp" || continue
-  dir="bankon-$comp"
+  dir="bankon-$comp"; [ "$comp" = dexy ] && dir="dexy"   # DEXY lives at repo-root dexy/
   step "Node deps — $dir"
   if [ -d "$dir/node_modules" ]; then ok "$dir/node_modules present"
   elif [ -f "$dir/package.json" ]; then run "( cd '$dir' && npm install --no-audit --no-fund )"

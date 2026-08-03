@@ -171,12 +171,29 @@ async function pollSystem(){
   }catch{}
 }
 let NETACT={events:[],tally:{},local:[]};   // last log-based connection activity (also feeds the topology ring)
+// numeric display mode for the log panel: human | sci (18 significant digits) | 18dec (exact 18 dp)
+let NETFMT=localStorage.getItem('netfmt')||'human';
+function setNetFmt(v){NETFMT=v;localStorage.setItem('netfmt',v);render();}
+function fmtN(n){
+  if(n==null||n==='')return '—'; n=Number(n);
+  if(!Number.isFinite(n))return '—';
+  if(NETFMT==='sci')return n.toLocaleString()+' (≈'+n.toExponential(18)+')';
+  if(NETFMT==='18dec')return n.toLocaleString()+'.'+'0'.repeat(18);   // integers: exact zero tail
+  return n.toLocaleString();
+}
 async function netActivityHtml(){
   try{ const na=await fetch('/api/netactivity?n=40').then(r=>r.json()); if(!na.ok) return ''; NETACT=na;
     const ty=na.tally||{}, col={connected:'#16C784',failed:'#f85149',disconnect:'#F7931A',inbound:'#00BFFF'};
     const rows=(na.events||[]).slice().reverse().map(e=>`<tr><td>${esc((e.time||'').slice(-8))}</td><td style="color:${col[e.kind]||'#c9d4e0'}">${esc(e.kind)}</td><td>${esc(e.addr||(e.peer?'peer='+e.peer:'—'))}</td><td class="muted">${esc((e.text||'').slice(0,70))}</td></tr>`).join('');
-    return `<h3>Connection activity <span class="muted">· log-based (works during RPC choke)</span></h3>`
-      +`<div class="muted">✓ ${ty.connected||0} connected · ✗ ${ty.failed||0} failed · ⟲ ${ty.disconnect||0} dropped · ⇣ ${ty.inbound||0} inbound${na.local&&na.local.length?' · local: '+na.local.slice(0,3).join(', '):''}</div>`
+    const sel=`<select onchange="setNetFmt(this.value)" style="float:right">`+
+      ['human','sci','18dec'].map(m=>`<option value="${m}"${m===NETFMT?' selected':''}>${{human:'human',sci:'scientific',['18dec']:'18-dec exact'}[m]}</option>`).join('')+`</select>`;
+    // livePeers = getpeerinfo NOW (authoritative; null = RPC choked). The tally counts log
+    // EVENTS over the window — an airgap toggle piles up connect events that are NOT current peers.
+    const live=na.livePeers==null?'—':fmtN(na.livePeers);
+    return `<h3>Connection activity <span class="muted">· log-based (works during RPC choke)</span>${sel}</h3>`
+      +`<div><b style="color:#16C784">● ${live} peers live now</b> <span class="muted">(RPC getpeerinfo — the dashboard truth)</span></div>`
+      +`<div class="muted">log window (events, not current peers): ✓ ${fmtN(ty.connected||0)} connects · ✗ ${fmtN(ty.failed||0)} failed · ⟲ ${fmtN(ty.disconnect||0)} dropped · ⇣ ${fmtN(ty.inbound||0)} inbound${na.local&&na.local.length?' · local: '+na.local.slice(0,3).join(', '):''}</div>`
+      +(NETFMT==='human'?'':`<div class="muted">decimals acknowledged: SAT 8 dp (₿ native) · USDC 6 dp · EVM 18 dp — exact, never float · sync % is 4 dp by design</div>`)
       +`<div class="scroll"><table><thead><tr><th>time</th><th>event</th><th>addr/peer</th><th>detail</th></tr></thead><tbody>${rows||'<tr><td colspan=4 class="muted">—</td></tr>'}</tbody></table></div>`;
   }catch{ return ''; }
 }

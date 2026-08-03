@@ -1,0 +1,12 @@
+# Foundry
+out/
+cache/
+broadcast/
+# deps (installed via `make install`)
+lib/
+# env
+.env
+.env.*
+!.env.example
+# os
+.DS_Store

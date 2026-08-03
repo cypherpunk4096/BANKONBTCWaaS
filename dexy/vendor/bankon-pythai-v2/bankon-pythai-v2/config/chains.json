@@ -1,0 +1,64 @@
+{
+  "_comment": "Mirrors the chain-mapping approach at agenticplace.pythai.net/allchain.html. eid = LayerZero V2 Endpoint ID (NOT the EVM chainId). Fill in `oft` addresses as each DeployHub/DeploySpoke script completes, then re-run WireOApp.s.sol on every already-deployed chain to add the new peer.",
+  "count": 6,
+  "chains": [
+    {
+      "name": "Ethereum",
+      "evmChainId": 1,
+      "lzEid": 30101,
+      "role": "hub",
+      "oft": "0x0000000000000000000000000000000000000000",
+      "lzEndpoint": "0x1a44076050125825900e736c501f859c50fE728c"
+    },
+    {
+      "name": "Arbitrum",
+      "evmChainId": 42161,
+      "lzEid": 30110,
+      "role": "spoke",
+      "oft": "0x0000000000000000000000000000000000000000",
+      "lzEndpoint": "0x1a44076050125825900e736c501f859c50fE728c"
+    },
+    {
+      "name": "Optimism",
+      "evmChainId": 10,
+      "lzEid": 30111,
+      "role": "spoke",
+      "oft": "0x0000000000000000000000000000000000000000",
+      "lzEndpoint": "0x1a44076050125825900e736c501f859c50fE728c"
+    },
+    {
+      "name": "Base",
+      "evmChainId": 8453,
+      "lzEid": 30184,
+      "role": "spoke",
+      "oft": "0x0000000000000000000000000000000000000000",
+      "lzEndpoint": "0x1a44076050125825900e736c501f859c50fE728c"
+    },
+    {
+      "name": "BNB Chain",
+      "evmChainId": 56,
+      "lzEid": 30102,
+      "role": "spoke",
+      "oft": "0x0000000000000000000000000000000000000000",
+      "lzEndpoint": "0x1a44076050125825900e736c501f859c50fE728c"
+    },
+    {
+      "name": "Polygon",
+      "evmChainId": 137,
+      "lzEid": 30109,
+      "role": "spoke",
+      "oft": "0x0000000000000000000000000000000000000000",
+      "lzEndpoint": "0x1a44076050125825900e736c501f859c50fE728c"
+    }
+  ],
+  "_non_lz_chains": {
+    "_comment": "Algorand is not a LayerZero-supported chain. Bridged via the separate x402 gateway (src/gateway/X402AlgorandGateway.sol), not via OFT peering. See docs/X402_BRIDGE.md.",
+    "algorand": {
+      "name": "Algorand",
+      "caip2": "algorand:wGHE2Pwdvd7S12BL5FaOP20EGYesN73ktiC1qzkkit8=",
+      "bridge": "x402 (parsec / parsec-wallet, GoPlausible @x402-avm facilitator)",
+      "syntheticRegistryEid": 999999
+    }
+  },
+  "_verify_before_mainnet_use": "LayerZero endpoint addresses and eids above are the standard V2 values published at docs.layerzero.network/v2/deployments/deployed-contracts as of this writing — re-verify against the live deployments page before broadcasting to mainnet, since LayerZero periodically adds/updates endpoints."
+}

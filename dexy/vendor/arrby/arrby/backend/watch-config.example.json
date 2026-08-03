@@ -1,0 +1,38 @@
+{
+  "arbitrum": {
+    "chainId": 42161,
+    "rpcUrl": "https://arb1.arbitrum.io/rpc",
+    "tokenA": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+    "tokenB": "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
+    "decA": 6,
+    "decB": 18,
+    "routers": [
+      { "label": "sushiswap", "addr": "0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506" },
+      { "label": "camelot", "addr": "0xc873fEcbd354f5A56E00E710B90EF4201db2448d" }
+    ],
+    "notional": "3000",
+    "thresholdBps": 12,
+    "confirmations": 2,
+    "intervalSec": 15,
+    "watchlist": [],
+    "warnHealthFactor": 1.05
+  },
+  "optimism": {
+    "chainId": 10,
+    "rpcUrl": "https://mainnet.optimism.io",
+    "tokenA": "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
+    "tokenB": "0x4200000000000000000000000000000000000006",
+    "decA": 6,
+    "decB": 18,
+    "routers": [
+      { "label": "velodrome", "addr": "0x9c12939390052919aF3155f41Bf4160Fd3666A6f" }
+    ],
+    "notional": "3000",
+    "thresholdBps": 12,
+    "confirmations": 2,
+    "intervalSec": 15,
+    "watchlist": [],
+    "warnHealthFactor": 1.05
+  },
+  "_comment": "Copy this file to watch-config.json and fill in real RPC URLs (public endpoints shown are rate-limited). Add more chains by copying a block and matching config/chains.json's keys. watchlist is for the liquidation scanner — a list of borrower addresses on that chain's Aave V3 market; leave empty to skip liquidation scanning for that chain. At least two routers are needed per chain for the arbitrage finder to produce a pair."
+}

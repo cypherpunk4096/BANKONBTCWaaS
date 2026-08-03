@@ -4,6 +4,62 @@ All notable changes to the BANKON tools monorepo. Component versions are indepen
 **bankon-vault** (`bankon_vault.core.VAULT_VERSION`), **bankon-ord** (`bankon_ord.__version__`),
 **bankonOS installer** (`bankonos/install.sh`).
 
+## 2026-07-17 — ⚱ BANKON toll: golden-ratio tollkeeper for bridge/facilitation/mint (dexy 1.1.0)
+
+An on-chain toll leg for the DEXY module: **every BANKON facilitation** — bridge services, the
+asset-escrow facilitator, and any minter / minter factory — pays the **golden ratio of its own
+gas fee**, to 18-decimal precision, on top of gas, held in the BANKON treasury (bankon.eth).
+
+- `toll = gasFee × φ/10` where φ = `1.618033988749894848` (exact to 18 dp). Worked example
+  from the spec: a **0.0001 ETH** gas fee tolls `0.000016180339887498 ETH` (`16180339887498` wei).
+- `contracts/BankonToll.sol` — reusable tollkeeper base: `PHI_E18`/`PHI_DIV` constants,
+  `tollOnGasFee()`/`previewToll()`, the `tolled` modifier, `_collectToll()` (forwards toll →
+  immutable `bankonTreasury`, refunds excess). Any contract adopts the toll with `is BankonToll`
+  + one `tolled` keyword.
+- `contracts/BankonFacilitator.sol` — escrow that **holds the client's asset** (native ETH or
+  ERC-20) through the transfer and tolls the treasury; `nonReentrant`.
+- `contracts/BankonMinter.sol` — example ERC-20 minter (`tolled` mint) + `BankonMinterFactory`
+  (`tolled` deploy), so the toll is inescapable across the minter-factory hierarchy.
+- `facilitator.mjs` + `GET /api/dexy/facilitator/quote` — off-chain 18-dp mirror to quote the
+  toll before sending. Apache-2.0, Solidity 0.8.26, no proxy / no admin key (cypherpunk2048).
+
+Verified: `forge test` — 6/6 (exact φ/10 math incl. the 0.0001-ETH example, facilitator holds &
+releases native + ERC-20 and tolls the treasury, underpaid toll reverts, minter + factory tolled);
+`test-dexy-offline.mjs` — 30/30 (adds 7 toll checks asserting the JS mirror equals the Solidity math).
+
+## 2026-07-15 — ⟲ DEXY: sovereign-custody BTC liquidity mover (dexy 1.0.0)
+
+The `dexy/` tool-drop becomes a first-class BANKON module on **:8091** (opt-in: `bankon dexy`),
+built for one outcome: Bitcoin liquidity moving from CEX custody and between DEX venues into
+**self-custody** — native BTC landing at addresses whose keys the user holds (WaaS BTC
+Standard), **never wrapped BTC**, never a server-side key.
+
+- **CEX→DEX projection** (`/api/dexy/project`): DeFiLlama proof-of-reserve (Binance ≈ $38.7B on
+  the BTC chain) vs live native-BTC DEX depth (THORNode + Chainflip) → a tranche/day withdrawal
+  schedule bounded by a daily absorption limit — the liquidity move as a schedule, not a hope.
+- **Native-BTC accumulation** (`/api/dexy/quote`, `/api/dexy/plan`): parallel quotes across
+  THORChain (dual-node inbound cross-check — May-2026 vault-poisoning defense, kept verbatim),
+  Maya, Chainflip (plain HTTP, zero SDK deps) + MetaMask as a quote-only oracle; greedy tranche
+  split under `maxSlipBps`. Venues pay the **user's address directly**; the user executes each
+  leg from their own wallet. `DEXY_STRICT_CUSTODY=1` refuses destinations not in the WaaS registry.
+- **Modular reuse, nothing overwritten**: `/api/pairs` is `pairsRouter()` imported from
+  bankon-waas unmodified (chain-native, SPINTRADE drop-in); the trustless BTC HTLC leg is
+  `swapRouter()` unmodified; same `rejectPrivate` non-custodial guard.
+- **DEX→DEX (EVM)**: ARRBY flash-loan arbitrage kit vendored (`dexy/vendor/arrby/`), console at
+  `/arrby`, backend proxied at `/api/dexy/arrby/*` — quote-only server-side, execution in the
+  user's own browser wallet.
+- **Included ecosystem**: all seven tool archives extracted under `dexy/vendor/` (originals kept
+  in `vendor/_archives/`) with Phase-2+ attach points catalogued in `dexy/docs/INTEGRATIONS.md`
+  (x402 rails, vault-multichain, drawbridge, logo-registry/SpintradeDesk, fulmen Lightning,
+  sBTC clean-room — bridge-out only, never a custody end state).
+- Registered everywhere a module lives: `bankon dexy`, `bankon.sh` component, `bankon.env.example`
+  block, `systemd/bankon-dexy.service`, `installers.md`, `docs/api.md`, `docs/proposals/dexy.md`.
+
+Verified: `dexy/test/test-dexy-offline.mjs` — 23/23 checks (projector math, PoR fixtures, venue
+quotes, greedy planner) with zero network; `dexy/test/test-dexy-regtest.sh` — PASS on an isolated
+regtest node (chain-native pairs at the regtest tip, projection, sovereign quote gate 400s a
+missing/invalid destination, HTLC funding accepted watch-only, `privkey` body rejected 400).
+
 ## 2026-07-14 — 🜚 Ordinals everywhere: WaaS tab + Qt full interaction (waas 0.2.0)
 
 Ordinals now has a tab on **every BANKON surface**, all riding the one shared webbridge and the

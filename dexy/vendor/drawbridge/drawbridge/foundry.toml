@@ -1,0 +1,39 @@
+# PYTHAI / BANKON — Drawbridge monorepo
+# cypherpunk2048: immutable, no admin keys, mainnet-only, Foundry, reproducible bytecode.
+[profile.default]
+src            = "src"
+out            = "out"
+libs           = ["lib"]
+test           = "test"
+script         = "script"
+solc_version   = "0.8.26"        # exact — never a range (salt/initcode reproducibility)
+optimizer      = true
+optimizer_runs = 200             # part of bytecode identity
+evm_version    = "cancun"        # part of bytecode identity
+via_ir         = true            # CDP core needs it; keep on for identical bytecode
+bytecode_hash  = "none"          # CRITICAL: strip IPFS metadata → address is pure fn of code
+cbor_metadata  = false           # CRITICAL: strip CBOR metadata entirely
+fs_permissions = [{ access = "read", path = "./"}]
+
+[profile.default.fuzz]
+runs = 10000
+
+[profile.default.invariant]
+runs           = 512
+depth          = 32
+fail_on_revert = false           # Popperian: let the fuzzer try to falsify
+
+# ── mainnet-only RPC endpoints (set via env; no testnets in the standard loop) ──
+[rpc_endpoints]
+ethereum   = "${ETHEREUM_RPC}"
+arbitrum   = "${ARBITRUM_RPC}"
+base       = "${BASE_RPC}"
+optimism   = "${OPTIMISM_RPC}"
+polygon    = "${POLYGON_RPC}"
+avalanche  = "${AVALANCHE_RPC}"
+arc        = "${ARC_RPC}"        # Circle Arc (canonical PAI hub) — set at mainnet-beta launch
+
+[etherscan]
+ethereum  = { key = "${ETHERSCAN_KEY}" }
+arbitrum  = { key = "${ARBISCAN_KEY}" }
+base      = { key = "${BASESCAN_KEY}" }

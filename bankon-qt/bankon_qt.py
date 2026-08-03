@@ -10,7 +10,8 @@ so tabs keep showing data while the node is lock-bound during IBD.
 Launch via bankon-qt.sh (installs PySide6, forces software rendering for HD 3000).
 """
 import json, math, os, re, socket, subprocess, sys, time, urllib.request, webbrowser
-from datetime import datetime, timezone
+from collections import deque
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 try:
@@ -22,6 +23,7 @@ except ImportError:
 from services.rpc_service import (RPC_URL, COOKIE, CONSOLE_URL, rpc, rpc_cached,
                                   synctip, fetch_json, post_json, flag)
 from services.zmq_service import ZmqService
+from services.txparse import parse_tx
 
 BTC_BIN  = os.environ.get("BANKON_BTC_BIN", str(Path.home() / "bitcoin-31.0" / "bin"))
 DATADIR  = os.environ.get("BANKON_BTC_DATADIR", str(Path.home() / ".bitcoin"))
@@ -42,7 +44,7 @@ from services.network_view import known_nodes, network_asof
 # Exact-arithmetic scientific formatting (₿TC.oracle / ICE): integer satoshis + Decimal,
 # 18-decimal display, exact expected work from the compact target.
 from decimal import Decimal
-from services.precision import btc18, btc18_html, dec18, pct18, work_from_bits, chainwork_int
+from services.precision import btc18, btc18_html, dec18, pct18, sci_int, work_from_bits, chainwork_int
 _geo = HAVE_GEOIP   # back-compat flag used by the Geo Map tab
 
 class Worker(QtCore.QThread):
@@ -140,15 +142,27 @@ def sync_color(p):
     L = lambda a, b: int(a + (b - a) * t)
     return f"rgb({L(11,22)},{L(93,199)},{L(52,132)})"
 
-def disk_runway(total_bytes, avail_bytes):
-    """Disk runway for the datadir device: free space ÷ chain growth rate → (text, color).
+GIB = 1073741824
+_MONTH_S = 30.44 * 86400
+_RUNWAY_FLOOR = 2 * GIB                     # < 2 GiB free → Core can't write (same threshold as the disk bar)
+_TX_GROWTH_YR = 1.10                        # annual chain growth itself grows ~+10%/yr as tx/inscription volume rises
+_RATE_CAP = 210e9 / (365.25 * 86400)        # full-blocks ceiling: 4M weight × 52,560 blocks/yr — compounding stops here
+_RUNWAY_MAX_M = 480                         # projection horizon: 40 years
 
-    Growth is OBSERVED from size-on-device samples persisted across sessions (QSettings,
-    ≤4 samples/day, ≥1 day span before trusting); until then a ~55 GB/yr full-node
-    baseline is used and labeled as an estimate. The 1 TB device is the binding
-    constraint of this node — runway makes that a live diagnostic, not a surprise."""
-    if not avail_bytes:
-        return None, None
+def runway_projection(total_bytes, avail_bytes):
+    """Disk runway model for the datadir device → dict for text + chart, or None.
+
+    The growth RATE is observed from size-on-device samples persisted across sessions
+    (QSettings, ≤4 samples/day, ≥1 day span before trusting); until then a ~55 GB/yr
+    full-node baseline is used and labeled as an estimate. Local samples can only see
+    a linear rate — they know nothing about next year's tx volume — so the quoted
+    runway COMPOUNDS that rate +10%/yr (the historical trend of the chain's annual
+    growth), capped at the full-blocks ceiling: once every block is full, growth
+    physically can't accelerate further. Runway ends at the 2 GiB floor where Core
+    can't write, not at 0. Both curves (compounding + naive linear) are returned so
+    the chart can show what ignoring tx growth would have promised."""
+    if not avail_bytes or avail_bytes <= _RUNWAY_FLOOR:
+        return None
     rate = None
     try:
         st = QtCore.QSettings("BANKON", "bankon-qt")
@@ -163,11 +177,41 @@ def disk_runway(total_bytes, avail_bytes):
         pass
     basis = "observed" if rate else "est. 55 GB/yr"
     rate = rate or (55e9 / (365.25 * 86400))
-    months = avail_bytes / rate / (30.44 * 86400)
+    # compounding curve: monthly steps, mid-month rate, until the floor or the horizon
+    pts, free, months, capped = [(0.0, float(avail_bytes))], float(avail_bytes), None, False
+    for m in range(1, _RUNWAY_MAX_M + 1):
+        r = min(rate * _TX_GROWTH_YR ** ((m - 0.5) / 12.0), _RATE_CAP)
+        nfree = free - r * _MONTH_S
+        if nfree <= _RUNWAY_FLOOR:
+            months = m - 1 + (free - _RUNWAY_FLOOR) / (free - nfree)
+            pts.append((months, float(_RUNWAY_FLOOR))); break
+        free = nfree; pts.append((float(m), free))
+    else:
+        months, capped = float(_RUNWAY_MAX_M), True
+    # naive linear curve (what the old text quoted) — sampled too: a straight line
+    # in free-space is a CURVE on the log axis
+    lin_m = min((avail_bytes - _RUNWAY_FLOOR) / rate / _MONTH_S, float(_RUNWAY_MAX_M))
+    n = 48
+    pts_lin = [(lin_m * i / n, max(avail_bytes - rate * (lin_m * i / n) * _MONTH_S,
+                                   float(_RUNWAY_FLOOR))) for i in range(n + 1)]
+    return {"avail": float(avail_bytes), "rate": rate, "basis": basis, "capped": capped,
+            "months": months, "months_lin": lin_m, "pts": pts, "pts_lin": pts_lin,
+            "floor": float(_RUNWAY_FLOOR)}
+
+def runway_text(proj):
+    """(text, color) headline from a runway_projection — quoted from the COMPOUNDING curve."""
+    if not proj:
+        return None, None
+    months = proj["months"]
     col = "#f85149" if months < 3 else ("#F7931A" if months < 12 else "#16C784")
-    txt = (f"runway ≈ {months:.1f} months ({basis})" if months < 24
+    basis = f"{proj['basis']} · +10%/yr tx"
+    txt = ("runway > 40 years" if proj["capped"]
+           else f"runway ≈ {months:.1f} months ({basis})" if months < 24
            else f"runway ≈ {months/12:.1f} years ({basis})")
     return txt, col
+
+def disk_runway(total_bytes, avail_bytes):
+    return runway_text(runway_projection(total_bytes, avail_bytes))
 
 
 _IP_RE = re.compile(r"^(\d{1,3}\.){3}\d{1,3}$|^[0-9a-fA-F:]+$")
@@ -213,6 +257,127 @@ class Pow2SpinBox(QtWidgets.QSpinBox):
         self.setValue(max(self.minimum(), min(self.maximum(), max(1, nv))))
 
 
+class RunwayChart(QtWidgets.QWidget):
+    """Runway projection — free GiB on the datadir device vs calendar time, LOG y-axis.
+
+    Two curves from runway_projection: the compounding model the runway figure is
+    quoted from (₿ amber, +10%/yr tx growth, full-blocks cap) and the naive linear
+    extrapolation (blue) for comparison. The log axis is the point: free space spans
+    three decades on its way down, and a linear axis would pin the interesting last
+    year against the x-axis — on log, the approach to the 2 GiB can't-write floor
+    stays readable. Static paint: repaints only when a /api/filesystem tick delivers
+    new data — no timers, no idle heat (HD 3000 rule)."""
+    SURFACE, BORDER, GRID = "#070d14", "#14405c", "#0e3d57"
+    COMP, LIN = "#D97706", "#0284C7"        # CVD-validated pair on SURFACE (dark, all 6 checks)
+    INK, MUTED, FLOORC = "#c9d4e0", "#8aa0b4", "#f85149"
+    def __init__(self):
+        super().__init__()
+        self.setFixedHeight(128)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self.setMouseTracking(True)
+        self._proj = None
+        self.setVisible(False)
+    def set_proj(self, proj):
+        vis = bool(proj and proj["avail"] > 2 * proj["floor"])
+        self._proj = proj if vis else None
+        self.setVisible(vis)
+        if vis and anim_on(self):
+            self.update()
+    # ---- shared geometry (paint + hover): x months→px, y bytes→px on log10 ----
+    def _geom(self):
+        p = self._proj
+        r = QtCore.QRectF(46, 8, max(10.0, self.width() - 46 - 10), max(10.0, self.height() - 8 - 17))
+        xmax = max(p["pts"][-1][0], p["pts_lin"][-1][0], 1.0)
+        lymin, lymax = math.log10(GIB), math.log10(p["avail"] * 1.15)
+        X = lambda m: r.left() + m / xmax * r.width()
+        Y = lambda v: r.bottom() - (math.log10(max(v, GIB)) - lymin) / (lymax - lymin) * r.height()
+        return r, xmax, X, Y
+    @staticmethod
+    def _at(pts, m):
+        if m <= pts[0][0]: return pts[0][1]
+        for (a, av), (b, bv) in zip(pts, pts[1:]):
+            if m <= b: return av + (bv - av) * (m - a) / (b - a) if b > a else bv
+        return pts[-1][1]
+    @staticmethod
+    def _when(m):
+        return (datetime.now() + timedelta(days=m * 30.44)).strftime("%b %Y")
+    def paintEvent(self, _ev):
+        if not self._proj: return
+        p = self._proj
+        qp = QtGui.QPainter(self); qp.setRenderHint(QtGui.QPainter.Antialiasing)
+        f = qp.font(); f.setPixelSize(9); qp.setFont(f)
+        qp.setPen(QtGui.QPen(QtGui.QColor(self.BORDER), 1)); qp.setBrush(QtGui.QColor(self.SURFACE))
+        qp.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 4, 4)
+        r, xmax, X, Y = self._geom()
+        # decade grid: 1 / 10 / 100 / 1000 GiB — recessive lines, muted right-aligned labels
+        qp.setBrush(QtCore.Qt.NoBrush)
+        for dec in (1, 10, 100, 1000):
+            v = dec * GIB
+            if not GIB <= v <= p["avail"] * 1.15: continue
+            y = Y(v)
+            qp.setPen(QtGui.QPen(QtGui.QColor(self.GRID), 1)); qp.drawLine(QtCore.QPointF(r.left(), y), QtCore.QPointF(r.right(), y))
+            qp.setPen(QtGui.QColor(self.MUTED)); qp.drawText(QtCore.QRectF(0, y - 6, 42, 12),
+                                                             QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter, f"{dec:,}")
+        # opaque surface backing so text stays readable where it crosses a curve/grid line
+        backing = QtGui.QColor(self.SURFACE); backing.setAlphaF(0.85)
+        placed = []
+        def label(text, x, y, color=self.INK):
+            w = qp.fontMetrics().horizontalAdvance(text)
+            rect = QtCore.QRectF(max(r.left(), min(x, r.right() - w - 4)), y - 9, w + 4, 11)
+            while any(rect.intersects(o) for o in placed) and rect.top() > r.top():
+                rect.translate(0, -11)
+            qp.fillRect(rect, backing)
+            qp.setPen(QtGui.QColor(color)); qp.drawText(QtCore.QPointF(rect.left() + 2, rect.bottom() - 2), text)
+            placed.append(rect)
+        label("GiB free · log scale", r.left() + 4, r.top() + 9, self.MUTED)
+        # x ticks: "+Nm" while the span is short, calendar years once it isn't
+        step = next((s for s in (3, 6, 12, 24, 60, 120) if xmax / s <= 7), 240)
+        m = 0
+        while m <= xmax:
+            x = X(m)
+            qp.setPen(QtGui.QPen(QtGui.QColor(self.GRID), 1)); qp.drawLine(QtCore.QPointF(x, r.bottom()), QtCore.QPointF(x, r.bottom() + 3))
+            lab = "now" if m == 0 else (f"+{m}m" if step < 12 else self._when(m)[-4:])
+            qp.setPen(QtGui.QColor(self.MUTED)); qp.drawText(QtCore.QRectF(x - 24, r.bottom() + 3, 48, 12), QtCore.Qt.AlignHCenter, lab)
+            m += step
+        # the 2 GiB floor — Core can't write below it; status red, dashed, labeled
+        pen = QtGui.QPen(QtGui.QColor(self.FLOORC), 1, QtCore.Qt.DashLine); qp.setPen(pen)
+        yf = Y(p["floor"]); qp.drawLine(QtCore.QPointF(r.left(), yf), QtCore.QPointF(r.right(), yf))
+        label("⚠ 2 GiB — Core can't write", r.left() + 4, yf - 3, self.FLOORC)
+        # curves: 2 px, compounding on top (it's the quoted model); floor-crossing dot
+        # gets a 2 px surface ring so it reads over the floor line
+        for pts, col, name, months in ((p["pts_lin"], self.LIN, "linear", p["months_lin"]),
+                                       (p["pts"], self.COMP, "+10%/yr tx", p["months"])):
+            path = QtGui.QPainterPath(QtCore.QPointF(X(pts[0][0]), Y(pts[0][1])))
+            for mm, v in pts[1:]: path.lineTo(X(mm), Y(v))
+            qp.setPen(QtGui.QPen(QtGui.QColor(col), 2)); qp.drawPath(path)
+            ex, ey = X(pts[-1][0]), Y(pts[-1][1])
+            qp.setPen(QtGui.QPen(QtGui.QColor(self.SURFACE), 2)); qp.setBrush(QtGui.QColor(col))
+            qp.drawEllipse(QtCore.QPointF(ex, ey), 3.5, 3.5); qp.setBrush(QtCore.Qt.NoBrush)
+            # direct label: series name + the date it hits the floor (text ink, not series
+            # color); label() stacks it upward if the other series landed in the same spot
+            lab = f"{name} · {'>40 y' if months >= _RUNWAY_MAX_M else self._when(months)}"
+            w = qp.fontMetrics().horizontalAdvance(lab)
+            label(lab, ex - w / 2, max(ey - 8, r.top() + 20))
+        # legend (2 series → always present), top-right, text ink beside colored dashes
+        lx = r.right() - 4
+        for name, col in (("linear", self.LIN), ("+10%/yr tx", self.COMP)):
+            w = qp.fontMetrics().horizontalAdvance(name)
+            lx -= w; qp.setPen(QtGui.QColor(self.INK)); qp.drawText(QtCore.QPointF(lx, r.top() + 9), name)
+            lx -= 14; qp.setPen(QtGui.QPen(QtGui.QColor(col), 2)); qp.drawLine(QtCore.QPointF(lx, r.top() + 6), QtCore.QPointF(lx + 10, r.top() + 6))
+            lx -= 12
+        qp.end()
+    def mouseMoveEvent(self, ev):
+        if not self._proj: return
+        p = self._proj
+        r, xmax, _X, _Y = self._geom()
+        pos = ev.position() if hasattr(ev, "position") else QtCore.QPointF(ev.pos())
+        m = max(0.0, min((pos.x() - r.left()) / r.width() * xmax, xmax))
+        g = lambda v: f"{v / GIB:,.0f} GiB"
+        QtWidgets.QToolTip.showText(ev.globalPosition().toPoint() if hasattr(ev, "globalPosition") else ev.globalPos(),
+                                    f"{self._when(m)}\n+10%/yr tx: {g(self._at(p['pts'], m))} free\n"
+                                    f"linear: {g(self._at(p['pts_lin'], m))} free", self)
+
+
 class OverviewTab(QtWidgets.QWidget):
     def __init__(self):
         super().__init__(); v = QtWidgets.QVBoxLayout(self)
@@ -235,6 +400,7 @@ class OverviewTab(QtWidgets.QWidget):
         self.fsbar = QtWidgets.QProgressBar(); self.fsbar.setMaximum(1000); self.fsbar.setFormat("disk …"); fl.addWidget(self.fsbar)
         self.fscomp = QtWidgets.QLabel("measuring…"); self.fscomp.setStyleSheet("color:#c9d4e0;font-family:monospace;font-size:11px;border:0")
         self.fscomp.setWordWrap(True); fl.addWidget(self.fscomp)
+        self.runchart = RunwayChart(); fl.addWidget(self.runchart)   # hidden until a projection exists
         # the ACTUAL files at the datadir path
         self.fsfiles = QtWidgets.QTreeWidget(); self.fsfiles.setColumnCount(3)
         self.fsfiles.setHeaderLabels(["file / dir", "size", "modified"]); self.fsfiles.setMaximumHeight(180)
@@ -269,26 +435,31 @@ class OverviewTab(QtWidgets.QWidget):
         spawn("getnetworkinfo", self._n)
         spawn("getmempoolinfo", self._m)
         spawn_fn(synctip, self._sync)            # live sync from debug.log (accurate)
+    @staticmethod
+    def _verified(pct):
+        return pct >= 99.99995            # rounds to 100.0000 at 4 decimals → fully verified
+    def _paint_sync(self, pct, stale=False):
+        done = self._verified(pct)
+        self.bar.setMaximum(100000000); self.bar.setValue(int(pct * 1000000))
+        self.bar.setFormat("🎉 100.0000% VERIFIED ✓" if done
+                           else f"{pct:.4f}%{' (cached)' if stale else ''}")
+        col = "#F7931A" if done else sync_color(pct)     # 100% verified → celebrate in ₿ orange
+        self.bar.setStyleSheet("QProgressBar{border:1px solid #0e3d57;border-radius:6px;text-align:center;"
+                               "background:#070d14;color:#eef3f8;font-weight:%s;} "
+                               "QProgressBar::chunk{background:%s;border-radius:5px;}"
+                               % ("800" if done else "400", col))
+        self.f["verify %"].setText("💯 100.0000 ✓" if done else f"{pct:.4f}")
     def _sync(self, st):
         p = st.get("progress")
         if p is None: return
-        pct = p * 100
-        self.bar.setMaximum(100000000); self.bar.setValue(int(pct * 1000000)); self.bar.setFormat(f"{pct:.6f}%")
-        self.bar.setStyleSheet("QProgressBar{border:1px solid #0e3d57;border-radius:6px;text-align:center;"
-                               "background:#070d14;color:#eef3f8;} QProgressBar::chunk{background:%s;border-radius:5px;}" % sync_color(pct))
-        self.f["verify %"].setText(f"{pct:.8f}")
+        self._paint_sync(p * 100)
         if st.get("height"): self.f["height"].setText(f"{st['height']:,}")
     def _c(self, c, stale):
         pct = (c.get("verificationprogress", 0) or 0) * 100
-        self.bar.setMaximum(100000000)                       # high-precision gauge
-        self.bar.setValue(int(pct * 1000000))
-        self.bar.setFormat(f"{pct:.6f}%{' (cached)' if stale else ''}")
-        col = sync_color(pct)
-        self.bar.setStyleSheet("QProgressBar{border:1px solid #0e3d57;border-radius:6px;text-align:center;"
-                               "background:#070d14;color:#eef3f8;} QProgressBar::chunk{background:%s;border-radius:5px;}" % col)
+        self._paint_sync(pct, stale)
         synced = (not c.get("initialblockdownload")) and pct >= 99.99
         self.f["chain"].setText(str(c.get("chain"))); self.f["height"].setText(f"{c.get('blocks',0):,}")
-        self.f["headers"].setText(f"{c.get('headers',0):,}"); self.f["verify %"].setText(f"{pct:.8f}")
+        self.f["headers"].setText(f"{c.get('headers',0):,}")
         self.f["size on disk"].setText(f"{c.get('size_on_disk',0)/1073741824:.1f} GB")
         self.f["IBD"].setText("● FULL NODE" if synced else "IBD (syncing)")
     def _n(self, n, stale):
@@ -297,7 +468,28 @@ class OverviewTab(QtWidgets.QWidget):
         detail = f"  ({o} out · {i} in)" if (o is not None and i is not None) else ""
         # honesty: a stale value is last-known, not current — say so instead of passing it off
         self.f["peers"].setText(("—" if c is None else f"{c}{detail}") + ("   (cached)" if stale else ""))
-    def _m(self, m, stale): self.f["mempool txs"].setText(f"{m.get('size',0):,}")
+        self.f["peers"].setToolTip(
+            "Live connection count from getnetworkinfo — the authoritative number.\n"
+            "The Network-log tallies count log EVENTS over a window (connects, disconnects,\n"
+            "failed dials) — after an airgap toggle they exceed this without either being wrong.")
+    def _m(self, m, stale):
+        # mempool truth straight from getmempoolinfo — count + weight + admission floor,
+        # so the landing tab states the SET, not just a bare number that invites doubt
+        size = m.get("size", 0)
+        txt = f"{size:,}"
+        if m.get("bytes"):
+            txt += f" · {m['bytes']/1e6:,.2f} MvB"
+        if m.get("mempoolminfee") is not None:
+            txt += f" · min {Decimal(str(m['mempoolminfee'])) * 100000:,.2f} sat/vB"
+        self.f["mempool txs"].setText(txt + ("   (cached)" if stale else ""))
+        self.f["mempool txs"].setToolTip(
+            f"getmempoolinfo (RPC, authoritative):\n"
+            f"unconfirmed txs: {size:,}\n"
+            f"virtual size: {m.get('bytes', 0):,} vB\n"
+            f"RAM usage: {m.get('usage', 0):,} of {m.get('maxmempool', 0):,} B\n"
+            f"total fees waiting: {m.get('total_fee', 0)} ₿\n"
+            f"unbroadcast: {m.get('unbroadcastcount', 0)}\n"
+            f"blackICE ⛓ tx monitor counts ZMQ ARRIVALS — an event stream, not this set.")
     # ---- datadir diagnostic (external disk ₿ANKON is attached to; works with node down) ----
     def _tick_fs(self):
         if self.isVisible():
@@ -369,7 +561,9 @@ class OverviewTab(QtWidgets.QWidget):
             self.fsbar.setFormat(f"disk {df.get('pcent','?')} · {self._gib(avail)} free of {self._gib(size)}"
                                  + ("  ⚠ FULL — ₿itcoin Core can't write" if full else (" — low" if low else "")))
         c = d.get("components") or {}
-        rw, rwcol = disk_runway(c.get("total"), (d.get("df") or {}).get("avail"))
+        proj = runway_projection(c.get("total"), (d.get("df") or {}).get("avail"))
+        rw, rwcol = runway_text(proj)
+        self.runchart.set_proj(proj)
         self.fscomp.setText(f"blocks {self._gib(c.get('blocks'))}  ·  indexes {self._gib(c.get('indexes'))}  ·  "
                             f"chainstate {self._gib(c.get('chainstate'))}  ·  total on device {self._gib(c.get('total'))}"
                             + (f"  ·  <span style='color:{rwcol};font-weight:700'>{rw}</span>" if rw else ""))
@@ -763,8 +957,16 @@ class IndexesTab(QtWidgets.QWidget):
             if tx: self._last_tx = tx
             self._idx_h = h; self._idx_dtx = dtx; self._idx_cache = st.get('cache', '—')
             sess = h - self._first_tip; ago = int(now - self._last_tt) if self._last_tt else 0
-            self.activity.setText(f"activity:  ▲ {self._rate:.1f} blk/min  ·  +{sess:,} indexed since open  ·  last advance {ago}s ago")
-            prog = st.get("progress"); bd = (st.get("blockDate") or "—").replace("T", " ").replace("Z", "")
+            prog = st.get("progress")
+            # honest states: measured rate → show it; at tip with nothing to do → the index IS
+            # complete, say so; otherwise we simply haven't observed an advance yet — not "0.0"
+            if self._rate:
+                self.activity.setText(f"activity:  ▲ {self._rate:.1f} blk/min  ·  +{sess:,} indexed since open  ·  last advance {ago}s ago")
+            elif prog is not None and prog >= 0.9999:
+                self.activity.setText(f"activity:  ✓ index complete — at tip #{h:,}  ·  awaiting next block (~10 min)")
+            else:
+                self.activity.setText(f"activity:  measuring…  ·  +{sess:,} indexed since open")
+            bd = (st.get("blockDate") or "—").replace("T", " ").replace("Z", "")
             lt = (st.get("logTime") or ""); lt = lt[11:19] if len(lt) >= 19 else "—"
             head = f"tip {h:,}  ·  {prog*100:.4f}%  " if prog is not None else f"tip {h:,}  "
             self.detail.setText(head + f"·  block date {bd}  ·  tx {st.get('tx') or 0:,}  ·  UTXO cache {st.get('cache','—')}  ·  last UpdateTip {lt}")
@@ -2949,6 +3151,80 @@ class BlockSciencePanel(QtWidgets.QFrame):
             self.feebar.setText("fee percentiles (sat/vB):  p10 %s · p25 %s · p50 %s · p75 %s · p90 %s" % tuple(pct))
 
 
+class _DiagRow(QtWidgets.QFrame):
+    """One draggable diagnostic card — grip ⠿, muted title, roomy monospace value."""
+    def __init__(self, key, value_label):
+        super().__init__()
+        self._key = key; self._press = None
+        self.setObjectName("diagrow")
+        self.setStyleSheet("#diagrow{border:1px solid #0e3d57;border-radius:5px;background:#070d14}"
+                           "#diagrow:hover{border-color:#2e6a8f}")
+        h = QtWidgets.QHBoxLayout(self); h.setContentsMargins(7, 5, 7, 5); h.setSpacing(8)
+        grip = QtWidgets.QLabel("⠿"); grip.setStyleSheet("color:#3a4b5c;border:0;font-size:13px")
+        grip.setCursor(QtCore.Qt.OpenHandCursor); grip.setToolTip("drag to reorder"); h.addWidget(grip)
+        col = QtWidgets.QVBoxLayout(); col.setSpacing(1)
+        t = QtWidgets.QLabel(key); t.setStyleSheet("color:#8aa0b4;font-size:10px;border:0")
+        col.addWidget(t); col.addWidget(value_label); h.addLayout(col, 1)
+    def mousePressEvent(self, ev):
+        if ev.button() == QtCore.Qt.LeftButton: self._press = ev.pos()
+        super().mousePressEvent(ev)
+    def mouseMoveEvent(self, ev):
+        if (self._press is not None and
+                (ev.pos() - self._press).manhattanLength() > QtWidgets.QApplication.startDragDistance()):
+            self._press = None
+            mime = QtCore.QMimeData(); mime.setData(OracleDiagList.MIME, self._key.encode())
+            drag = QtGui.QDrag(self); drag.setMimeData(mime)
+            drag.setPixmap(self.grab()); drag.setHotSpot(ev.pos())
+            drag.exec(QtCore.Qt.MoveAction)
+        super().mouseMoveEvent(ev)
+
+
+class OracleDiagList(QtWidgets.QScrollArea):
+    """The ₿TC.oracle statistical readout, un-scrunched: one card per diagnostic with real
+    breathing room, scrolling vertically when the tab is short, living in a splitter pane
+    (user-resizable against the mesh), and drag-and-drop reorderable — the order persists
+    (QSettings) so the oracle greets you the way you arranged it."""
+    MIME = "application/x-bankon-oracle-diag"
+    def __init__(self, keys):
+        super().__init__()
+        self.setWidgetResizable(True); self.setAcceptDrops(True)
+        self.setMinimumWidth(230)
+        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.setStyleSheet("QScrollArea{border:0}")
+        holder = QtWidgets.QWidget(); self.lay = QtWidgets.QVBoxLayout(holder)
+        self.lay.setAlignment(QtCore.Qt.AlignTop); self.lay.setSpacing(3)
+        self.lay.setContentsMargins(2, 2, 6, 2)
+        self.setWidget(holder)
+        self.f = {}
+        try:
+            saved = json.loads(QtCore.QSettings("BANKON", "bankon-qt").value("oracle/diagorder", "[]"))
+        except Exception:
+            saved = []
+        order = [k for k in saved if k in keys] + [k for k in keys if k not in saved]
+        for k in order:
+            val = QtWidgets.QLabel("…")
+            val.setStyleSheet("color:#d6e3ef;font-family:monospace;border:0")
+            val.setWordWrap(True); val.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+            self.f[k] = val
+            self.lay.addWidget(_DiagRow(k, val))
+    def dragEnterEvent(self, ev):
+        if ev.mimeData().hasFormat(self.MIME): ev.acceptProposedAction()
+    def dragMoveEvent(self, ev):
+        if ev.mimeData().hasFormat(self.MIME): ev.acceptProposedAction()
+    def dropEvent(self, ev):
+        key = bytes(ev.mimeData().data(self.MIME)).decode()
+        rows = [self.lay.itemAt(i).widget() for i in range(self.lay.count())]
+        moving = next((r for r in rows if r._key == key), None)
+        if moving is None: return
+        pos = ev.position().toPoint() if hasattr(ev, "position") else ev.pos()
+        y = pos.y() + self.verticalScrollBar().value()          # viewport → holder coords
+        target = sum(1 for r in rows if r is not moving and r.geometry().center().y() < y)
+        self.lay.removeWidget(moving); self.lay.insertWidget(target, moving)
+        ev.acceptProposedAction()
+        order = [self.lay.itemAt(i).widget()._key for i in range(self.lay.count())]
+        QtCore.QSettings("BANKON", "bankon-qt").setValue("oracle/diagorder", json.dumps(order))
+
+
 class OracleTab(QtWidgets.QWidget):
     """₿TC.oracle — the clock kept on a ₿itcoin block. ₿itcoin-orange framed, with an electric-blue
     mesh graphical area (block-interval sparkline + headline) beside the statistical readout, plus a
@@ -2983,15 +3259,22 @@ class OracleTab(QtWidgets.QWidget):
                                "• HISTORY: current block-time averages sanity-checked against the local\n"
                                "  measurement log (σ of recent intervals) — divergence is flagged, never hidden")
         v.addWidget(self.xcheck)
-        mid = QtWidgets.QHBoxLayout()
-        self.mesh = MeshPanel(); mid.addWidget(self.mesh, 3)               # graphical area
-        box, self.f = cardgrid(["chain height", "tip block date", "time since last block",
+        self.mesh = MeshPanel()                                            # graphical area
+        self.diag = OracleDiagList(["chain height", "tip block date", "time since last block",
             "avg block time — all-time (from genesis)", "avg block time — recent (~2016 blk)",
             "protocol target", "basis used", "recommended poll",
             "avg peer ping", "network ↓ / ↑ rate", "network total ↓ / ↑",
             "genesis", "time since last update"])
-        box.setMaximumWidth(440); mid.addWidget(box, 2)                    # statistical area
-        v.addLayout(mid, 1)
+        self.f = self.diag.f                                               # statistical area (same fill API)
+        mid = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        mid.addWidget(self.mesh); mid.addWidget(self.diag)
+        mid.setStretchFactor(0, 3); mid.setStretchFactor(1, 2)
+        st = QtCore.QSettings("BANKON", "bankon-qt")
+        try: mid.setSizes([int(x) for x in json.loads(st.value("oracle/midsplit", "[600, 420]"))])
+        except Exception: mid.setSizes([600, 420])
+        mid.splitterMoved.connect(lambda *_: QtCore.QSettings("BANKON", "bankon-qt")
+                                  .setValue("oracle/midsplit", json.dumps(mid.sizes())))
+        v.addWidget(mid, 1)
         outer.addWidget(frame, 1)
         # QUADRANTS: with the frame's mesh|stats split above, the two panels below complete a
         # 2×2 oracle — Q1 mesh · Q2 statistics · Q3 🔬 block science (current running block,
@@ -3516,7 +3799,9 @@ class NetworkTab(QtWidgets.QWidget):
             self._render_conns(c, out, inb, stale)
     def _setact(self, d):
         d = d or {}; ev = d.get("events", []); ty = d.get("tally", {}); local = d.get("local", [])
-        s = (f"connection activity — ✓ {ty.get('connected',0)} connected · ✗ {ty.get('failed',0)} failed · "
+        live = d.get("livePeers")
+        s = ((f"● {live} live now · " if live is not None else "") +
+             f"log window (events) — ✓ {ty.get('connected',0)} connects · ✗ {ty.get('failed',0)} failed · "
              f"⟲ {ty.get('disconnect',0)} dropped · ⇣ {ty.get('inbound',0)} inbound")
         if local: s += "   ·   local: " + ", ".join(local[:3])
         self.actsum.setText(s)
@@ -3813,6 +4098,13 @@ class NetLogTab(QtWidgets.QWidget):
         self.filter.addItems(["all", "connected", "inbound", "disconnect", "failed", "feeler", "local"])
         self.filter.setToolTip("Filter the table by event type")
         self.filter.currentTextChanged.connect(lambda _: self._render()); top.addWidget(self.filter)
+        top.addWidget(QtWidgets.QLabel("fmt"))
+        self.fmt = QtWidgets.QComboBox()
+        self.fmt.addItems(["human", "scientific", "18-dec exact"])
+        self.fmt.setToolTip("Numeric display mode — human, scientific notation (18 significant digits),\n"
+                            "or exact 18-decimal per the scientific-audit spec (Decimal, never float).\n"
+                            "Decimals acknowledged: SAT 8 dp (₿ native) · USDC 6 dp · EVM 18 dp.")
+        self.fmt.currentTextChanged.connect(lambda _: self._render()); top.addWidget(self.fmt)
         self.live = QtWidgets.QCheckBox("live"); self.live.setChecked(True); top.addWidget(self.live)
         clr = QtWidgets.QPushButton("clear")
         clr.clicked.connect(lambda: (self._events.clear(), self._seen.clear(), self._render())); top.addWidget(clr)
@@ -3853,6 +4145,16 @@ class NetLogTab(QtWidgets.QWidget):
             self._seen.add(key); self._events.append(e)
         self._events = self._events[-8000:]
         self._render()
+    def _num(self, n):
+        """One integer, three truths: human grouping, scientific (18 sig digits), or exact
+        18-dp Decimal — all from the same exact int, so the modes can never disagree."""
+        if n in (None, ""): return "—"
+        try: n = int(n)
+        except (TypeError, ValueError): return str(n)
+        m = self.fmt.currentText()
+        if m == "scientific": return sci_int(n, 18)
+        if m == "18-dec exact": return dec18(n)
+        return f"{n:,}"
     def _render(self):
         want = self.filter.currentText()
         rows = [e for e in self._events if want == "all" or e.get("kind") == want]
@@ -3868,7 +4170,8 @@ class NetLogTab(QtWidgets.QWidget):
             client = e.get("subver", "")
             cells = [str(e.get("time", "")).split(" ")[-1] if e.get("time") else DASH,
                      k, ("#" + e["peer"]) if e.get("peer") else DASH, role or DASH, tr or DASH,
-                     client or DASH, e.get("blocks", "") or DASH, e.get("net", "") or DASH,
+                     client or DASH, self._num(e.get("blocks")) if e.get("blocks") else DASH,
+                     e.get("net", "") or DASH,
                      addr or DASH, e.get("reason", "") or DASH]   # note: only the failure/disconnect cause
             for c, val in enumerate(cells):
                 it = QtWidgets.QTableWidgetItem(str(val))
@@ -3890,17 +4193,27 @@ class NetLogTab(QtWidgets.QWidget):
         d = self._latest; tally = d.get("tally", {}) or {}
         tr = d.get("transports", {}) or {}; nets = d.get("nets", {}) or {}
         ct = d.get("conntypes", {}) or {}; local = d.get("local", []) or []
+        N = self._num
         def seg(label, m):
             parts = [f"{k} {v}" for k, v in sorted(m.items(), key=lambda x: -x[1]) if v]
             return f"{label}: " + (" · ".join(parts) if parts else "—")
-        counts = (f"<b>{len(self._events)}</b> events shown  ·  "
-                  f"<span style='color:#16C784'>connected {tally.get('connected',0)}</span> · "
-                  f"<span style='color:#00BFFF'>inbound {tally.get('inbound',0)}</span> · "
-                  f"<span style='color:#F7931A'>disconnect {tally.get('disconnect',0)}</span> · "
-                  f"<span style='color:#f85149'>failed {tally.get('failed',0)}</span>")
+        # the number the dashboard quotes vs the numbers the log tallies: livePeers is
+        # getpeerinfo NOW (null → RPC choked, shown as —); the tally counts log EVENTS
+        # over the window — after an airgap toggle those diverge wildly, both correct.
+        live = d.get("livePeers")
+        counts = (f"<span style='color:#16C784;font-weight:700'>● {N(live) if live is not None else '—'} "
+                  f"peers live now</span> <span style='color:#5a6b7b'>(RPC getpeerinfo)</span>  ·  "
+                  f"log window — <b>{N(len(self._events))}</b> events shown: "
+                  f"<span style='color:#16C784'>connects {N(tally.get('connected',0))}</span> · "
+                  f"<span style='color:#00BFFF'>inbound {N(tally.get('inbound',0))}</span> · "
+                  f"<span style='color:#F7931A'>disconnects {N(tally.get('disconnect',0))}</span> · "
+                  f"<span style='color:#f85149'>failed {N(tally.get('failed',0))}</span>")
         line2 = (seg("transport", {"v2 (encrypted)": tr.get("v2", 0), "v1 (legacy)": tr.get("v1", 0)})
                  + "   |   " + seg("net", nets) + "   |   " + seg("roles", ct))
         line3 = ("local: " + (" · ".join(local) if local else "—"))
+        if self.fmt.currentText() != "human":
+            line3 += ("<br><span style='color:#5a6b7b'>decimals acknowledged: SAT 8 dp (₿ native) · "
+                      "USDC 6 dp · EVM 18 dp — exact Decimal, never float · sync % is 4 dp by design</span>")
         self.summary.setText(f"{counts}<br>{line2}<br>{line3}")
         self.info.setText(f"Network activity — {len(self._events)} events (₿ANKON ₿TC WaaS) · "
                           f"parsed live from debug.log")
@@ -4174,6 +4487,7 @@ class IceTab(QtWidgets.QWidget):
         self.transport = TransportSwitches("  (shared with ⟲ SPINTRADE)"); v.addWidget(self.transport)
         v.addWidget(self._evidence_panel())
         v.addWidget(self._precision_panel())
+        v.addWidget(self._txmon_panel())
         v.addWidget(self._capture_panel())
         note = QtWidgets.QLabel("ICE gates CPU heat and the machine's radios; the forensic toolkit works offline "
                                 "(local GeoLite2, local .history). AIRGAP severs every RF path between the network "
@@ -4465,6 +4779,91 @@ class IceTab(QtWidgets.QWidget):
             lines.append(f"mean rate in     {dec18(rin, up)} B/s")
             lines.append(f"mean rate out    {dec18(rout, up)} B/s")
         self.prec.setText("\n".join(lines) + ("   (cached)" if stale else ""))
+    # ---- ⛓ blackICE — blockchain transaction monitor (ZMQ rawtx, exact integer sats) ----
+    def _txmon_panel(self):
+        fr = QtWidgets.QFrame(); fr.setStyleSheet("QFrame{border:1px solid #0e3d57;border-radius:6px}")
+        fl = QtWidgets.QVBoxLayout(fr)
+        hd = QtWidgets.QLabel("⛓ blackICE — blockchain transaction monitor (ZMQ rawtx · exact integer sats)")
+        hd.setStyleSheet("color:#00BFFF;font-weight:700;border:0"); fl.addWidget(hd)
+        row = QtWidgets.QHBoxLayout()
+        self.txmon = QtWidgets.QCheckBox("monitor live transactions")
+        self.txmon.setToolTip("Subscribe to the node's zmqpubrawtx feed (tcp://127.0.0.1:28333) and parse\n"
+                              "every mempool arrival locally: txid, vsize and the exact output sum in\n"
+                              "INTEGER SATOSHIS (never float). Off by default — during IBD this feed floods.")
+        self.txmon.toggled.connect(self._txmon_toggle); row.addWidget(self.txmon)
+        self.txmon_status = QtWidgets.QLabel("off"); self.txmon_status.setStyleSheet("color:#8aa0b4;border:0")
+        row.addWidget(self.txmon_status); row.addStretch(1); fl.addLayout(row)
+        self.txmon_stats = QtWidgets.QLabel("—")
+        self.txmon_stats.setStyleSheet("font-family:monospace;border:0;color:#d6e3ef")
+        self.txmon_stats.setWordWrap(True)
+        self.txmon_stats.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        fl.addWidget(self.txmon_stats)
+        self.txmon_tbl = QtWidgets.QTableWidget(); self.txmon_tbl.setColumnCount(5)
+        self.txmon_tbl.setHorizontalHeaderLabels(["time", "txid", "vB", "in→out", "Σ outputs (₿ · 18 dp exact)"])
+        self.txmon_tbl.verticalHeader().setVisible(False)
+        self.txmon_tbl.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.txmon_tbl.setMaximumHeight(150)
+        hh = self.txmon_tbl.horizontalHeader(); hh.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
+        self.txmon_tbl.setTextElideMode(QtCore.Qt.ElideMiddle)
+        self.txmon_tbl.setStyleSheet("QTableWidget{font-family:monospace;background:#05080d;color:#d6e3ef;"
+                                     "gridline-color:#0e2436;border:1px solid #14405c;border-radius:4px}"
+                                     "QHeaderView::section{background:#0c1a28;color:#8aa0b4;border:0;padding:3px}")
+        fl.addWidget(self.txmon_tbl)
+        self._txz = None
+        self._txbuf = deque(maxlen=8)          # newest txs for the table
+        self._txtimes = deque(maxlen=1200)     # arrival stamps → tx/s over 60 s
+        self._txseen = 0; self._txsats = 0; self._txvb = 0
+        self._tx_mempool = None                # last RPC getmempoolinfo (the accuracy cross-check)
+        self._txtimer = QtCore.QTimer(self); self._txtimer.timeout.connect(self._txmon_render)
+        self._txticks = 0
+        return fr
+    def _txmon_toggle(self, on):
+        if on:
+            self._txz = ZmqService(self, with_tx=True)
+            self._txz.txraw.connect(self._txmon_tx)
+            self._txz.status.connect(lambda ok, m: (
+                self.txmon_status.setText(("● " if ok else "○ ") + m),
+                self.txmon_status.setStyleSheet(f"color:{'#16C784' if ok else '#f85149'};border:0;font-weight:700")))
+            self._txz.start()
+            self._txtimer.start(1000)
+        else:
+            if self._txz: self._txz.stop(); self._txz = None
+            self._txtimer.stop()
+            self.txmon_status.setText("off"); self.txmon_status.setStyleSheet("color:#8aa0b4;border:0")
+    def _txmon_tx(self, raw):
+        """One ZMQ rawtx arrival — parse and count; RENDERING waits for the 1 s tick (thermal)."""
+        p = parse_tx(raw)
+        if not p: return
+        self._txseen += 1; self._txsats += p["out_sats"]; self._txvb += p["vsize"]
+        self._txtimes.append(time.time())
+        p["at"] = datetime.now().strftime("%H:%M:%S")
+        self._txbuf.appendleft(p)
+    def _txmon_render(self):
+        if not anim_on(self): return
+        now = time.time()
+        rate = sum(1 for t in self._txtimes if now - t <= 60)
+        self._txticks += 1
+        if self._txticks % 5 == 1:            # cross-check against RPC truth every 5 s
+            spawn("getmempoolinfo", self._txmon_mp, timeout=6)
+        mp = self._tx_mempool or {}
+        avg = self._txvb // self._txseen if self._txseen else 0
+        # same live-vs-events honesty as the net log: ZMQ counts ARRIVALS since enable;
+        # RPC counts the CURRENT SET — blocks mining txs out make them diverge, both correct.
+        if isinstance(mp.get("size"), int):
+            mpline = f"{mp['size']:,} tx · {mp.get('bytes', 0)/1e6:,.2f} MvB (current set — arrivals minus mined/evicted)"
+        else:
+            mpline = "—"
+        self.txmon_stats.setText(
+            f"arrivals since enable   {self._txseen:,} tx  ·  {dec18(rate, 60)} tx/s (60 s)  ·  avg {avg:,} vB\n"
+            f"Σ outputs observed      {btc18(self._txsats)} ₿  (exact — integer sats, SAT 8 dp native)\n"
+            f"mempool now (RPC)       {mpline}")
+        self.txmon_tbl.setRowCount(len(self._txbuf))
+        for r, p in enumerate(self._txbuf):
+            for c, val in enumerate([p["at"], p["txid"], f"{p['vsize']:,}",
+                                     f"{p['nin']}→{p['nout']}", btc18(p["out_sats"])]):
+                self.txmon_tbl.setItem(r, c, QtWidgets.QTableWidgetItem(val))
+    def _txmon_mp(self, m, stale):
+        self._tx_mempool = m or {}
     # ---- 🕸 live wire capture ----
     def _capture_panel(self):
         fr = QtWidgets.QFrame(); fr.setStyleSheet("QFrame{border:1px solid #0e3d57;border-radius:6px}")
