@@ -177,10 +177,14 @@ def runway_projection(total_bytes, avail_bytes):
         pass
     basis = "observed" if rate else "est. 55 GB/yr"
     rate = rate or (55e9 / (365.25 * 86400))
-    # compounding curve: monthly steps, mid-month rate, until the floor or the horizon
+    # compounding curve: monthly steps, mid-month rate, until the floor or the horizon.
+    # The full-blocks cap NEVER projects below today's observed rate — when observation
+    # exceeds the ceiling (datadir migration, reindex), hold at observed instead of
+    # "predicting" a slowdown, so compounding always hits the floor before linear.
+    cap = max(_RATE_CAP, rate)
     pts, free, months, capped = [(0.0, float(avail_bytes))], float(avail_bytes), None, False
     for m in range(1, _RUNWAY_MAX_M + 1):
-        r = min(rate * _TX_GROWTH_YR ** ((m - 0.5) / 12.0), _RATE_CAP)
+        r = min(rate * _TX_GROWTH_YR ** ((m - 0.5) / 12.0), cap)
         nfree = free - r * _MONTH_S
         if nfree <= _RUNWAY_FLOOR:
             months = m - 1 + (free - _RUNWAY_FLOOR) / (free - nfree)
@@ -4121,7 +4125,10 @@ class NetLogTab(QtWidgets.QWidget):
         self.t.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.t.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.t.setAlternatingRowColors(True)
-        hh = self.t.horizontalHeader(); hh.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
+        # Interactive + one resizeColumnsToContents() per render — NOT ResizeToContents mode,
+        # which re-measures every column on EVERY setItem: O(rows²·cols) per fill, freezing
+        # the event loop for tens of seconds at n=200 on this CPU (found by faulthandler)
+        hh = self.t.horizontalHeader(); hh.setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
         hh.setStretchLastSection(False)   # every column hugs its content — no wide empty note column
         hh.setDefaultAlignment(QtCore.Qt.AlignLeft)
         hh.setMaximumSectionSize(240)     # cap any one column (long IPv6 addresses) — elide the overflow
@@ -4138,13 +4145,17 @@ class NetLogTab(QtWidgets.QWidget):
             spawn_fn(lambda: fetch_json("/api/netactivity?n=200"), self._on)
     def _on(self, d):
         d = d or {}; self._latest = d
+        added = 0
         for e in sorted(d.get("events", []), key=lambda x: str(x.get("time") or "")):
             key = (e.get("time"), e.get("addr"), e.get("kind"), e.get("peer"))
             if key in self._seen:
                 continue
-            self._seen.add(key); self._events.append(e)
+            self._seen.add(key); self._events.append(e); added += 1
         self._events = self._events[-8000:]
-        self._render()
+        if added:
+            self._render()
+        else:
+            self._render_summary()   # livePeers still moves even when the log window is quiet
     def _num(self, n):
         """One integer, three truths: human grouping, scientific (18 sig digits), or exact
         18-dp Decimal — all from the same exact int, so the modes can never disagree."""
@@ -4158,6 +4169,7 @@ class NetLogTab(QtWidgets.QWidget):
     def _render(self):
         want = self.filter.currentText()
         rows = [e for e in self._events if want == "all" or e.get("kind") == want]
+        self.t.setUpdatesEnabled(False)   # batch: one paint + one column measure per render
         self.t.setRowCount(len(rows))
         DASH = "—"
         for r, e in enumerate(rows):
@@ -4187,7 +4199,9 @@ class NetLogTab(QtWidgets.QWidget):
         # the "note" column earns its space only when a visible row actually has a note
         has_note = any(e.get("reason") for e in rows)
         self.t.setColumnHidden(self.COLS.index("note"), not has_note)
-        self.t.scrollToBottom()   # header is ResizeToContents — columns auto-hug their content
+        self.t.resizeColumnsToContents()  # single measure per render (respects max section size)
+        self.t.setUpdatesEnabled(True)
+        self.t.scrollToBottom()
         self._render_summary()
     def _render_summary(self):
         d = self._latest; tally = d.get("tally", {}) or {}
