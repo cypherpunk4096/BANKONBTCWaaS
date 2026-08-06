@@ -20,7 +20,35 @@
 > ```
 > Attaches BANKON to your running Bitcoin Core →
 > **WaaS** http://127.0.0.1:8088 · **Console** http://127.0.0.1:8090
-> No node yet? `~/bankon-tools/bankon install-core && bitcoind && ~/bankon-tools/bankon up`
+> First time on this machine? → [Install](#install) (one command too).
+
+## Install
+
+From a clean machine to a ready stack — clone, one-shot install, run:
+
+```bash
+git clone https://github.com/cypherpunk4096/BANKONBTCWaaS.git ~/bankon-tools
+cd ~/bankon-tools
+./bankon.sh        # THE installer: prereqs → Bitcoin Core v31 (SHA256-verified)
+                   #   → WaaS/Console deps → Qt (PySide6) → QR → doctor check
+bitcoind           # start the node (skip if yours is already running)
+./bankon up        # attach → WaaS :8088 · Console :8090
+```
+
+The installer is **idempotent and non-destructive**: it skips what's already present,
+prints every action, and never touches your existing node or wallets. Tune it:
+
+```bash
+./bankon.sh --dry-run                 # print the full plan, change nothing
+./bankon.sh --only waas,console,qt    # already have a node? install just the services
+./bankon.sh --only core               # just Bitcoin Core (SHA256-verified download)
+./bankon.sh --yes                     # unattended (scripts / CI)
+```
+
+Works on the bankonOS seed targets — package maps for **apt · apk · pkg_add · brew**
+(Debian/Ubuntu · Alpine · OpenBSD · macOS). No root needed except for OS packages.
+Verify the result any time with `./bankon doctor`. Every script is catalogued in
+[installers.md](installers.md).
 
 **An effortless, modular extension for a running Bitcoin Core** — non-custodial
 **Wallet-as-a-Service (WaaS)** plus Bitcoin services (diagnostics, multi-node, wallet
@@ -57,7 +85,7 @@ whether it is the **live RPC truth** or a **log-window event count**, because th
 
 ## Exact BANKON creation
 
-**Bring up the stack from scratch:**
+**Bring up the stack from scratch** (or just run [`./bankon.sh`](#install) — it does 1–2 for you):
 ```bash
 # 1. Bitcoin Core (skip if already installed/running)
 ~/bankon-tools/bankon install-core      # downloads v31, verifies SHA256SUMS, installs
