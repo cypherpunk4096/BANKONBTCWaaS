@@ -1,10 +1,10 @@
 # BANKON
 
 > ## ⚠️ INCOMPLETE VERSION — DIAGNOSTIC USE ONLY
-> This is a work-in-progress build. It is published for **node diagnostics and
-> observation only** — do not rely on it for custody, mainnet transaction workflows,
-> or production deployments. Interfaces, data formats, and safety gates are still
-> changing without notice.
+> This is a work-in-progress build, **pending cypherpunk audit completion**. It is
+> published for **node diagnostics and observation only** — do not rely on it for
+> custody, mainnet transaction workflows, or production deployments. Interfaces,
+> data formats, and safety gates are still changing without notice.
 
 [![Client crypto: GPLv3](https://img.shields.io/badge/client%20crypto-GPLv3-9945FF.svg?logo=gnu&logoColor=white)](LICENSE.GPLv3)
 [![Infrastructure: MIT/BSD-family](https://img.shields.io/badge/infra-MIT%20%2F%20BSD--family-8247E5.svg?logo=opensourceinitiative&logoColor=white)](LICENSE.MIT)
