@@ -14,6 +14,14 @@
 [![BTC Standard](https://img.shields.io/badge/BTC-Standard-F7931A.svg?logo=bitcoin&logoColor=white)](https://github.com/cypherpunk2048)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-0033AD.svg?logo=github&logoColor=white)](https://github.com/cypherpunk2048)
 
+> ### ⛓ Bitcoin Core is REQUIRED
+> BANKON is **not** a standalone wallet or a hosted service — it is an extension that
+> attaches to **your own running [Bitcoin Core](https://bitcoincore.org) full node**
+> (v31 recommended). Every wallet, diagnostic, and API here reads from and talks to
+> that node; without `bitcoind` running there is nothing to attach to. Don't have it?
+> The installer sets it up for you, SHA256-verified: `./bankon.sh --only core`
+> (or `./bankon install-core`). Your node, your chain, your keys.
+
 > ### ⚡ Effortless — one command
 > ```bash
 > ~/bankon-tools/bankon up
@@ -23,6 +31,10 @@
 > First time on this machine? → [Install](#install) (one command too).
 
 ## Install
+
+**Prerequisite: Bitcoin Core.** BANKON attaches to a running `bitcoind` — bring your own
+node, or let step one below install v31 for you (SHA256SUMS-verified). Expect full-node
+disk requirements (~900 GB and growing; pruned mode supported — see [PRUNING.md](PRUNING.md)).
 
 From a clean machine to a ready stack — clone, one-shot install, run:
 
