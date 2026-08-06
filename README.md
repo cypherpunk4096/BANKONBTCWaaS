@@ -28,14 +28,32 @@ provisioning). Wallets follow the **BTC Standard**
 ([github.com/cypherpunk2048](https://github.com/cypherpunk2048)): non-custodial,
 client-side keys, BIP39/32 recovery.
 
-```bash
-~/bankon-tools/bankon up      # attaches WaaS + Console to your running node
-# → WaaS (create wallets):  http://127.0.0.1:8088
-# → Console (diagnostics):  http://127.0.0.1:8090
-```
-
 Keys are minted in your browser and **never** touch the server. The node only ever holds
 **watch-only** descriptors and builds **unsigned** PSBTs — you sign locally.
+
+## Diagnostics first
+
+Under the audit warning above, the **diagnostics surfaces are the supported use** today.
+They are read-only against your node and honest about their sources — every number states
+whether it is the **live RPC truth** or a **log-window event count**, because those diverge
+(an airgap toggle piles up connect *events* while live peers stay small; both are correct).
+
+- **Console** (`:8090`) — web dashboard: node health, sync, filesystem, connection
+  activity parsed from `debug.log` (works even during the IBD RPC choke).
+- **Qt desktop UI** (`bankon qt`) — the full instrument panel:
+  - **Overview** — sync, mempool (count · MvB · min sat/vB), datadir card with a
+    **log-scale disk-runway projection** that compounds chain growth (+10 %/yr, capped
+    at the full-blocks ceiling) instead of pretending growth is linear.
+  - **₿TC.oracle** — the clock kept on a Bitcoin block; every blocktime figure exact
+    Decimal at 18 dp; anti-clockblock multi-source cross-checks; per-block science
+    (`getblockstats`) with integer-satoshi economics.
+  - **🧊 ICE / blackICE** — CPU-heat + radio wall, geo/IP forensics, and a **live
+    blockchain transaction monitor**: parses the node's ZMQ `rawtx` feed locally
+    (txid, vsize, output sums in integer sats — verified exact against Core RPC).
+  - **Net Map / Geo Map / Network log** — peers on a globe, connection events with
+    BIP324 transport + role detail, three numeric display modes
+    (human · scientific · 18-dec exact).
+- **Watchdog + doctor** — `bankon-monitor.sh` (systemd timer) and `bankon doctor`.
 
 ## Exact BANKON creation
 
@@ -108,20 +126,28 @@ bankon up | status | stop | doctor | install-core | qt
 | Path | Role |
 |------|------|
 | `bankon` | launcher |
-| `bankon-waas/` | WaaS API + UI + client keygen/sign + offline client |
+| `bankon-waas/` | ₿TC WaaS API + UI + client keygen/sign + offline client |
 | `bankon-console/` | read-only diagnostics dashboard (:8090) |
-| `bankon-qt/` + `bankon-qt.sh` | native Qt diagnostics UI |
+| `bankon-qt/` + `bankon-qt.sh` | native Qt diagnostics UI (Overview · oracle · ICE · maps) |
+| `dexy/` | ⟲ DEXY — sovereign-custody BTC liquidity mover (:8091, opt-in) + golden-ratio toll |
+| `bankon-vault/` | chain-agnostic vault — signature-gated secrets, sign-don't-export |
+| `bankon-ord/` | optional ordinals / inscriptions / runes (wraps official `ord`, gated) |
+| `bankon-eth/` · `bankon-algo/` | the EVM and Algorand WaaS twins (standalone, non-custodial) |
+| `bankonos/` | sovereign Bitcoin workstation provisioning |
 | `bankon-nodes.sh` · `bankon-node-mode.sh` | multi-node + prune-size control |
 | `bankon-diag.sh` · `bankon-monitor.sh` | diagnostics + health watchdog |
 | `bankon-backup.sh` | encrypted registry backup |
+| `geoip/` | offline GeoLite2 (Net Map / Geo Map — no external API at runtime) |
 | `shared/security.mjs` | API auth + rate limiting |
 | `systemd/` | service + timer units |
 | `docs/` | full documentation set |
 
 ## Status
-Phases 0–5 built and verified (signing, regtest e2e, and 2-of-3 multisig tests all pass).
-Remaining items are gated on the user (free local disk → launch pruned node; live mainnet
-send needs deposited funds + full sync). See [ROADMAP.md](docs/ROADMAP.md) and [TODO.md](docs/TODO.md).
+Phases 0–5 built and verified (signing, regtest e2e, and 2-of-3 multisig tests all pass) —
+but per the notice above, treat everything beyond **diagnostics** as unaudited until the
+cypherpunk audit completes. Remaining items are gated on the user (free local disk →
+launch pruned node; live mainnet send needs deposited funds + full sync).
+See [ROADMAP.md](docs/ROADMAP.md) and [TODO.md](docs/TODO.md).
 
 ## License & policy
 **Dual-licensed by component** (see [POLICY.md](POLICY.md) for the rationale):
