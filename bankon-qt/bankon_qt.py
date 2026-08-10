@@ -20,7 +20,7 @@ except ImportError:
     sys.exit("PySide6 not installed. Run: pip install --user pyside6  (or use bankon-qt.sh)")
 
 # Data plumbing lives in the service layer (shared with adapters/, no circular import).
-from services.rpc_service import (RPC_URL, COOKIE, CONSOLE_URL, rpc, rpc_cached,
+from services.rpc_service import (RPC_URL, COOKIE, CONSOLE_URL, rpc, rpc_cached, rpc_direct,
                                   synctip, fetch_json, post_json, flag)
 from services.zmq_service import ZmqService
 from services.txparse import parse_tx
@@ -384,7 +384,9 @@ class RunwayChart(QtWidgets.QWidget):
 
 class OverviewTab(QtWidgets.QWidget):
     def __init__(self):
-        super().__init__(); v = QtWidgets.QVBoxLayout(self)
+        super().__init__()
+        outer = QtWidgets.QVBoxLayout(self); outer.setContentsMargins(0, 0, 0, 0)
+        topw = QtWidgets.QWidget(); v = QtWidgets.QVBoxLayout(topw)
         self.bar = QtWidgets.QProgressBar(); self.bar.setMaximum(100000)
         v.addWidget(QtWidgets.QLabel("<b>Sync</b>")); v.addWidget(self.bar)
         box, self.f = cardgrid(["chain", "height", "headers", "verify %", "peers", "mempool txs",
@@ -423,6 +425,49 @@ class OverviewTab(QtWidgets.QWidget):
         cpr = QtWidgets.QLabel("© 2026 ₿ANKON — all rights preserved")
         cpr.setStyleSheet("color:#5a6b7b;font-size:10px"); foot.addWidget(cpr)
         v.addLayout(foot); v.addStretch()
+        # --- ₿itcoin Core log — RESIZABLE (drag the splitter divider) + verbose toggle + copy/export ---
+        logw = QtWidgets.QWidget(); ll = QtWidgets.QVBoxLayout(logw); ll.setContentsMargins(0, 4, 0, 0); ll.setSpacing(3)
+        lh = QtWidgets.QHBoxLayout()
+        lt = QtWidgets.QLabel("<b>₿itcoin Core log</b> — debug.log")
+        lt.setToolTip("live debug.log tail · drag the splitter divider to trade width with the overview")
+        # compressible: without this the label's text width becomes the pane's MINIMUM width and
+        # the splitter steals space from the overview to honour it
+        lt.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
+        lt.setStyleSheet("color:#c9d4e0"); lh.addWidget(lt, 1)
+        self.logverb = QtWidgets.QCheckBox("verbose (net)")
+        self.logverb.setToolTip("₿itcoin Core's net debug category — logs every peer connect/disconnect/message.\n"
+                                "Runtime `logging` RPC: instant, no restart, no config write (reverts when Core restarts).")
+        self.logverb.toggled.connect(self._verb_toggle); lh.addWidget(self.logverb)
+        for text, fn, tip in [("⧉ Copy", self._log_copy, "copy the visible log to the clipboard"),
+                              ("⬇ Save", self._log_save, "save the visible log as a file"),
+                              ("⬇ 20k", self._log_export, "export the last 20,000 debug.log lines to a file")]:
+            b = QtWidgets.QPushButton(text); b.setObjectName("secondary"); b.setToolTip(tip)
+            b.clicked.connect(fn); lh.addWidget(b)
+        ll.addLayout(lh)
+        self.logmsg = QtWidgets.QLabel(""); self.logmsg.setStyleSheet("color:#8aa0b4;font-size:11px"); ll.addWidget(self.logmsg)
+        self.corelog = QtWidgets.QPlainTextEdit(); self.corelog.setReadOnly(True)
+        self.corelog.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse | QtCore.Qt.TextSelectableByKeyboard)
+        self.corelog.setStyleSheet("font-family:monospace;font-size:12px;background:#010409;color:#d6e3ef;"
+                                   "border:2px solid #F7931A;border-radius:6px;padding:5px;"
+                                   "selection-background-color:#00BFFF;selection-color:#001018;")
+        ll.addWidget(self.corelog, 1)
+        # The log rides to the RIGHT of the overview (horizontal splitter) so it never squeezes
+        # the overview's readable height — drag the divider to trade width between the two.
+        split = QtWidgets.QSplitter(QtCore.Qt.Horizontal); split.setHandleWidth(6); split.setChildrenCollapsible(False)
+        split.addWidget(topw); split.addWidget(logw)
+        split.setStretchFactor(0, 1); split.setStretchFactor(1, 0)
+        _st = QtCore.QSettings("BANKON", "bankon-qt")                   # persist the drag-resized width
+        self._ovsplit = split
+        self._ovsplit_saved = _st.value("overview/logsplit-h2")         # fresh key — earlier keys hold layout junk
+        self._split_settled = False                                     # gate: only persist USER drags, not layout shuffles
+        self._split_applied = False                                     # sizes applied on first showEvent (real geometry)
+        split.splitterMoved.connect(lambda *_: self._split_settled
+                                    and _st.setValue("overview/logsplit-h2", split.sizes()))
+        outer.addWidget(split)
+        self._verb_known = None                        # last known net-category state (None = unknown)
+        self._logtimer = QtCore.QTimer(self); self._logtimer.timeout.connect(self._tick_log); self._logtimer.start(4000)
+        QtCore.QTimer.singleShot(700, self._tick_log)
+        QtCore.QTimer.singleShot(900, self._verb_load)
         # near-realtime sync: /api/synctip is a cheap debug.log tail (no node RPC), so poll it
         # every 3s while this tab is visible — the % ticks up as the node validates blocks.
         self._synctimer = QtCore.QTimer(self); self._synctimer.timeout.connect(self._tick_sync); self._synctimer.start(3000)
@@ -606,6 +651,82 @@ class OverviewTab(QtWidgets.QWidget):
         if os.path.exists(launcher):
             subprocess.Popen(["python3", launcher], start_new_session=True,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # ---- ₿itcoin Core log widget — tail, verbose(net) toggle, copy/export ----
+    def showEvent(self, e):
+        super().showEvent(e)
+        if not self._split_applied:            # first show = geometry is real; earlier setSizes gets recomputed away
+            self._split_applied = True
+            QtCore.QTimer.singleShot(50, self._apply_logsplit)
+    def _apply_logsplit(self):
+        sp = self._ovsplit
+        try:
+            if self._ovsplit_saved:
+                sp.setSizes([int(x) for x in self._ovsplit_saved])
+            else:
+                w = max(sp.width(), 900)       # default: overview keeps ~62% of the width
+                sp.setSizes([int(w * 0.62), int(w * 0.38)])
+        except Exception:
+            pass
+        QtCore.QTimer.singleShot(1500, lambda: setattr(self, "_split_settled", True))
+    def _tick_log(self):
+        if not self.isVisible() or self.corelog.textCursor().hasSelection(): return
+        if not DEBUG_LOG.exists(): self.corelog.setPlainText("no debug.log yet"); return
+        try:
+            out = subprocess.run(["tail", "-n", "250", str(DEBUG_LOG)], capture_output=True, text=True, timeout=5).stdout
+            sb = self.corelog.verticalScrollBar(); atBottom = sb.value() >= sb.maximum() - 4
+            self.corelog.setPlainText(out)
+            if atBottom: sb.setValue(sb.maximum())
+        except Exception as e:
+            self.corelog.setPlainText(f"log error: {e}")
+    def _verb_load(self):
+        """Reflect the node's ACTUAL current net-category state (console first, direct-RPC fallback)."""
+        def _get():
+            try: return fetch_json("/api/log/verbosity")
+            except Exception: return {"ok": True, "categories": rpc_direct("logging")}
+        def _got(r):
+            if not (r and r.get("ok")): return
+            on = bool((r.get("categories") or {}).get("net"))
+            self._verb_known = on
+            self.logverb.blockSignals(True); self.logverb.setChecked(on); self.logverb.blockSignals(False)
+        spawn_fn(_get, _got, lambda _e: None)
+    def _verb_toggle(self, on):
+        inc, exc = (["net"], []) if on else ([], ["net"])
+        def _set():
+            try: return post_json("/api/log/verbosity", {"include": inc, "exclude": exc})
+            except Exception: return {"ok": True, "categories": rpc_direct("logging", [inc, exc])}
+        def _done(r):
+            if r and r.get("ok"):
+                self._verb_known = bool((r.get("categories") or {}).get("net"))
+                self.logmsg.setText("✓ verbose (net) " + ("ON — full per-peer detail" if self._verb_known
+                                                          else "off — default verbosity"))
+            else:
+                self._verb_fail(str((r or {}).get("error", "failed")))
+        spawn_fn(_set, _done, self._verb_fail)
+    def _verb_fail(self, err):
+        self.logmsg.setText(f"✗ verbosity: {err}")     # honest revert — the checkbox never lies about node state
+        self.logverb.blockSignals(True); self.logverb.setChecked(bool(self._verb_known)); self.logverb.blockSignals(False)
+    def _log_copy(self):
+        txt = self.corelog.toPlainText()
+        QtWidgets.QApplication.clipboard().setText(txt)
+        self.logmsg.setText(f"✓ copied {len(txt.splitlines()):,} lines to the clipboard")
+    def _log_save(self):
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save log view",
+            str(Path.home() / f"bankon-debug-view-{datetime.now().strftime('%Y-%m-%d-%H%M%S')}.log"),
+            "Log files (*.log *.txt)")
+        if not path: return
+        try: Path(path).write_text(self.corelog.toPlainText()); self.logmsg.setText(f"✓ saved {path}")
+        except Exception as e: self.logmsg.setText(f"✗ save failed: {e}")
+    def _log_export(self):
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Export last 20,000 log lines",
+            str(Path.home() / f"bankon-debug-{datetime.now().strftime('%Y-%m-%d')}-last20000.log"),
+            "Log files (*.log *.txt)")
+        if not path: return
+        def _dump():
+            out = subprocess.run(["tail", "-n", "20000", str(DEBUG_LOG)],
+                                 capture_output=True, text=True, timeout=30).stdout
+            Path(path).write_text(out); return len(out.splitlines())
+        spawn_fn(_dump, lambda n: self.logmsg.setText(f"✓ exported {n:,} lines → {path}"),
+                 lambda e: self.logmsg.setText(f"✗ export failed: {e}"))
 
 
 class NodeTab(QtWidgets.QWidget):
@@ -671,6 +792,202 @@ class NodeTab(QtWidgets.QWidget):
                                capture_output=True, text=True, timeout=15)
             self.msg.setText(r.stdout.strip() or r.stderr.strip() or "stopping")
         except Exception as e: self.msg.setText(f"stop failed: {e}")
+
+
+class LogsTab(QtWidgets.QWidget):
+    """₿itcoin Core logs — live debug.log tail with filters, WHOLE-FILE search, runtime
+    verbosity (Core's `logging` RPC — no restart, no config write), copy/export. The
+    correlation strip quotes BOTH peer truths: the live getpeerinfo set (actual, in/out —
+    same truth as Overview) vs log-window EVENTS. All log reads are local + read-only."""
+    FILTERS = [("all lines", None),
+               ("peers / net", re.compile(r"peer|connect|disconnect|socket|addrman|dns|Bound to|AddLocal", re.I)),
+               ("blocks (UpdateTip)", re.compile(r"UpdateTip|new best|Saw new", re.I)),
+               ("warnings + errors", re.compile(r"warning|error|corrupt|fatal", re.I))]
+    def __init__(self):
+        super().__init__(); v = QtWidgets.QVBoxLayout(self)
+        self.corr = QtWidgets.QLabel("peer correlation loading…")
+        self.corr.setStyleSheet("color:#c9d4e0;border:1px solid #5a3a0a;border-radius:6px;padding:6px;background:#0e1116")
+        self.corr.setWordWrap(True); v.addWidget(self.corr)
+        row = QtWidgets.QHBoxLayout()
+        self.q = QtWidgets.QLineEdit(); self.q.setPlaceholderText("search the WHOLE debug.log (not just the tail)…")
+        self.q.returnPressed.connect(self.do_search); row.addWidget(self.q, 1)
+        self.regex = QtWidgets.QCheckBox("regex"); self.regex.setToolTip("POSIX extended regex"); row.addWidget(self.regex)
+        sb = QtWidgets.QPushButton("🔍 Search"); sb.clicked.connect(self.do_search); row.addWidget(sb)
+        lb = QtWidgets.QPushButton("● Live"); lb.setToolTip("resume the auto-refreshing live tail")
+        lb.clicked.connect(self.go_live); row.addWidget(lb)
+        self.lines = QtWidgets.QComboBox()
+        for x in ("200", "400", "1000", "3000", "5000"): self.lines.addItem(x)
+        self.lines.setCurrentText("400"); self.lines.setToolTip("tail length")
+        self.lines.currentIndexChanged.connect(lambda *_: self._tick(force=True)); row.addWidget(self.lines)
+        self.filter = QtWidgets.QComboBox()
+        for name, _rx in self.FILTERS: self.filter.addItem(name)
+        self.filter.setToolTip("filter the live tail")
+        self.filter.currentIndexChanged.connect(lambda *_: self._tick(force=True)); row.addWidget(self.filter)
+        for text, fn, tip in [("⧉ Copy", self._copy, "copy the visible log to the clipboard"),
+                              ("⬇ Save", self._save, "save the visible log as a file"),
+                              ("⬇ 20k", self._export, "export the last 20,000 debug.log lines to a file")]:
+            b = QtWidgets.QPushButton(text); b.setObjectName("secondary"); b.setToolTip(tip)
+            b.clicked.connect(fn); row.addWidget(b)
+        v.addLayout(row)
+        self.verb = Collapsible("Verbosity — debug categories (runtime `logging` RPC · no restart, no config write)",
+                                self._build_verb)
+        v.addWidget(self.verb)
+        self.stat = QtWidgets.QLabel("—"); self.stat.setStyleSheet("color:#8aa0b4"); v.addWidget(self.stat)
+        self.pane = QtWidgets.QPlainTextEdit(); self.pane.setReadOnly(True)
+        self.pane.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse | QtCore.Qt.TextSelectableByKeyboard)
+        self.pane.setStyleSheet("font-family:monospace;font-size:12px;background:#010409;color:#d6e3ef;"
+                                "border:2px solid #F7931A;border-radius:6px;padding:5px;"
+                                "selection-background-color:#00BFFF;selection-color:#001018;")
+        v.addWidget(self.pane, 1)
+        self.mode = "live"; self._checks = {}; self._searching = False; self._corrtick = 0
+        self.t = QtCore.QTimer(self); self.t.timeout.connect(self._tick); self.t.start(3000)
+    def refresh(self):
+        self._tick(force=True); self._corr()
+    # ---- live tail (filtered) ----
+    def _tick(self, force=False):
+        if not self.isVisible() and not force: return
+        self._corrtick += 1
+        if self._corrtick % 2 == 1: self._corr()
+        if self.mode != "live": return
+        if self.pane.textCursor().hasSelection(): return   # don't clobber a selection being copied
+        if not DEBUG_LOG.exists(): self.pane.setPlainText("no debug.log yet"); return
+        n = self.lines.currentText()
+        flt = dict(self.FILTERS).get(self.filter.currentText())
+        def _tail():
+            out = subprocess.run(["tail", "-n", n, str(DEBUG_LOG)],
+                                 capture_output=True, text=True, timeout=8).stdout
+            lines = out.splitlines(); total = len(lines)
+            if flt: lines = [l for l in lines if flt.search(l)]
+            return total, lines
+        spawn_fn(_tail, self._tail_fill, lambda e: self.pane.setPlainText(f"log error: {e}"))
+    def _tail_fill(self, r):
+        if self.mode != "live" or self.pane.textCursor().hasSelection(): return
+        total, lines = r
+        sbar = self.pane.verticalScrollBar(); atBottom = sbar.value() >= sbar.maximum() - 4
+        self.pane.setPlainText("\n".join(lines))
+        if atBottom: sbar.setValue(sbar.maximum())
+        shown = len(lines)
+        of = f" of {total:,}" if shown != total else ""
+        self.stat.setText(f"● live tail · {shown:,}{of} lines · updated {datetime.now().strftime('%H:%M:%S')}")
+    # ---- whole-file search (local grep, list-args — no shell) ----
+    def do_search(self):
+        q = self.q.text().strip()
+        if not q: return self.go_live()
+        if self._searching: return
+        self._searching = True; self.mode = "search"
+        mode = "-E" if self.regex.isChecked() else "-F"
+        self.stat.setText("searching the whole debug.log…")
+        def _run():
+            c = subprocess.run(["grep", "-a", "-i", mode, "-c", "--", q, str(DEBUG_LOG)],
+                               capture_output=True, text=True, timeout=30).stdout.strip()
+            p1 = subprocess.Popen(["grep", "-a", "-i", mode, "--", q, str(DEBUG_LOG)], stdout=subprocess.PIPE)
+            out = subprocess.run(["tail", "-n", "800"], stdin=p1.stdout,
+                                 capture_output=True, text=True, timeout=30).stdout
+            p1.stdout.close(); p1.wait(timeout=5)
+            return int(c or 0), out
+        def _done(r):
+            self._searching = False
+            total, out = r
+            self.pane.setPlainText(out or "(no matches)")
+            self.pane.verticalScrollBar().setValue(self.pane.verticalScrollBar().maximum())
+            self.stat.setText(f"🔍 {total:,} matching lines in debug.log · showing last {len(out.splitlines()):,}"
+                              " · tail paused — ● Live to resume")
+        def _fail(e):
+            self._searching = False; self.stat.setText(f"✗ search failed: {e}")
+        spawn_fn(_run, _done, _fail)
+    def go_live(self):
+        self.mode = "live"; self.q.clear(); self._tick(force=True)
+    # ---- correlation strip: live set vs log events, both labeled ----
+    def _corr(self):
+        def _get():
+            out = {}
+            try: out["pl"] = fetch_json("/api/peers/live")
+            except Exception: out["pl"] = None
+            try: out["na"] = fetch_json("/api/netactivity?n=60", timeout=10)
+            except Exception: out["na"] = None
+            return out
+        spawn_fn(_get, self._corr_fill, lambda _e: None)
+    def _corr_fill(self, d):
+        pl, na = d.get("pl"), d.get("na")
+        if pl and pl.get("ok") and pl.get("total") is not None:
+            age = "" if pl.get("live") else \
+                f" · last known {max(0, int(time.time() - (pl.get('asOf') or 0) / 1000))}s ago (RPC busy)"
+            live = (f"<b style='color:#16C784'>● {pl['total']} peers live now</b> — "
+                    f"<b>{pl.get('out','?')} out · {pl.get('in','?')} in</b> "
+                    f"<span style='color:#8aa0b4'>(getpeerinfo{age} — the ACTUAL current set, same truth as Overview)</span>")
+        else:
+            live = "<span style='color:#e3b341'>● live peer set unavailable (console/RPC busy)</span>"
+        ty = (na or {}).get("tally") or {}
+        self.corr.setText(live + "<br><span style='color:#8aa0b4'>log window (EVENTS over time, not current peers): "
+                          f"✓ {ty.get('connected',0)} connects · ⇣ {ty.get('inbound',0)} inbound · "
+                          f"⟲ {ty.get('disconnect',0)} drops · ✗ {ty.get('failed',0)} failed dials — "
+                          "enable the <b>net</b> category for full per-peer detail</span>")
+    # ---- verbosity (Core `logging` RPC via console, direct-RPC fallback) ----
+    def _build_verb(self, layout, placeholder):
+        placeholder.setText("loading categories…")
+        note = QtWidgets.QLabel("Tick a category and Apply — ₿itcoin Core writes MORE detail to debug.log instantly "
+                                "(runtime <code>logging</code> RPC; reverts when Core restarts). <b>net</b> = every "
+                                "peer connect / disconnect / message. More categories = faster-growing log.")
+        note.setStyleSheet("color:#8aa0b4"); note.setWordWrap(True); layout.addWidget(note)
+        gw = QtWidgets.QWidget(); self.catgrid = QtWidgets.QGridLayout(gw)
+        self.catgrid.setContentsMargins(0, 2, 0, 2); layout.addWidget(gw)
+        rowb = QtWidgets.QHBoxLayout()
+        ap = QtWidgets.QPushButton("Apply verbosity"); ap.clicked.connect(lambda: self._verb_apply(False)); rowb.addWidget(ap)
+        off = QtWidgets.QPushButton("all off"); off.clicked.connect(lambda: self._verb_apply(True)); rowb.addWidget(off)
+        self.vmsg = QtWidgets.QLabel(""); self.vmsg.setStyleSheet("color:#8aa0b4"); rowb.addWidget(self.vmsg, 1)
+        layout.addLayout(rowb)
+        def _get():
+            try: return fetch_json("/api/log/verbosity")
+            except Exception: return {"ok": True, "categories": rpc_direct("logging")}
+        def _got(r):
+            placeholder.hide()
+            if not (r and r.get("ok")):
+                self.vmsg.setText("✗ categories unavailable (node busy?)"); return
+            for i, (k, on) in enumerate(sorted((r.get("categories") or {}).items())):
+                cb = QtWidgets.QCheckBox(k); cb.setChecked(bool(on))
+                if k == "net": cb.setStyleSheet("color:#F7931A;font-weight:700")
+                self._checks[k] = cb; self.catgrid.addWidget(cb, i // 5, i % 5)
+        spawn_fn(_get, _got, lambda e: placeholder.setText(f"✗ {e}"))
+    def _verb_apply(self, all_off=False):
+        if not self._checks: return
+        inc = [] if all_off else [k for k, cb in self._checks.items() if cb.isChecked()]
+        exc = list(self._checks) if all_off else [k for k, cb in self._checks.items() if not cb.isChecked()]
+        self.vmsg.setText("applying…")
+        def _set():
+            try: return post_json("/api/log/verbosity", {"include": inc, "exclude": exc})
+            except Exception: return {"ok": True, "categories": rpc_direct("logging", [inc, exc])}
+        def _done(r):
+            if not (r and r.get("ok")):
+                self.vmsg.setText(f"✗ {(r or {}).get('error', 'failed')}"); return
+            cats = r.get("categories") or {}
+            for k, cb in self._checks.items():
+                cb.blockSignals(True); cb.setChecked(bool(cats.get(k))); cb.blockSignals(False)
+            on = [k for k, x in cats.items() if x]
+            self.vmsg.setText("✓ on: " + (", ".join(on) if on else "none (default verbosity)"))
+        spawn_fn(_set, _done, lambda e: self.vmsg.setText(f"✗ {e}"))
+    # ---- copy / export ----
+    def _copy(self):
+        txt = self.pane.toPlainText()
+        QtWidgets.QApplication.clipboard().setText(txt)
+        self.stat.setText(f"✓ copied {len(txt.splitlines()):,} lines to the clipboard")
+    def _save(self):
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save log view",
+            str(Path.home() / f"bankon-debug-view-{datetime.now().strftime('%Y-%m-%d-%H%M%S')}.log"),
+            "Log files (*.log *.txt)")
+        if not path: return
+        try: Path(path).write_text(self.pane.toPlainText()); self.stat.setText(f"✓ saved {path}")
+        except Exception as e: self.stat.setText(f"✗ save failed: {e}")
+    def _export(self):
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Export last 20,000 log lines",
+            str(Path.home() / f"bankon-debug-{datetime.now().strftime('%Y-%m-%d')}-last20000.log"),
+            "Log files (*.log *.txt)")
+        if not path: return
+        def _dump():
+            out = subprocess.run(["tail", "-n", "20000", str(DEBUG_LOG)],
+                                 capture_output=True, text=True, timeout=30).stdout
+            Path(path).write_text(out); return len(out.splitlines())
+        spawn_fn(_dump, lambda n: self.stat.setText(f"✓ exported {n:,} lines → {path}"),
+                 lambda e: self.stat.setText(f"✗ export failed: {e}"))
 
 
 class TableTab(QtWidgets.QWidget):
@@ -5369,6 +5686,7 @@ class Main(QtWidgets.QMainWindow):
         self._glowAnim.setKeyValueAt(0.0, 12); self._glowAnim.setKeyValueAt(0.5, 38); self._glowAnim.setKeyValueAt(1.0, 12)
         self._glowAnim.start()
         self.ov = OverviewTab(); self.node = NodeTab()
+        self.logs = LogsTab()            # ₿itcoin Core logs — tail/search/verbosity/export
         self.net = NetworkTab()
         self.mp = CardsTab(["txs", "virtual size", "memory / max", "min relay fee", "mempool min fee",
                             "total fee", "unbroadcast", "RBF / loaded"], mp_fill, ["getmempoolinfo"])
@@ -5387,7 +5705,7 @@ class Main(QtWidgets.QMainWindow):
         # 🧊 / 📡 ride as REAL tab icons (hi-res color-emoji renders, smoothly downscaled) —
         # sharper than inline-text emoji at tab font size
         self.tabs.setIconSize(QtCore.QSize(22, 22))
-        for w, name in [(self.ov,"Overview"),(self.node,"Node"),(self.net,"Network"),(self.map,"Net Map"),
+        for w, name in [(self.ov,"Overview"),(self.node,"Node"),(self.logs,"Logs"),(self.net,"Network"),(self.map,"Net Map"),
                         (self.netlog,("📡", "Net Log")),(self.mp,"Mempool"),(self.blk,"₿locks"),(self.oracle,"₿TC.oracle"),
                         (self.ords,"🜚 Ordinals"),(self.idx,"Indexes"),(self.ctl,"🖥 Control"),
                         (self.ice,("🧊", "ICE")),(self.con,"RPC Console")]:

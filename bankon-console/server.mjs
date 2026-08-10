@@ -24,7 +24,11 @@ const __dir = dirname(fileURLToPath(import.meta.url));
 const app = express();
 app.set('trust proxy', true);
 app.use(express.json({ limit: '32kb' }));
-app.use(express.static(join(__dir, 'public')));
+// no-store on HTML: the whole UI is one inline-JS index.html — a browser-cached stale copy
+// makes new tabs/features silently invisible after a UI update. Assets stay revalidate-only.
+app.use(express.static(join(__dir, 'public'), {
+  setHeaders: (res, path) => { if (path.endsWith('.html')) res.setHeader('Cache-Control', 'no-store'); },
+}));
 app.use(rateLimit());
 app.use('/api', apiAuth());           // off unless BANKON_API_TOKEN is set
 const PORT = process.env.BANKON_CONSOLE_PORT || 8090;
@@ -335,12 +339,76 @@ app.get('/api/health', async (req, res) => {
 
 // Live boot/sync log — tail of debug.log (init, warmup, UpdateTip, peer events).
 app.get('/api/node/log', (req, res) => {
-  const lines = Math.min(Number(req.query.lines) || 80, 400);
+  const lines = Math.min(Number(req.query.lines) || 80, 5000);
   if (!existsSync(DEBUG_LOG)) return res.json({ ok: false, error: 'no debug.log yet' });
   execFile('tail', ['-n', String(lines), DEBUG_LOG], { maxBuffer: 8 * 1024 * 1024 }, (err, out) => {
     if (err) return res.json({ ok: false, error: String(err.message) });
     res.json({ ok: true, lines: out.split('\n').filter(Boolean) });
   });
+});
+
+// ---- Logs service (Logs tab): search / export / runtime verbosity ---------------------------
+// Search the WHOLE debug.log server-side. The pattern travels as a bash positional parameter
+// ($1) — never interpolated into the command string — so no user input reaches the shell.
+app.get('/api/log/search', (req, res) => {
+  const q = String(req.query.q || '').slice(0, 300);
+  if (!q) return res.json({ ok: false, error: 'empty query' });
+  if (!existsSync(DEBUG_LOG)) return res.json({ ok: false, error: 'no debug.log yet' });
+  const n = Math.max(1, Math.min(Number(req.query.n) || 500, 2000));
+  const mode = req.query.regex === '1' ? '-E' : '-F';
+  const ci = req.query.cs === '1' ? '' : '-i';
+  execFile('bash', ['-c',
+    `c=$(grep -a ${mode} ${ci} -c -- "$1" "$2" 2>/dev/null); grep -a ${mode} ${ci} -- "$1" "$2" 2>/dev/null | tail -n ${n}; echo "::bankon-count=$c"`,
+    'bash', q, DEBUG_LOG], { timeout: 20000, maxBuffer: 16 << 20 }, (err, out) => {
+      if (err) return res.json({ ok: false, error: String(err.message) });
+      const lines = (out || '').split('\n');
+      let total = 0;
+      while (lines.length && (lines[lines.length - 1] === '' || lines[lines.length - 1].startsWith('::bankon-count='))) {
+        const t = lines.pop();
+        const m = /^::bankon-count=(\d+)/.exec(t); if (m) total = +m[1];
+      }
+      res.json({ ok: true, query: q, regex: mode === '-E', total, shown: lines.length, lines });
+    });
+});
+// Export the last N lines as a downloadable file — streamed, so a big tail never buffers in RAM.
+app.get('/api/log/export', (req, res) => {
+  if (!existsSync(DEBUG_LOG)) return res.status(404).send('no debug.log yet');
+  const n = Math.max(1, Math.min(Number(req.query.lines) || 20000, 200000));
+  res.setHeader('content-type', 'text/plain; charset=utf-8');
+  res.setHeader('content-disposition',
+    `attachment; filename="bankon-debug-${new Date().toISOString().slice(0, 10)}-last${n}.log"`);
+  const p = spawn('tail', ['-n', String(n), DEBUG_LOG]);
+  p.stdout.pipe(res);
+  p.on('error', () => { try { res.end(); } catch {} });
+});
+// Runtime verbosity — Bitcoin Core's `logging` RPC toggles debug categories live (no restart,
+// no config write). GET reads the current category map; POST applies include/exclude sets.
+app.get('/api/log/verbosity', async (req, res) => {
+  let fileBytes = null; try { fileBytes = statSync(DEBUG_LOG).size; } catch {}
+  try { res.json({ ok: true, categories: await rpc('full', 'logging', [], null, 6000), fileBytes }); }
+  catch (e) { res.json({ ok: false, error: String(e.message || e), fileBytes }); }
+});
+app.post('/api/log/verbosity', async (req, res) => {
+  if (!NODE_CONTROL) return res.status(403).json({ ok: false, error: 'node control disabled' });
+  const okList = a => Array.isArray(a) && a.length <= 64 && a.every(s => typeof s === 'string' && /^[a-z0-9]{1,24}$/.test(s));
+  const include = req.body?.include || [], exclude = req.body?.exclude || [];
+  if (!okList(include) || !okList(exclude))
+    return res.status(400).json({ ok: false, error: 'include/exclude must be arrays of category names' });
+  try { res.json({ ok: true, categories: await rpc('full', 'logging', [include, exclude], null, 8000) }); }
+  catch (e) { res.json({ ok: false, error: String(e.message || e) }); }
+});
+// ACTUAL peer set right now — getpeerinfo split in/out, cache-labeled so the UI can say which
+// truth it quotes: live = fresh RPC; stale = last-known (RPC choked); total null = never seen.
+app.get('/api/peers/live', async (req, res) => {
+  try {
+    const r = await rpcCached('full', 'getpeerinfo', [], null, 4000);
+    const pi = Array.isArray(r.value) ? r.value : [];
+    const inb = pi.filter(p => p.inbound).length;
+    res.json({ ok: true, total: pi.length, in: inb, out: pi.length - inb,
+               live: !r.stale, asOf: r.asOf, source: 'getpeerinfo' });
+  } catch (e) {
+    res.json({ ok: false, total: null, in: null, out: null, live: false, error: String(e.message || e) });
+  }
 });
 
 // Node control — start/stop the local Bitcoin Core. Off if BANKON_NODE_CONTROL=0.
@@ -568,11 +636,12 @@ app.get('/api/netactivity', async (req, res) => {
   // Circuit-breaker-safe: if RPC is choked during IBD we just skip the enrichment.
   const isoLocal = t => { try { return new Date(t * 1000).toISOString().replace('T', ' ').slice(0, 19); }
                           catch { return ''; } };
-  let peerMap = {}, peerEvents = [], liveOk = false;
+  let peerMap = {}, peerEvents = [], liveOk = false, liveIn = 0, liveOut = 0;
   try {
     const pr = await rpcCached('full', 'getpeerinfo', [], null, 4000);
     const pi = Array.isArray(pr) ? pr : (pr && pr.value) || [];   // rpcCached wraps as {value,stale,asOf}
     for (const p of pi) {
+      if (p.inbound) liveIn++; else liveOut++;
       const rec = { addr: p.addr, network: p.network, subver: (p.subver || '').replace(/\//g, '') };
       peerMap[String(p.id)] = rec;
       if (p.addr) {                                   // remember for future disconnect backfill
@@ -663,6 +732,7 @@ app.get('/api/netactivity', async (req, res) => {
     // livePeers is the AUTHORITATIVE current-connection count (getpeerinfo) — null when RPC
     // was choked, never a false 0. tally counts log EVENTS over the window, not current peers.
     res.json({ ok: true, events: merged, livePeers: liveOk ? peerEvents.length : null,
+               liveIn: liveOk ? liveIn : null, liveOut: liveOk ? liveOut : null,
                tally, nets, conntypes, transports, local: [...new Set(local)] });
   } catch (e) { res.json({ ok: false, error: String(e.message || e), events: [], tally: {}, local: [] }); }
 });

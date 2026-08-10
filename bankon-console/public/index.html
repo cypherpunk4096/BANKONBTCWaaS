@@ -60,6 +60,7 @@
   .logpane{font-family:ui-monospace,monospace;font-size:.82rem;line-height:1.45;background:#010409;border:2px solid var(--btc);border-radius:8px;padding:.7rem .8rem;max-height:52vh;overflow:auto;white-space:pre-wrap;user-select:text;-webkit-user-select:text}
   .logpane::selection,.logpane *::selection{background:#00BFFF;color:#001018}
   .logpane .u{color:var(--cash)}.logpane .i{color:var(--eth)}.logpane .w{color:#e3b341}
+  .logpane mark{background:var(--btc);color:#001;border-radius:2px;padding:0 1px}
   button.danger{background:#a4242b;border-color:#a4242b;color:#fff}
   .hero{ background:linear-gradient(135deg,#10241a,#0d1726); border:1px solid #238636; border-radius:14px; padding:1.4rem; text-align:center; }
   .hero a.waas{ font-size:1.05rem; padding:.7rem 1.4rem; display:inline-block; margin-top:.6rem; }
@@ -104,11 +105,12 @@
   <div class="panel" id="p-ordinals"></div>
   <div class="panel" id="p-reference"></div>
   <div class="panel" id="p-node"></div>
+  <div class="panel" id="p-logs"></div>
   <div class="panel" id="p-console"></div>
   <div class="panel" id="p-monitor"></div>
 </main>
 <script type="module">
-const TABS=[['overview','Overview'],['node','Node'],['blocks','Blocks'],['mempool','Mempool'],['network','Network'],['indexes','Indexes'],['oracle','BTC.oracle'],['wallets','Wallets'],['create','Create Wallet'],['ordinals','🜚 Ordinals'],['reference','Reference'],['console','RPC Console'],['monitor','Monitor']];
+const TABS=[['overview','Overview'],['node','Node'],['logs','Logs'],['blocks','Blocks'],['mempool','Mempool'],['network','Network'],['indexes','Indexes'],['oracle','BTC.oracle'],['wallets','Wallets'],['create','Create Wallet'],['ordinals','🜚 Ordinals'],['reference','Reference'],['console','RPC Console'],['monitor','Monitor']];
 const $=s=>document.querySelector(s); let cur='overview', level=0, timer=null;
 let lastSyncHeight=null;   // for "+N blocks since last refresh"
 const IDX={tip:0,t:0,tx:0,rate:0,spin:0,first:0,txt:''};   // Indexes "crunching" state
@@ -212,6 +214,104 @@ async function pollHealth(){
     pill.textContent={running:`● node :${h.port} · block ${h.blocks!=null?Number(h.blocks).toLocaleString():'?'}`,booting:`● node :${h.port} booting…`,busy:`● node :${h.port} validating…`,down:`● node :${h.port||'8332'} stopped`}[h.state]||('● '+h.state);
   }catch{ pill.className='nodestat down'; pill.textContent='● node unreachable'; }
 }
+// ---- Logs tab + live-peer correlation ------------------------------------------------------
+// Two labeled truths everywhere: livePeers = getpeerinfo NOW (the actual set, null when RPC is
+// choked — never a false 0); the log tally = connect/disconnect EVENTS over a window.
+const LOGS={mode:'live',tick:0};
+let logsTimer=null, PEERSLIVE=null;
+const escRe=s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+const logCls=l=>/UpdateTip|new best/.test(l)?'u':/Warning|error|corrupt|fatal/i.test(l)?'w':/peer|connect|disconnect|socket|addrman/i.test(l)?'i':'';
+function paintLog(pane,lines,q,isRe){
+  const hi=q&&!isRe?new RegExp(escRe(esc(q)),'gi'):null;
+  const atBottom=pane.scrollTop+pane.clientHeight>=pane.scrollHeight-30;
+  pane.innerHTML=lines.map(l=>{let t=esc(l); if(hi)t=t.replace(hi,m=>'<mark>'+m+'</mark>'); const c=logCls(l); return c?`<span class="${c}">${t}</span>`:t;}).join('\n')||'<span class="muted">(no lines)</span>';
+  if(atBottom)pane.scrollTop=pane.scrollHeight;
+}
+const LOGSEV={peers:/peer|connect|disconnect|socket|addrman|dns|Bound to|AddLocal/i,tip:/UpdateTip|new best|Saw new/i,warn:/warning|error|corrupt|fatal/i};
+async function refreshLogs(){
+  const pane=document.getElementById('llog'); if(!pane||cur!=='logs')return;
+  const sel=window.getSelection();   // don't clobber a selection the user is copying
+  if(sel&&!sel.isCollapsed&&pane.contains(sel.anchorNode))return;
+  const n=+document.getElementById('lln').value||400, sv=document.getElementById('lsev').value;
+  const r=await fetch('/api/node/log?lines='+n).then(r=>r.json()).catch(()=>({ok:false,error:'unreachable'}));
+  if(!r.ok){pane.textContent=r.error||'log unavailable';return;}
+  const lines=LOGSEV[sv]?r.lines.filter(l=>LOGSEV[sv].test(l)):r.lines;
+  paintLog(pane,lines,null,false);
+  const st=document.getElementById('lstat');
+  if(st)st.innerHTML=`<span style="color:var(--btc)">● live tail</span> · ${fmt(lines.length)}${LOGSEV[sv]?' of '+fmt(r.lines.length):''} lines · updated ${new Date().toLocaleTimeString()}`;
+}
+async function searchLogs(){
+  const pane=document.getElementById('llog'),q=document.getElementById('lq').value.trim();
+  if(!q)return setLogsLive();
+  LOGS.mode='search';
+  const isRe=document.getElementById('lre').checked;
+  const st=document.getElementById('lstat'); if(st)st.textContent='searching the whole debug.log…';
+  const r=await fetch('/api/log/search?q='+encodeURIComponent(q)+'&n=800'+(isRe?'&regex=1':'')).then(r=>r.json()).catch(e=>({ok:false,error:String(e)}));
+  if(!r.ok){if(st)st.innerHTML='<span class="err">'+esc(r.error||'search failed')+'</span>';return;}
+  paintLog(pane,r.lines,q,isRe);
+  pane.scrollTop=pane.scrollHeight;
+  if(st)st.innerHTML=`🔍 <b>${fmt(r.total)}</b> matching lines in debug.log · showing last ${fmt(r.shown)} · tail paused — <a href="#" style="color:var(--btc)" onclick="return window.__logsLive()">● resume live</a>`;
+}
+function setLogsLive(){LOGS.mode='live';const lq=document.getElementById('lq');if(lq)lq.value='';refreshLogs();}
+window.__logsLive=()=>{setLogsLive();return false;};
+async function loadLogCorr(){
+  const elc=document.getElementById('logcorr'); if(!elc||cur!=='logs')return;
+  try{
+    const [pl,na]=await Promise.all([fetch('/api/peers/live').then(r=>r.json()),
+                                     fetch('/api/netactivity?n=60').then(r=>r.json())]);
+    const ty=(na&&na.tally)||{};
+    const liveTxt=pl&&pl.ok&&pl.total!=null
+      ?`<b style="color:#16C784">● ${fmt(pl.total)} peers live now</b> — <b>${fmt(pl.out)} out · ${fmt(pl.in)} in</b> <span class="muted">(${pl.live?'getpeerinfo, live':'last known '+Math.max(0,Math.round((Date.now()-pl.asOf)/1000))+'s ago — RPC busy'} · the ACTUAL current set, same truth as Overview)</span>`
+      :'<span class="warn">● live peer set unavailable (RPC choked, no cache yet)</span>';
+    elc.innerHTML=liveTxt+`<div class="muted" style="margin-top:.25rem">log window (EVENTS over time, not current peers): ✓ ${fmt(ty.connected||0)} connects · ⇣ ${fmt(ty.inbound||0)} inbound · ⟲ ${fmt(ty.disconnect||0)} drops · ✗ ${fmt(ty.failed||0)} failed dials — enable the <b>net</b> category below for full per-peer log detail</div>`;
+  }catch{}
+}
+// Overview log widget — persistent (init-once, outside the re-rendered #ov-dyn) so the 30s
+// Overview refresh never resets the drag-resized pane height or its scroll. Height persists
+// in localStorage across reloads.
+function initOvLog(){
+  const pane=document.getElementById('ovlog'); if(!pane)return;
+  pane.style.width=localStorage.getItem('ovlogw')||'420px';
+  pane.style.height=localStorage.getItem('ovlogh2')||'480px';
+  const vb=document.getElementById('ovlv'), msg=document.getElementById('ovlmsg');
+  const flash=h=>{if(msg){msg.innerHTML=h;setTimeout(()=>{msg.textContent='';},4000);}};
+  fetch('/api/log/verbosity').then(r=>r.json()).then(r=>{ if(r.ok&&vb) vb.checked=!!r.categories.net; }).catch(()=>{});
+  if(vb)vb.onchange=async()=>{
+    const on=vb.checked;
+    const body=on?{include:['net'],exclude:[]}:{include:[],exclude:['net']};
+    const r=await fetch('/api/log/verbosity',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json()).catch(e=>({ok:false,error:String(e)}));
+    if(!r.ok){ vb.checked=!on; flash('<span class="err">✗ '+esc(r.error||'failed')+'</span>'); return; }
+    flash('<span class="ok">✓ verbose (net) '+(r.categories.net?'ON — full per-peer detail':'off — default verbosity')+'</span>');
+  };
+  document.getElementById('ovlcopy').onclick=async()=>{
+    try{ await navigator.clipboard.writeText(pane.innerText); flash('<span class="ok">✓ copied '+fmt(pane.innerText.split('\n').length)+' lines</span>'); }
+    catch{ flash('<span class="err">clipboard blocked — use ⬇ Save</span>'); }};
+  document.getElementById('ovlsave').onclick=()=>{
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(new Blob([pane.innerText],{type:'text/plain'}));
+    a.download='bankon-debug-overview-'+new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')+'.log'; a.click();};
+  refreshOvLog();
+}
+async function refreshOvLog(){
+  const pane=document.getElementById('ovlog'); if(!pane||cur!=='overview')return;
+  const sel=window.getSelection();   // don't clobber a selection the user is copying
+  if(sel&&!sel.isCollapsed&&pane.contains(sel.anchorNode))return;
+  if(pane.style.height)localStorage.setItem('ovlogh2',pane.style.height);  // remember drag-resize (both axes)
+  if(pane.style.width)localStorage.setItem('ovlogw',pane.style.width);
+  const r=await fetch('/api/node/log?lines=250').then(r=>r.json()).catch(()=>null);
+  if(!r||!r.ok){pane.textContent=(r&&r.error)||'log unavailable';return;}
+  paintLog(pane,r.lines,null,false);
+}
+async function pollPeers(){   // Overview "actual peers" card — real-time, label says which truth
+  if(cur!=='overview')return;
+  const v=document.getElementById('ov-peers'); if(!v)return;
+  try{const p=await fetch('/api/peers/live').then(r=>r.json()); PEERSLIVE=p;
+    if(!p.ok||p.total==null)return;
+    v.innerHTML=`${fmt(p.total)} <span class="muted" style="font-size:.72rem;font-weight:400">${fmt(p.out)} out · ${fmt(p.in)} in</span>`;
+    const s=document.getElementById('ov-peers-src');
+    if(s)s.innerHTML=p.live?'<span class="ok">● actual — getpeerinfo live</span>':`<span class="warn">last known ${Math.max(0,Math.round((Date.now()-p.asOf)/1000))}s ago (RPC busy)</span>`;
+  }catch{}
+}
 function select(id,btn){cur=id;document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));btn?.classList.add('active');document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));$('#p-'+id).classList.add('active');render();}
 async function render(){
   const panel=$('#p-'+cur);
@@ -272,6 +372,76 @@ const RENDER={
     if(h.control===false) el.querySelector('#nodemsg').innerHTML='<span class="warn">node control disabled (BANKON_NODE_CONTROL=0)</span>';
     loadLog();
   },
+  async logs(){
+    const el=$('#p-logs');
+    if(!el.dataset.init){ el.dataset.init=1;
+      el.innerHTML=`<h3>Bitcoin Core logs <span class="muted">· debug.log · read-only diagnostics</span></h3>
+        <div id="logcorr" class="card" style="border-color:var(--btc);margin-bottom:.6rem"><span class="muted">peer correlation loading…</span></div>
+        <div class="row" style="flex-wrap:wrap;gap:6px">
+          <input id="lq" placeholder="search the WHOLE debug.log (not just the tail)…" style="flex:1;min-width:220px"/>
+          <label class="muted" title="POSIX extended regex"><input type="checkbox" id="lre"/> regex</label>
+          <button id="lgo">🔍 Search</button>
+          <button id="llive" title="resume the auto-refreshing live tail" style="color:var(--btc)">● Live</button>
+          <select id="lln" title="tail length"><option>200</option><option selected>400</option><option>1000</option><option>3000</option><option>5000</option></select>
+          <select id="lsev" title="filter the live tail">
+            <option value="all">all lines</option><option value="peers">peers / net</option>
+            <option value="tip">blocks (UpdateTip)</option><option value="warn">warnings + errors</option></select>
+          <button id="lcopy" title="copy the visible log to the clipboard">⧉ Copy</button>
+          <button id="ldl" title="save the visible log as a file">⬇ Save view</button>
+          <a href="/api/log/export?lines=20000" class="muted" style="align-self:center" title="download the last 20,000 lines of debug.log as a file">⬇ export 20k lines</a>
+        </div>
+        <details style="margin-top:.4rem"><summary>Verbosity — debug categories <span class="muted" id="lsize" style="font-weight:400"></span></summary><div class="body">
+          <p class="muted">Bitcoin Core's runtime <code>logging</code> RPC — tick a category and Apply to make the node
+          write MORE detail to debug.log instantly (no restart, no config write). <b style="color:var(--btc)">net</b> logs
+          every peer connect / disconnect / message — it feeds the peer correlation above. More categories = faster-growing log.</p>
+          <div id="lcats" class="muted">loading…</div>
+          <p style="margin:.5rem 0 0"><button id="lapply">Apply verbosity</button> <button id="lnone">all off</button> <span id="lvmsg" class="muted"></span></p>
+        </div></details>
+        <div id="lstat" class="muted" style="margin:.4rem 0">—</div>
+        <div id="llog" class="logpane" style="max-height:58vh">loading…</div>`;
+      el.querySelector('#lgo').onclick=searchLogs;
+      el.querySelector('#lq').onkeydown=e=>{if(e.key==='Enter')searchLogs();};
+      el.querySelector('#llive').onclick=setLogsLive;
+      el.querySelector('#lln').onchange=()=>{if(LOGS.mode==='live')refreshLogs();};
+      el.querySelector('#lsev').onchange=()=>{if(LOGS.mode==='live')refreshLogs();};
+      el.querySelector('#lcopy').onclick=async()=>{
+        const t=document.getElementById('llog').innerText, st=document.getElementById('lstat');
+        try{await navigator.clipboard.writeText(t); if(st)st.innerHTML='<span class="ok">✓ copied '+fmt(t.split('\n').length)+' lines to the clipboard</span>';}
+        catch{ if(st)st.innerHTML='<span class="err">clipboard blocked — use ⬇ Save view instead</span>'; }};
+      el.querySelector('#ldl').onclick=()=>{const t=document.getElementById('llog').innerText;
+        const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([t],{type:'text/plain'}));
+        a.download='bankon-debug-view-'+new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')+'.log';a.click();};
+      const loadCats=async()=>{
+        const r=await fetch('/api/log/verbosity').then(r=>r.json()).catch(()=>({ok:false}));
+        const sz=document.getElementById('lsize');
+        if(sz&&r.fileBytes!=null)sz.textContent='· debug.log '+(r.fileBytes/1048576).toFixed(1)+' MB';
+        const c=document.getElementById('lcats'); if(!c)return;
+        if(!r.ok){c.innerHTML='<span class="warn">categories unavailable ('+esc(r.error||'node busy')+') — retrying on next open</span>';return;}
+        c.innerHTML='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:2px 10px">'+
+          Object.entries(r.categories).map(([k,v])=>`<label style="white-space:nowrap"><input type="checkbox" class="lcat" value="${esc(k)}"${v?' checked':''}/> ${k==='net'?'<b style="color:var(--btc)">net</b>':esc(k)}</label>`).join('')+'</div>';
+      };
+      el.__loadCats=loadCats; loadCats();
+      const apply=async(allOff)=>{
+        const boxes=[...el.querySelectorAll('.lcat')], m=document.getElementById('lvmsg');
+        if(!boxes.length)return;
+        const include=allOff?[]:boxes.filter(b=>b.checked).map(b=>b.value);
+        const exclude=allOff?boxes.map(b=>b.value):boxes.filter(b=>!b.checked).map(b=>b.value);
+        m.textContent='applying…';
+        const r=await fetch('/api/log/verbosity',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({include,exclude})}).then(r=>r.json()).catch(e=>({ok:false,error:String(e)}));
+        if(!r.ok){m.innerHTML='<span class="err">✗ '+esc(r.error||'failed')+'</span>';return;}
+        const on=Object.entries(r.categories).filter(([,v])=>v).map(([k])=>k);
+        m.innerHTML='<span class="ok">✓ applied — on: '+(on.length?esc(on.join(', ')):'none (default verbosity)')+'</span>';
+        loadCats();
+      };
+      el.querySelector('#lapply').onclick=()=>apply(false);
+      el.querySelector('#lnone').onclick=()=>apply(true);
+      logsTimer=setInterval(()=>{ if(cur!=='logs')return;
+        if(LOGS.mode==='live')refreshLogs();
+        if((LOGS.tick++%2)===0)loadLogCorr(); },3000);
+    }
+    if(LOGS.mode==='live')refreshLogs();
+    loadLogCorr();
+  },
   async overview(){
     const resp=await fetch('/api/overview?node='+node()).then(r=>r.json());
     const o=resp.result; const c=o.chain||{},n=o.net||{},m=o.mempool||{},mi=o.mining||{};
@@ -308,12 +478,12 @@ const RENDER={
       <h3>Sync ${mode}</h3>
       <div class="progress"><div style="width:${Math.max(pct,6)}%;background:${col};color:#02140c">${pct.toFixed(6)}% · ${fmt(liveBlocks)} / ${fmt(c.headers)}</div></div>${ibd}
       <div class="grid" style="margin-top:.7rem">
-        ${card('height',fmt(liveBlocks))}${card('peers',`${n.connections??'—'}`)}${card('mempool txs',fmt(m.size))}${card('disk',gib(c.size_on_disk))}</div>`;
+        ${card('height',fmt(liveBlocks))}${card('peers — actual',`<span id="ov-peers">${n.connections??'—'}</span><div id="ov-peers-src" class="muted" style="font-size:.62rem;font-weight:400">getnetworkinfo (cached) — checking live set…</div>`)}${card('mempool txs',fmt(m.size))}${card('disk',gib(c.size_on_disk))}</div>`;
     if(level>=1){ h+=`<h3>Chain</h3><div class="grid">
         ${card('chain',c.chain||'—')}${card('headers',fmt(c.headers))}${card('difficulty',c.difficulty?Number(c.difficulty).toExponential(3):'—',1)}
         ${card('pruned',String(c.pruned))}${card('uptime',o.uptime?(o.uptime/3600).toFixed(1)+' h':'—',1)}${card('verify % (digits)',pct.toFixed(8),1)}</div>
       <h3>Network</h3><div class="grid">
-        ${card('conn in/out',`${n.connections_in??0} / ${n.connections_out??0}`,1)}${card('subversion',(n.subversion||'—').replace(/\//g,''),1)}
+        ${card('conn in/out (cached RPC)',`${n.connections_in??0} / ${n.connections_out??0}`,1)}${card('subversion',(n.subversion||'—').replace(/\//g,''),1)}
         ${card('protocol',n.protocolversion||'—')}${card('relay fee',(n.relayfee??'—')+'',1)}${card('net hashrate',mi.networkhashps?Number(mi.networkhashps).toExponential(2):'—',1)}</div>`; }
     // BTC.oracle — the time on a Bitcoin block (avg blocktime) + derived throttle.
     try {
@@ -337,7 +507,26 @@ const RENDER={
           ${card('chain data',gib(fsr.chainBytes))}${card('mount',(f.mount||'—'),1)}</div>`;
     } catch(e){}
     h+=raw('getblockchaininfo',c)+raw('getnetworkinfo',n)+raw('getmininginfo',mi);
-    $('#p-overview').innerHTML=h;
+    const el=$('#p-overview');
+    if(!el.dataset.init||!el.querySelector('#ov-dyn')){ el.dataset.init=1;   // also rebuilds after an error render wiped the panel
+      el.innerHTML=`<div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap">
+        <div id="ov-dyn" style="flex:1 1 480px;min-width:340px"></div>
+        <div style="flex:0 1 auto;min-width:280px;max-width:100%">
+          <h3 style="margin-top:0">Bitcoin Core log <span class="muted" style="font-weight:400">· live debug.log · drag the corner to resize</span></h3>
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:.35rem">
+            <label class="muted" title="Bitcoin Core's net debug category — logs every peer connect/disconnect/message (runtime logging RPC, no restart)"><input type="checkbox" id="ovlv"/> verbose (net)</label>
+            <button id="ovlcopy" title="copy the visible log to the clipboard">⧉ Copy</button>
+            <button id="ovlsave" title="save the visible log as a file">⬇ Save</button>
+            <a class="muted" href="/api/log/export?lines=20000" title="download the last 20,000 lines of debug.log">export 20k</a>
+            <span id="ovlmsg" class="muted"></span>
+          </div>
+          <div id="ovlog" class="logpane" style="width:420px;height:480px;max-width:100%;max-height:none;resize:both;overflow:auto">loading…</div>
+        </div></div>`;
+      initOvLog();
+    }
+    el.querySelector('#ov-dyn').innerHTML=h;
+    pollPeers();      // fill the actual (live) peer set immediately; the 5s poller keeps it current
+    refreshOvLog();
   },
   async blocks(){
     const el=$('#p-blocks');
@@ -807,6 +996,8 @@ $('#node').addEventListener('change',pollHealth);
 render(); applyRate(); pollHealth(); setInterval(pollHealth,4000);
 pollCoremon(); setInterval(pollCoremon,5000);
 pollSystem(); setInterval(pollSystem,5000);
+setInterval(pollPeers,5000);   // Overview "peers — actual" real-time updates
+setInterval(()=>{ if(cur==='overview') refreshOvLog(); },4000);   // Overview log widget live tail
 $('#node').addEventListener('change',pollCoremon);
 </script>
 </body>

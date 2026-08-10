@@ -17,8 +17,9 @@ node on the standard port: ● running · block N (green) / booting / validating
 
 | Tab | Shows |
 |-----|-------|
-| Overview | sync progress, height, peers, mempool, disk, difficulty, uptime |
+| Overview | sync progress, height, **peers — actual** (live `getpeerinfo` in/out split, 5s poll, source-labeled; cached value shown honestly when RPC is choked), mempool, disk, difficulty, uptime |
 | **Node** | status (running/booting/busy/down), **Start/Stop** Bitcoin Core, live `debug.log` bootup/sync stream |
+| **Logs** | Bitcoin Core `debug.log` service — live tail (200–5000 lines, filter: all / peers / UpdateTip / warnings), **whole-file search** (fixed-string or regex, server-side grep, match count), **runtime verbosity** (Core's `logging` RPC — toggle debug categories, no restart), one-click **Copy / Save view / export 20k lines**, and a peer-correlation strip quoting both truths: live `getpeerinfo` in/out (same as Overview) vs log-window events |
 | Blocks | latest blocks (height · hash · time · **tx count**) + lookup by height/hash, double-click for full `getblock` detail (+ block stats at Detailed) |
 | Mempool | size/memory + fee-rate histogram + fee estimate |
 | **Network** | **live topology map** + node chooser + peer table + peers-by-version + net totals (see below) |
@@ -58,7 +59,7 @@ config-writes return HTTP 403. A node selector switches between **full :8332** a
 ```bash
 bankon qt        # or: ~/bankon-tools/bankon-qt.sh
 ```
-Native PySide6 app (Overview / Node / Network / Network Map / Mempool / Blocks / Indexes /
+Native PySide6 app (Overview / Node / **Logs** / Network / Network Map / Mempool / Blocks / Indexes /
 BTC.oracle / RPC Console — plus an optional **Geo Map**, toggled from the toolbar, **off by default**
 since it needs the GeoIP `.mmdb` files). The **Network Map** is a live QGraphicsScene topology with animated
 traffic, click-to-diagnose peers, and Promote/Boot actions; peer-table columns are **drag-resizable
