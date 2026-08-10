@@ -280,6 +280,32 @@ function initOvLog(){
     if(dk){dk.textContent=b?'⇥':'⤓';dk.title=b?'dock the log back beside the overview':'dock the log below the overview';}};
   if(dk)dk.onclick=()=>{localStorage.setItem('ovldock',localStorage.getItem('ovldock')==='bottom'?'right':'bottom');applyDock();};
   applyDock();
+  // PRESS-AND-HOLD drag-to-dock: hold ~½s on the log header, then release low → dock below,
+  // release toward the right → dock beside. A quick click/drag without the hold does nothing.
+  const hdr=col?col.querySelector('h3'):null;
+  if(hdr){
+    hdr.style.cursor='grab'; hdr.style.userSelect='none';
+    hdr.title='press & HOLD, then drag — release LOW to dock the log below, RIGHT to dock it beside the overview';
+    let hold=null,armed=false,sx=0,sy=0;
+    const msg=t=>{const m=document.getElementById('ovlmsg');if(m)m.textContent=t;};
+    const zone=e=>{const r=document.getElementById('p-overview').getBoundingClientRect();
+      const x=(e.clientX-r.left)/Math.max(1,r.width), y=(e.clientY-r.top)/Math.max(1,r.height);
+      return y>x?'bottom':'right';};   // diagonal split: down = below, right = beside
+    hdr.addEventListener('pointerdown',e=>{ if(e.button!==0)return;
+      sx=e.clientX; sy=e.clientY; armed=false;
+      try{hdr.setPointerCapture&&hdr.setPointerCapture(e.pointerId);}catch{}
+      hold=setTimeout(()=>{armed=true;hdr.style.cursor='grabbing';
+        msg('⇢ drag armed — release LOW to dock below · RIGHT to dock beside');},550);});
+    hdr.addEventListener('pointermove',e=>{
+      if(hold&&!armed&&Math.abs(e.clientX-sx)+Math.abs(e.clientY-sy)>12){clearTimeout(hold);hold=null;}
+      if(armed)msg('⇢ release to dock: '+(zone(e)==='bottom'?'BOTTOM (below the overview)':'RIGHT (beside the overview)'));});
+    const end=e=>{ if(hold){clearTimeout(hold);hold=null;}
+      if(armed){armed=false;hdr.style.cursor='grab';
+        const z=zone(e); localStorage.setItem('ovldock',z); applyDock();
+        msg('✓ log docked '+(z==='bottom'?'below the overview':'beside the overview'));}};
+    hdr.addEventListener('pointerup',end);
+    hdr.addEventListener('pointercancel',()=>{if(hold)clearTimeout(hold);hold=null;armed=false;hdr.style.cursor='grab';});
+  }
   const vb=document.getElementById('ovlv'), msg=document.getElementById('ovlmsg');
   const flash=h=>{if(msg){msg.innerHTML=h;setTimeout(()=>{msg.textContent='';},4000);}};
   fetch('/api/log/verbosity').then(r=>r.json()).then(r=>{ if(r.ok&&vb) vb.checked=!!r.categories.net; }).catch(()=>{});

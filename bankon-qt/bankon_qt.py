@@ -446,7 +446,17 @@ class OverviewTab(QtWidgets.QWidget):
                               ("⬇ 20k", self._log_export, "export the last 20,000 debug.log lines to a file")]:
             b = QtWidgets.QPushButton(text); b.setObjectName("secondary"); b.setToolTip(tip)
             b.clicked.connect(fn); lh.addWidget(b)
-        ll.addLayout(lh)
+        # header row = PRESS-AND-HOLD drag grip: hold ~½ s on the title, then drag and release
+        # toward the bottom (dock below) or the right (dock beside). Buttons still click normally.
+        hdrw = QtWidgets.QWidget(); hdrw.setLayout(lh)
+        hdrw.setCursor(QtCore.Qt.OpenHandCursor)
+        hdrw.setToolTip("press & HOLD the title, then drag — release LOW to dock the log at the BOTTOM,\n"
+                        "release toward the RIGHT to dock it beside the overview")
+        ll.addWidget(hdrw)
+        self._draghdr = hdrw; hdrw.installEventFilter(self)
+        self._drag = {"press": None, "armed": False, "timer": QtCore.QTimer(self)}
+        self._drag["timer"].setSingleShot(True); self._drag["timer"].setInterval(550)
+        self._drag["timer"].timeout.connect(self._drag_arm)
         self.logmsg = QtWidgets.QLabel(""); self.logmsg.setStyleSheet("color:#8aa0b4;font-size:11px"); ll.addWidget(self.logmsg)
         self.corelog = QtWidgets.QPlainTextEdit(); self.corelog.setReadOnly(True)
         self.corelog.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse | QtCore.Qt.TextSelectableByKeyboard)
@@ -686,11 +696,48 @@ class OverviewTab(QtWidgets.QWidget):
         self.dockbtn.setToolTip("dock the log to the BOTTOM (below the overview)" if horiz
                                 else "dock the log back to the RIGHT (beside the overview)")
     def _toggle_logdock(self):
-        sp = self._ovsplit
-        to_bottom = sp.orientation() == QtCore.Qt.Horizontal
-        sp.setOrientation(QtCore.Qt.Vertical if to_bottom else QtCore.Qt.Horizontal)
-        QtCore.QSettings("BANKON", "bankon-qt").setValue("overview/logdock", "bottom" if to_bottom else "right")
+        self._set_logdock("bottom" if self._ovsplit.orientation() == QtCore.Qt.Horizontal else "right")
+    def _set_logdock(self, side):
+        self._ovsplit.setOrientation(QtCore.Qt.Vertical if side == "bottom" else QtCore.Qt.Horizontal)
+        QtCore.QSettings("BANKON", "bankon-qt").setValue("overview/logdock", side)
         self._style_dockbtn(); self._apply_logsplit()
+    # ---- press-and-hold drag-to-dock (header grip) ----
+    def eventFilter(self, obj, ev):
+        if obj is getattr(self, "_draghdr", None):
+            t = ev.type()
+            if t == QtCore.QEvent.MouseButtonPress and ev.button() == QtCore.Qt.LeftButton:
+                self._drag["press"] = ev.globalPosition().toPoint()
+                self._drag["armed"] = False
+                self._drag["timer"].start()
+            elif t == QtCore.QEvent.MouseMove and self._drag["press"] is not None:
+                pos = ev.globalPosition().toPoint()
+                if not self._drag["armed"]:
+                    if (pos - self._drag["press"]).manhattanLength() > 12:   # moved before the hold → not a drag
+                        self._drag["timer"].stop(); self._drag["press"] = None
+                else:
+                    self.logmsg.setText("⇢ release to dock: "
+                                        + ("BOTTOM (below the overview)" if self._drag_zone(pos) == "bottom"
+                                           else "RIGHT (beside the overview)"))
+            elif t == QtCore.QEvent.MouseButtonRelease:
+                self._drag["timer"].stop()
+                if self._drag["armed"]:
+                    zone = self._drag_zone(ev.globalPosition().toPoint())
+                    self._set_logdock(zone)
+                    self.logmsg.setText("✓ log docked " + ("below the overview" if zone == "bottom"
+                                                           else "beside the overview (right)"))
+                self._draghdr.setCursor(QtCore.Qt.OpenHandCursor)
+                self._drag["armed"] = False; self._drag["press"] = None
+        return super().eventFilter(obj, ev)
+    def _drag_arm(self):
+        if self._drag["press"] is None: return               # button already released → plain click, no drag
+        self._drag["armed"] = True
+        self._draghdr.setCursor(QtCore.Qt.ClosedHandCursor)
+        self.logmsg.setText("⇢ drag armed — release LOW to dock the log at the bottom · "
+                            "release RIGHT to dock it beside the overview")
+    def _drag_zone(self, gpos):
+        p = self.mapFromGlobal(gpos)
+        w, h = max(1, self.width()), max(1, self.height())
+        return "bottom" if (p.y() / h) > (p.x() / w) else "right"   # diagonal split: down = bottom, right = beside
     def _tick_log(self):
         # THREADED (spawn_fn): a synchronous tail on the GUI thread stalls the whole app whenever
         # the datadir disk is busy — the log read must never block clicks/tab switches.
