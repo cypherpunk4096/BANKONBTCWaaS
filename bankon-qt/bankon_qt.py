@@ -123,6 +123,51 @@ def spawn_fn(fn, on_done=None, on_fail=None):
     w.finished.connect(_fin); w.start(); return w
 
 
+class HoldDrag(QtCore.QObject):
+    """PRESS-AND-HOLD drag-to-dock (shared): hold ~½ s on a grip widget to arm, drag, release —
+    the drop zone over `zone_widget` (diagonal split: low = "bottom", rightward = "right") goes
+    to on_drop. A quick click or an immediate move never arms, so child buttons keep working."""
+    def __init__(self, grip, zone_widget, on_drop, on_msg=None, hold_ms=550):
+        super().__init__(grip)
+        self.grip, self.zonew, self.on_drop = grip, zone_widget, on_drop
+        self.on_msg = on_msg or (lambda s: None)
+        self.timer = QtCore.QTimer(self); self.timer.setSingleShot(True); self.timer.setInterval(hold_ms)
+        self.timer.timeout.connect(self._arm)
+        self.press = None; self.armed = False
+        grip.setCursor(QtCore.Qt.OpenHandCursor)
+        grip.installEventFilter(self)
+    def _zone(self, gpos):
+        p = self.zonew.mapFromGlobal(gpos)
+        w, h = max(1, self.zonew.width()), max(1, self.zonew.height())
+        return "bottom" if (p.y() / h) > (p.x() / w) else "right"
+    def _arm(self):
+        if self.press is None: return                       # released before the hold → plain click
+        self.armed = True
+        self.grip.setCursor(QtCore.Qt.ClosedHandCursor)
+        self.on_msg("⇢ drag armed — release LOW to dock below · RIGHT to dock beside")
+    def eventFilter(self, obj, ev):
+        t = ev.type()
+        if t == QtCore.QEvent.MouseButtonPress and ev.button() == QtCore.Qt.LeftButton:
+            self.press = ev.globalPosition().toPoint(); self.armed = False; self.timer.start()
+        elif t == QtCore.QEvent.MouseMove and self.press is not None:
+            pos = ev.globalPosition().toPoint()
+            if not self.armed:
+                if (pos - self.press).manhattanLength() > 12:   # moved before the hold → not a drag
+                    self.timer.stop(); self.press = None
+            else:
+                self.on_msg("⇢ release to dock: " + ("BOTTOM (below)" if self._zone(pos) == "bottom"
+                                                     else "RIGHT (beside)"))
+        elif t == QtCore.QEvent.MouseButtonRelease:
+            self.timer.stop()
+            if self.armed:
+                z = self._zone(ev.globalPosition().toPoint())
+                self.on_drop(z)
+                self.on_msg("✓ docked " + ("below" if z == "bottom" else "beside (right)"))
+            self.grip.setCursor(QtCore.Qt.OpenHandCursor)
+            self.armed = False; self.press = None
+        return super().eventFilter(obj, ev)
+
+
 def anim_on(w):
     """True only when animating `w` can actually be seen. THERMAL: every animation tick must gate
     on this — under software rendering (HD 3000) a hidden/minimized 20-25 fps repaint is pure CPU
@@ -3709,7 +3754,8 @@ class OracleTab(QtWidgets.QWidget):
                              "Quiet = one-line · Normal = full metric grid · Verbose = + raw getblockstats · "
                              "Scientific = + header + derived measures")
         self.verb.currentTextChanged.connect(self._verb_changed)
-        hrow.addWidget(self.verb); outer.addLayout(hrow)
+        hrow.addWidget(self.verb)
+        hgrip = QtWidgets.QWidget(); hgrip.setLayout(hrow); outer.addWidget(hgrip)   # drag grip (hold to dock)
         sc = QtWidgets.QScrollArea(); sc.setWidgetResizable(True); sc.setStyleSheet("border:1px solid #2e4a63;border-radius:6px")
         hold = QtWidgets.QWidget(); self.hist_lay = QtWidgets.QVBoxLayout(hold); self.hist_lay.setAlignment(QtCore.Qt.AlignTop)
         self.hist_lay.setSpacing(2); sc.setWidget(hold); outer.addWidget(sc, 2)
@@ -3719,12 +3765,24 @@ class OracleTab(QtWidgets.QWidget):
         ej = QtWidgets.QPushButton("JSON"); ej.clicked.connect(lambda: self._export("json")); ml.addWidget(ej)
         el = QtWidgets.QPushButton("JSONL"); el.clicked.connect(lambda: self._export("jsonl")); ml.addWidget(el)
         ec = QtWidgets.QPushButton("CSV"); ec.setObjectName("secondary"); ec.clicked.connect(lambda: self._export("csv")); ml.addWidget(ec)
-        clr = QtWidgets.QPushButton("clear"); clr.setObjectName("danger"); ml.addWidget(clr); outer.addLayout(ml)
+        clr = QtWidgets.QPushButton("clear"); clr.setObjectName("danger"); ml.addWidget(clr)
+        mgrip = QtWidgets.QWidget(); mgrip.setLayout(ml); outer.addWidget(mgrip)     # drag grip (hold to dock)
         self.mlog = QtWidgets.QPlainTextEdit(); self.mlog.setReadOnly(True); self.mlog.setMaximumHeight(96)
         self.mlog.setStyleSheet("font-family:monospace;font-size:11px;background:#05080d;color:#c9d4e0"); outer.addWidget(self.mlog)
         clr.clicked.connect(self.mlog.clear)
-        qsplit.addWidget(histcol); qsplit.setSizes([460, 500])
+        qsplit.addWidget(histcol)
+        self.qsplit = qsplit
+        self._hh = hh; self._hh_base = hh.text()
+        if QtCore.QSettings("BANKON", "bankon-qt").value("oracle/quaddock", "right") == "bottom":
+            qsplit.setOrientation(QtCore.Qt.Vertical)
+        self._apply_quadsizes()
         page.addWidget(qsplit, 2)   # complete the 2×2: Q3 science | Q4 history now under Q1|Q2
+        # PRESS-AND-HOLD drag-to-dock: hold either log header, drag, release LOW → the
+        # history+measurement-log quadrant docks BELOW block science; release RIGHT → beside it.
+        for grip in (hgrip, mgrip):
+            grip.setToolTip("press & HOLD, then drag — release LOW to dock the history + measurement log\n"
+                            "below the block-science panel, release RIGHT to dock it beside")
+            HoldDrag(grip, self, self._dock_quad, self._dock_msg)
         self._hist_heights = set(); self._measurements = []
         self._last_block = None; self._last_prev = None
         self._logdir = Path.home() / "bankon-tools" / "oracle-logs"   # default: auto-persist as JSONL
@@ -3736,6 +3794,20 @@ class OracleTab(QtWidgets.QWidget):
         # auto-measure: poll for new blocks every 8s (log-based, runs even when this tab isn't shown)
         self._mtimer = QtCore.QTimer(self); self._mtimer.timeout.connect(self._tick_measure); self._mtimer.start(8000)
     SERIES_N = 90                                                  # consistent block window feeding the graph
+    def _apply_quadsizes(self):
+        sp = self.qsplit
+        if sp.orientation() == QtCore.Qt.Horizontal:
+            sp.setSizes([460, 500])
+        else:
+            tot = max(sp.height(), 400)
+            sp.setSizes([int(tot * 0.55), int(tot * 0.45)])
+    def _dock_quad(self, zone):
+        self.qsplit.setOrientation(QtCore.Qt.Vertical if zone == "bottom" else QtCore.Qt.Horizontal)
+        QtCore.QSettings("BANKON", "bankon-qt").setValue("oracle/quaddock", zone)
+        self._apply_quadsizes()
+    def _dock_msg(self, s):
+        self._hh.setText(s)                                        # transient status on the history header
+        QtCore.QTimer.singleShot(3500, lambda: self._hh.setText(self._hh_base))
     def _tick_measure(self):
         if self.isVisible() and self.automeasure.isChecked():
             spawn_fn(lambda: fetch_json(f"/api/recentblocks?n={self.SERIES_N}").get("blocks", []), self._fill_blocks)

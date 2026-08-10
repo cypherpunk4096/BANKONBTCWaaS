@@ -266,6 +266,30 @@ async function loadLogCorr(){
     elc.innerHTML=liveTxt+`<div class="muted" style="margin-top:.25rem">log window (EVENTS over time, not current peers): ✓ ${fmt(ty.connected||0)} connects · ⇣ ${fmt(ty.inbound||0)} inbound · ⟲ ${fmt(ty.disconnect||0)} drops · ✗ ${fmt(ty.failed||0)} failed dials — enable the <b>net</b> category below for full per-peer log detail</div>`;
   }catch{}
 }
+// PRESS-AND-HOLD drag-to-dock (shared): hold ~½s on a grip, drag, release — LOW docks below,
+// RIGHT docks beside (diagonal zone split over the panel). Quick clicks never arm, so child
+// buttons and text selection keep working.
+function bindHoldDock(hdr,panelId,msgId,onDrop){
+  hdr.style.cursor='grab'; hdr.style.userSelect='none';
+  hdr.title='press & HOLD, then drag — release LOW to dock below, RIGHT to dock beside';
+  let hold=null,armed=false,sx=0,sy=0;
+  const msg=t=>{const m=document.getElementById(msgId);if(m)m.textContent=t;};
+  const zone=e=>{const r=document.getElementById(panelId).getBoundingClientRect();
+    const x=(e.clientX-r.left)/Math.max(1,r.width), y=(e.clientY-r.top)/Math.max(1,r.height);
+    return y>x?'bottom':'right';};   // diagonal split: down = below, right = beside
+  hdr.addEventListener('pointerdown',e=>{ if(e.button!==0)return;
+    sx=e.clientX; sy=e.clientY; armed=false;
+    try{hdr.setPointerCapture&&hdr.setPointerCapture(e.pointerId);}catch{}
+    hold=setTimeout(()=>{armed=true;hdr.style.cursor='grabbing';
+      msg('⇢ drag armed — release LOW to dock below · RIGHT to dock beside');},550);});
+  hdr.addEventListener('pointermove',e=>{
+    if(hold&&!armed&&Math.abs(e.clientX-sx)+Math.abs(e.clientY-sy)>12){clearTimeout(hold);hold=null;}
+    if(armed)msg('⇢ release to dock: '+(zone(e)==='bottom'?'BOTTOM (below)':'RIGHT (beside)'));});
+  hdr.addEventListener('pointerup',e=>{ if(hold){clearTimeout(hold);hold=null;}
+    if(armed){armed=false;hdr.style.cursor='grab';const z=zone(e);onDrop(z);
+      msg('✓ docked '+(z==='bottom'?'below':'beside'));}});
+  hdr.addEventListener('pointercancel',()=>{if(hold)clearTimeout(hold);hold=null;armed=false;hdr.style.cursor='grab';});
+}
 // Overview log widget — persistent (init-once, outside the re-rendered #ov-dyn) so the 30s
 // Overview refresh never resets the drag-resized pane height or its scroll. Height persists
 // in localStorage across reloads.
@@ -280,32 +304,9 @@ function initOvLog(){
     if(dk){dk.textContent=b?'⇥':'⤓';dk.title=b?'dock the log back beside the overview':'dock the log below the overview';}};
   if(dk)dk.onclick=()=>{localStorage.setItem('ovldock',localStorage.getItem('ovldock')==='bottom'?'right':'bottom');applyDock();};
   applyDock();
-  // PRESS-AND-HOLD drag-to-dock: hold ~½s on the log header, then release low → dock below,
-  // release toward the right → dock beside. A quick click/drag without the hold does nothing.
+  // press-and-hold drag-to-dock on the log header (shared bindHoldDock)
   const hdr=col?col.querySelector('h3'):null;
-  if(hdr){
-    hdr.style.cursor='grab'; hdr.style.userSelect='none';
-    hdr.title='press & HOLD, then drag — release LOW to dock the log below, RIGHT to dock it beside the overview';
-    let hold=null,armed=false,sx=0,sy=0;
-    const msg=t=>{const m=document.getElementById('ovlmsg');if(m)m.textContent=t;};
-    const zone=e=>{const r=document.getElementById('p-overview').getBoundingClientRect();
-      const x=(e.clientX-r.left)/Math.max(1,r.width), y=(e.clientY-r.top)/Math.max(1,r.height);
-      return y>x?'bottom':'right';};   // diagonal split: down = below, right = beside
-    hdr.addEventListener('pointerdown',e=>{ if(e.button!==0)return;
-      sx=e.clientX; sy=e.clientY; armed=false;
-      try{hdr.setPointerCapture&&hdr.setPointerCapture(e.pointerId);}catch{}
-      hold=setTimeout(()=>{armed=true;hdr.style.cursor='grabbing';
-        msg('⇢ drag armed — release LOW to dock below · RIGHT to dock beside');},550);});
-    hdr.addEventListener('pointermove',e=>{
-      if(hold&&!armed&&Math.abs(e.clientX-sx)+Math.abs(e.clientY-sy)>12){clearTimeout(hold);hold=null;}
-      if(armed)msg('⇢ release to dock: '+(zone(e)==='bottom'?'BOTTOM (below the overview)':'RIGHT (beside the overview)'));});
-    const end=e=>{ if(hold){clearTimeout(hold);hold=null;}
-      if(armed){armed=false;hdr.style.cursor='grab';
-        const z=zone(e); localStorage.setItem('ovldock',z); applyDock();
-        msg('✓ log docked '+(z==='bottom'?'below the overview':'beside the overview'));}};
-    hdr.addEventListener('pointerup',end);
-    hdr.addEventListener('pointercancel',()=>{if(hold)clearTimeout(hold);hold=null;armed=false;hdr.style.cursor='grab';});
-  }
+  if(hdr)bindHoldDock(hdr,'p-overview','ovlmsg',z=>{localStorage.setItem('ovldock',z);applyDock();});
   const vb=document.getElementById('ovlv'), msg=document.getElementById('ovlmsg');
   const flash=h=>{if(msg){msg.innerHTML=h;setTimeout(()=>{msg.textContent='';},4000);}};
   fetch('/api/log/verbosity').then(r=>r.json()).then(r=>{ if(r.ok&&vb) vb.checked=!!r.categories.net; }).catch(()=>{});
@@ -753,21 +754,35 @@ const RENDER={
   async oracle(){
     const el=$('#p-oracle');
     if(!el.dataset.init){ el.dataset.init=1;
-      el.innerHTML=`<div style="border:2px solid var(--btc);border-radius:12px;background:#06090e;padding:10px">
+      el.innerHTML=`<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start">
+        <div id="o-main" style="flex:1 1 560px;min-width:380px;border:2px solid var(--btc);border-radius:12px;background:#06090e;padding:10px">
           <div style="text-align:center;color:var(--btc);font-weight:800;letter-spacing:1px;border-bottom:1px solid #5a3a0a;padding-bottom:6px">₿  BTC.oracle — the clock kept on a Bitcoin block</div>
           <div style="display:flex;gap:12px;margin-top:8px;flex-wrap:wrap">
             <canvas id="omesh" width="560" height="300" style="flex:2;min-width:320px;background:#04070c;border-radius:8px"></canvas>
             <div id="ostats" class="grid" style="flex:1;min-width:240px;align-content:start"></div>
           </div></div>
-        <div style="margin-top:10px">
-          <div class="row" style="gap:8px;align-items:center">
-            <b>🔬 measurement log</b> <span class="muted">— live new-block stream (node heartbeat)</span>
+        <div id="o-logcol" style="flex:1 1 100%;min-width:280px">
+          <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
+            <button id="odock" title="dock the measurement log beside the oracle">⇥</button>
+            <b id="o-loggrip">🔬 measurement log</b> <span class="muted">— live new-block stream (node heartbeat)</span>
+            <span id="odmsg" class="muted"></span>
             <label style="margin-left:auto"><input type="checkbox" id="oauto" checked/> ⚡ auto-measure</label>
             <button id="oj" class="secondary">JSON</button><button id="ojl" class="secondary">JSONL</button>
             <button id="ocsv" class="secondary">CSV</button><button id="oclr" class="secondary">clear</button>
           </div>
           <pre id="omlog" style="min-height:120px;max-height:32vh;overflow:auto">// new blocks stream here as they arrive — your visual confirmation the node is connected + feeding</pre>
-        </div>`;
+        </div></div>`;
+      // dock the measurement log below (default) or beside the oracle — ⇥/⤓ button or
+      // press-and-hold drag on the 🔬 header; the choice persists.
+      const ocol=el.querySelector('#o-logcol');
+      const applyODock=()=>{const b=(localStorage.getItem('oracledock')||'bottom')==='bottom';
+        ocol.style.flex=b?'1 1 100%':'1 1 300px';
+        el.querySelector('#omlog').style.maxHeight=b?'32vh':'60vh';
+        const d=el.querySelector('#odock');
+        if(d){d.textContent=b?'⇥':'⤓';d.title=b?'dock the measurement log beside the oracle':'dock the measurement log below the oracle';}};
+      el.querySelector('#odock').onclick=()=>{localStorage.setItem('oracledock',(localStorage.getItem('oracledock')||'bottom')==='bottom'?'right':'bottom');applyODock();};
+      bindHoldDock(el.querySelector('#o-loggrip'),'p-oracle','odmsg',z=>{localStorage.setItem('oracledock',z);applyODock();});
+      applyODock();
       const cv=el.querySelector('#omesh'), ctx=cv.getContext('2d');
       const O={phase:0,series:[],headline:'—',sub:''}; el.__O=O;
       const dl=(name,text,type)=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([text],{type}));a.download=name;a.click();};
