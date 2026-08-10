@@ -434,6 +434,9 @@ class OverviewTab(QtWidgets.QWidget):
         # the splitter steals space from the overview to honour it
         lt.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
         lt.setStyleSheet("color:#c9d4e0"); lh.addWidget(lt, 1)
+        self.dockbtn = QtWidgets.QPushButton("⤓"); self.dockbtn.setObjectName("secondary")
+        self.dockbtn.setFixedWidth(30); self.dockbtn.clicked.connect(self._toggle_logdock)
+        lh.addWidget(self.dockbtn)
         self.logverb = QtWidgets.QCheckBox("verbose (net)")
         self.logverb.setToolTip("₿itcoin Core's net debug category — logs every peer connect/disconnect/message.\n"
                                 "Runtime `logging` RPC: instant, no restart, no config write (reverts when Core restarts).")
@@ -456,13 +459,15 @@ class OverviewTab(QtWidgets.QWidget):
         split = QtWidgets.QSplitter(QtCore.Qt.Horizontal); split.setHandleWidth(6); split.setChildrenCollapsible(False)
         split.addWidget(topw); split.addWidget(logw)
         split.setStretchFactor(0, 1); split.setStretchFactor(1, 0)
-        _st = QtCore.QSettings("BANKON", "bankon-qt")                   # persist the drag-resized width
         self._ovsplit = split
-        self._ovsplit_saved = _st.value("overview/logsplit-h2")         # fresh key — earlier keys hold layout junk
+        _st = QtCore.QSettings("BANKON", "bankon-qt")
+        if _st.value("overview/logdock", "right") == "bottom":          # restore chosen dock side
+            split.setOrientation(QtCore.Qt.Vertical)
+        self._style_dockbtn()
         self._split_settled = False                                     # gate: only persist USER drags, not layout shuffles
         self._split_applied = False                                     # sizes applied on first showEvent (real geometry)
-        split.splitterMoved.connect(lambda *_: self._split_settled
-                                    and _st.setValue("overview/logsplit-h2", split.sizes()))
+        split.splitterMoved.connect(self._persist_logsplit)
+        self._logbusy = False
         outer.addWidget(split)
         self._verb_known = None                        # last known net-category state (None = unknown)
         self._logtimer = QtCore.QTimer(self); self._logtimer.timeout.connect(self._tick_log); self._logtimer.start(4000)
@@ -657,27 +662,53 @@ class OverviewTab(QtWidgets.QWidget):
         if not self._split_applied:            # first show = geometry is real; earlier setSizes gets recomputed away
             self._split_applied = True
             QtCore.QTimer.singleShot(50, self._apply_logsplit)
+    def _logsplit_key(self):
+        return "overview/logsplit-h2" if self._ovsplit.orientation() == QtCore.Qt.Horizontal \
+            else "overview/logsplit-v"
     def _apply_logsplit(self):
-        sp = self._ovsplit
+        sp = self._ovsplit; horiz = sp.orientation() == QtCore.Qt.Horizontal
+        saved = QtCore.QSettings("BANKON", "bankon-qt").value(self._logsplit_key())
+        applied = False
         try:
-            if self._ovsplit_saved:
-                sp.setSizes([int(x) for x in self._ovsplit_saved])
-            else:
-                w = max(sp.width(), 900)       # default: overview keeps ~62% of the width
-                sp.setSizes([int(w * 0.62), int(w * 0.38)])
-        except Exception:
-            pass
+            if saved: sp.setSizes([int(x) for x in saved]); applied = True
+        except Exception: pass
+        if not applied:                        # defaults: right dock 62/38 width · bottom dock 70/30 height
+            tot = max(sp.width() if horiz else sp.height(), 600)
+            r = 0.62 if horiz else 0.70
+            sp.setSizes([int(tot * r), int(tot * (1 - r))])
         QtCore.QTimer.singleShot(1500, lambda: setattr(self, "_split_settled", True))
+    def _persist_logsplit(self, *_):
+        if self._split_settled:
+            QtCore.QSettings("BANKON", "bankon-qt").setValue(self._logsplit_key(), self._ovsplit.sizes())
+    def _style_dockbtn(self):
+        horiz = self._ovsplit.orientation() == QtCore.Qt.Horizontal
+        self.dockbtn.setText("⤓" if horiz else "⇥")
+        self.dockbtn.setToolTip("dock the log to the BOTTOM (below the overview)" if horiz
+                                else "dock the log back to the RIGHT (beside the overview)")
+    def _toggle_logdock(self):
+        sp = self._ovsplit
+        to_bottom = sp.orientation() == QtCore.Qt.Horizontal
+        sp.setOrientation(QtCore.Qt.Vertical if to_bottom else QtCore.Qt.Horizontal)
+        QtCore.QSettings("BANKON", "bankon-qt").setValue("overview/logdock", "bottom" if to_bottom else "right")
+        self._style_dockbtn(); self._apply_logsplit()
     def _tick_log(self):
-        if not self.isVisible() or self.corelog.textCursor().hasSelection(): return
+        # THREADED (spawn_fn): a synchronous tail on the GUI thread stalls the whole app whenever
+        # the datadir disk is busy — the log read must never block clicks/tab switches.
+        if not self.isVisible() or self._logbusy or self.corelog.textCursor().hasSelection(): return
         if not DEBUG_LOG.exists(): self.corelog.setPlainText("no debug.log yet"); return
-        try:
-            out = subprocess.run(["tail", "-n", "250", str(DEBUG_LOG)], capture_output=True, text=True, timeout=5).stdout
+        self._logbusy = True
+        def _tail():
+            return subprocess.run(["tail", "-n", "250", str(DEBUG_LOG)],
+                                  capture_output=True, text=True, timeout=8).stdout
+        def _fill(out):
+            self._logbusy = False
+            if self.corelog.textCursor().hasSelection(): return
             sb = self.corelog.verticalScrollBar(); atBottom = sb.value() >= sb.maximum() - 4
             self.corelog.setPlainText(out)
             if atBottom: sb.setValue(sb.maximum())
-        except Exception as e:
-            self.corelog.setPlainText(f"log error: {e}")
+        def _err(e):
+            self._logbusy = False; self.corelog.setPlainText(f"log error: {e}")
+        spawn_fn(_tail, _fill, _err)
     def _verb_load(self):
         """Reflect the node's ACTUAL current net-category state (console first, direct-RPC fallback)."""
         def _get():
@@ -840,6 +871,7 @@ class LogsTab(QtWidgets.QWidget):
                                 "selection-background-color:#00BFFF;selection-color:#001018;")
         v.addWidget(self.pane, 1)
         self.mode = "live"; self._checks = {}; self._searching = False; self._corrtick = 0
+        self._tailbusy = False; self._corrbusy = False       # never stack workers on a slow disk
         self.t = QtCore.QTimer(self); self.t.timeout.connect(self._tick); self.t.start(3000)
     def refresh(self):
         self._tick(force=True); self._corr()
@@ -848,9 +880,10 @@ class LogsTab(QtWidgets.QWidget):
         if not self.isVisible() and not force: return
         self._corrtick += 1
         if self._corrtick % 2 == 1: self._corr()
-        if self.mode != "live": return
+        if self.mode != "live" or self._tailbusy: return
         if self.pane.textCursor().hasSelection(): return   # don't clobber a selection being copied
         if not DEBUG_LOG.exists(): self.pane.setPlainText("no debug.log yet"); return
+        self._tailbusy = True
         n = self.lines.currentText()
         flt = dict(self.FILTERS).get(self.filter.currentText())
         def _tail():
@@ -859,8 +892,11 @@ class LogsTab(QtWidgets.QWidget):
             lines = out.splitlines(); total = len(lines)
             if flt: lines = [l for l in lines if flt.search(l)]
             return total, lines
-        spawn_fn(_tail, self._tail_fill, lambda e: self.pane.setPlainText(f"log error: {e}"))
+        def _err(e):
+            self._tailbusy = False; self.pane.setPlainText(f"log error: {e}")
+        spawn_fn(_tail, self._tail_fill, _err)
     def _tail_fill(self, r):
+        self._tailbusy = False
         if self.mode != "live" or self.pane.textCursor().hasSelection(): return
         total, lines = r
         sbar = self.pane.verticalScrollBar(); atBottom = sbar.value() >= sbar.maximum() - 4
@@ -899,6 +935,8 @@ class LogsTab(QtWidgets.QWidget):
         self.mode = "live"; self.q.clear(); self._tick(force=True)
     # ---- correlation strip: live set vs log events, both labeled ----
     def _corr(self):
+        if self._corrbusy: return
+        self._corrbusy = True
         def _get():
             out = {}
             try: out["pl"] = fetch_json("/api/peers/live")
@@ -906,8 +944,10 @@ class LogsTab(QtWidgets.QWidget):
             try: out["na"] = fetch_json("/api/netactivity?n=60", timeout=10)
             except Exception: out["na"] = None
             return out
-        spawn_fn(_get, self._corr_fill, lambda _e: None)
+        def _fail(_e): self._corrbusy = False
+        spawn_fn(_get, self._corr_fill, _fail)
     def _corr_fill(self, d):
+        self._corrbusy = False
         pl, na = d.get("pl"), d.get("na")
         if pl and pl.get("ok") and pl.get("total") is not None:
             age = "" if pl.get("live") else \

@@ -271,8 +271,15 @@ async function loadLogCorr(){
 // in localStorage across reloads.
 function initOvLog(){
   const pane=document.getElementById('ovlog'); if(!pane)return;
-  pane.style.width=localStorage.getItem('ovlogw')||'420px';
   pane.style.height=localStorage.getItem('ovlogh2')||'480px';
+  // dock toggle: right (beside the overview) ⇄ bottom (full-width below it)
+  const col=document.getElementById('ov-logcol'), dk=document.getElementById('ovldock');
+  const applyDock=()=>{const b=localStorage.getItem('ovldock')==='bottom';
+    if(col)col.style.flex=b?'1 1 100%':'0 1 auto';
+    pane.style.width=b?'100%':(localStorage.getItem('ovlogw')||'420px');
+    if(dk){dk.textContent=b?'⇥':'⤓';dk.title=b?'dock the log back beside the overview':'dock the log below the overview';}};
+  if(dk)dk.onclick=()=>{localStorage.setItem('ovldock',localStorage.getItem('ovldock')==='bottom'?'right':'bottom');applyDock();};
+  applyDock();
   const vb=document.getElementById('ovlv'), msg=document.getElementById('ovlmsg');
   const flash=h=>{if(msg){msg.innerHTML=h;setTimeout(()=>{msg.textContent='';},4000);}};
   fetch('/api/log/verbosity').then(r=>r.json()).then(r=>{ if(r.ok&&vb) vb.checked=!!r.categories.net; }).catch(()=>{});
@@ -297,7 +304,7 @@ async function refreshOvLog(){
   const sel=window.getSelection();   // don't clobber a selection the user is copying
   if(sel&&!sel.isCollapsed&&pane.contains(sel.anchorNode))return;
   if(pane.style.height)localStorage.setItem('ovlogh2',pane.style.height);  // remember drag-resize (both axes)
-  if(pane.style.width)localStorage.setItem('ovlogw',pane.style.width);
+  if(pane.style.width&&localStorage.getItem('ovldock')!=='bottom')localStorage.setItem('ovlogw',pane.style.width);
   const r=await fetch('/api/node/log?lines=250').then(r=>r.json()).catch(()=>null);
   if(!r||!r.ok){pane.textContent=(r&&r.error)||'log unavailable';return;}
   paintLog(pane,r.lines,null,false);
@@ -511,9 +518,10 @@ const RENDER={
     if(!el.dataset.init||!el.querySelector('#ov-dyn')){ el.dataset.init=1;   // also rebuilds after an error render wiped the panel
       el.innerHTML=`<div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap">
         <div id="ov-dyn" style="flex:1 1 480px;min-width:340px"></div>
-        <div style="flex:0 1 auto;min-width:280px;max-width:100%">
+        <div id="ov-logcol" style="flex:0 1 auto;min-width:280px;max-width:100%">
           <h3 style="margin-top:0">Bitcoin Core log <span class="muted" style="font-weight:400">· live debug.log · drag the corner to resize</span></h3>
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:.35rem">
+            <button id="ovldock" title="dock the log below the overview">⤓</button>
             <label class="muted" title="Bitcoin Core's net debug category — logs every peer connect/disconnect/message (runtime logging RPC, no restart)"><input type="checkbox" id="ovlv"/> verbose (net)</label>
             <button id="ovlcopy" title="copy the visible log to the clipboard">⧉ Copy</button>
             <button id="ovlsave" title="save the visible log as a file">⬇ Save</button>
