@@ -3117,6 +3117,47 @@ class PriceOverlay(QtWidgets.QWidget):
         qp.end()
 
 
+class NodeInfoOverlay(QtWidgets.QWidget):
+    """🏠 LOCAL NODE overlay — this machine's node, PROMINENT, from actual data: NODE
+    (height · sync · agent) · NET (peers + live ▼/▲ totals + our address) · BLOCKS (tip ·
+    age · headers) — each line its own toggle — with the time (chosen timezone) riding the
+    header. Drawn completely in-house with QPainter; floats top-left over the geo display,
+    opposite the 🪙 price overlay. Transparent to the mouse so globe drags pass through."""
+    LBL = {"node": "NODE", "net": "NET", "blocks": "BLOCKS"}
+    def __init__(self, parent, tzfmt):
+        super().__init__(parent)
+        self._tzfmt = tzfmt
+        self._d = {}
+        self._flags = ("node", "net", "blocks")
+        self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
+        self.hide()
+    def set_flags(self, flags):
+        self._flags = tuple(flags); self.update()
+    def set_data(self, d):
+        self._d.update(d or {}); self.update()
+    def wanted_height(self):
+        return 36 + 16 * len(self._flags)
+    def paintEvent(self, e):
+        qp = QtGui.QPainter(self); qp.setRenderHint(QtGui.QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        qp.setPen(QtGui.QPen(QtGui.QColor("#00BFFF"), 1))
+        qp.setBrush(QtGui.QBrush(QtGui.QColor(4, 7, 12, 215)))
+        qp.drawRoundedRect(0, 0, w - 1, h - 1, 8, 8)
+        f = qp.font(); f.setPointSize(11); f.setBold(True); qp.setFont(f)
+        qp.setPen(QtGui.QColor("#F7931A"))                        # the local node is PROMINENT
+        qp.drawText(10, 20, "🏠 ₿ANKON node")
+        qp.setPen(QtGui.QColor("#00BFFF"))                        # …with the time beside it
+        qp.drawText(QtCore.QRectF(0, 4, w - 10, 20), QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter,
+                    self._d.get("clock", ""))
+        f.setPointSize(8); f.setBold(False); qp.setFont(f)
+        y = 26
+        for k in self._flags:
+            y += 16
+            qp.setPen(QtGui.QColor("#5a7891")); qp.drawText(10, y, self.LBL.get(k, k.upper()))
+            qp.setPen(QtGui.QColor("#d6e3ef")); qp.drawText(62, y, (self._d.get(k) or "…")[:170])
+        qp.end()
+
+
 class GeoMapTab(QtWidgets.QWidget):
     """Geo map (EPSG:4326 plate carrée). The WHOLE known network from this node's addrman
     (getnodeaddresses — ₿itnodes-style, self-sourced, no external API) as a density layer,
@@ -3183,6 +3224,16 @@ class GeoMapTab(QtWidgets.QWidget):
                                   "hourly cadence and overlay the chart on the display — each price marked ON THE HOUR. "
                                   "Off (default) = zero network contact. Drawn completely in-house.")
         self.price_chk.toggled.connect(self._price_toggled); row2.addWidget(self.price_chk)
+        # 🏠 local-node overlay toggles — the participant's own node, prominent, actual data
+        self.ovl_node = QtWidgets.QCheckBox("🏠 node")
+        self.ovl_node.setToolTip("Overlay line: this node's height · sync % · agent (actual getblockchaininfo)")
+        self.ovl_net = QtWidgets.QCheckBox("🌐 net")
+        self.ovl_net.setToolTip("Overlay line: peers (out/in) · live ▼/▲ B/s totals · our address")
+        self.ovl_blocks = QtWidgets.QCheckBox("⛓ blocks")
+        self.ovl_blocks.setToolTip("Overlay line: chain tip · tip age · headers")
+        for key, c in (("ovl_node", self.ovl_node), ("ovl_net", self.ovl_net), ("ovl_blocks", self.ovl_blocks)):
+            c.setChecked(_st.value("geomap/" + key, "true") == "true")
+            c.toggled.connect(self._nodeinfo_changed); row2.addWidget(c)
         row2.addWidget(QtWidgets.QLabel("🕐 tz"))
         self.tz_box = QtWidgets.QComboBox()
         self.tz_box.addItems(["UTC", "local"] + [f"UTC{h:+d}" for h in range(-12, 15) if h])
@@ -3203,6 +3254,11 @@ class GeoMapTab(QtWidgets.QWidget):
         self._price_series = []; self._price_last = 0.0; self._price_try = 0.0; self._price_busy = False
         self._price_timer = QtCore.QTimer(self); self._price_timer.timeout.connect(self._price_tick)
         self._price_timer.setInterval(60_000)   # 1-min heartbeat that only ACTS once an hour
+        # 🏠 local-node OVERLAY (top-left counterpart) + its data + a 1 s clock in the chosen tz
+        self.node_overlay = NodeInfoOverlay(self.stack, self._tzfmt)
+        self._bci = {}
+        self._clock_t = QtCore.QTimer(self); self._clock_t.timeout.connect(self._clock_tick)
+        self._clock_t.start(1000)
         self.legend = QtWidgets.QLabel(""); self.legend.setStyleSheet("color:#d6e3ef"); self.legend.setWordWrap(True); v.addWidget(self.legend)
         self._peers, self._ni, self._net, self._act = [], {}, [], []
         self._bg = None; self._bg_n = -1     # cached background pixmap + the node count it was built for
@@ -3221,6 +3277,7 @@ class GeoMapTab(QtWidgets.QWidget):
         self._dns = {}
         if self.price_chk.isChecked():          # persisted opt-in → resume the casual hourly poll
             self._price_toggled(True)
+        self._update_nodeinfo()                 # 🏠 overlay up from the start (per its toggles)
     def _peer_ip(self, p):
         """Peer's plottable IP: literal addr, or the session-resolved IP of a DNS-named peer."""
         host = (p.get("addr") or "").rsplit(":", 1)[0].strip("[]")
@@ -3283,15 +3340,66 @@ class GeoMapTab(QtWidgets.QWidget):
         QtCore.QSettings("BANKON", "bankon-qt").setValue("geomap/price", "true" if on else "false")
         self.price_overlay.setVisible(on)
         if on:
-            self._place_price_overlay()
+            self._place_overlays()
             self._price_timer.start()
             self._price_fetch(backfill=len(self._price_series) < 2)
         else:
             self._price_timer.stop()           # off = zero network contact
-    def _place_price_overlay(self):
+    def _place_overlays(self):
         w = min(360, max(240, self.stack.width() - 24))
         self.price_overlay.setGeometry(max(8, self.stack.width() - w - 12), 10, w, 150)
         self.price_overlay.raise_()
+        nw = min(560, max(280, int(self.stack.width() * 0.5)))
+        self.node_overlay.setGeometry(10, 10, nw, self.node_overlay.wanted_height())
+        self.node_overlay.raise_()
+    # ── 🏠 local-node overlay: prominent, actual data — node/net/blocks toggles + time ──
+    def _nodeinfo_changed(self, _on):
+        st = QtCore.QSettings("BANKON", "bankon-qt")
+        for key, c in (("ovl_node", self.ovl_node), ("ovl_net", self.ovl_net), ("ovl_blocks", self.ovl_blocks)):
+            st.setValue("geomap/" + key, "true" if c.isChecked() else "false")
+        self._update_nodeinfo()
+    def _on_bci(self, bci, stale):
+        self._bci = bci or {}
+        self._update_nodeinfo()
+    def _clock_tick(self):
+        if self.node_overlay.isVisible() and anim_on(self):
+            self.node_overlay.set_data({"clock": self._tzfmt(time.time(), "%H:%M:%S")
+                                        + " " + self.tz_box.currentText()})
+    def _update_nodeinfo(self):
+        flags = [k for k, c in (("node", self.ovl_node), ("net", self.ovl_net),
+                                ("blocks", self.ovl_blocks)) if c.isChecked()]
+        self.node_overlay.set_flags(flags)
+        self.node_overlay.setVisible(bool(flags))
+        if not flags:
+            return
+        d = {"clock": self._tzfmt(time.time(), "%H:%M:%S") + " " + self.tz_box.currentText()}
+        bci = self._bci or {}
+        if bci:
+            vp = bci.get("verificationprogress") or 0.0
+            state = (" (FULL NODE)" if vp >= 0.9999 else
+                     " (IBD)" if bci.get("initialblockdownload") else "")
+            agent = ((self._ni or {}).get("subversion") or "").replace("/", "")
+            d["node"] = (f"height {bci.get('blocks', 0):,} · sync {min(100.0, vp * 100):.2f}%{state}"
+                         + (f" · {agent}" if agent else ""))
+            if bci.get("time"):
+                d["blocks"] = (f"tip {bci.get('blocks', 0):,} · age {human_dt(time.time() - bci['time'])}"
+                               + (f" · headers {bci.get('headers', 0):,}" if bci.get("headers") else ""))
+        peers = self._peers or []
+        if peers or self._ni:
+            inn = sum(1 for p in peers if p.get("inbound")); out = len(peers) - inn
+            tin = sum(r[0] for r in self._rates.values()); tout = sum(r[1] for r in self._rates.values())
+            la = (self._ni or {}).get("localaddresses") or []
+            myip, approx = (la[0].get("address") if la else None), ""
+            if not myip:
+                from collections import Counter
+                seen = Counter((p.get("addrlocal") or "").rsplit(":", 1)[0].strip("[]")
+                               for p in peers if p.get("addrlocal"))
+                myip = seen.most_common(1)[0][0] if seen else None
+                approx = " (approx)" if myip else ""
+            d["net"] = (f"{len(peers)} peers ({out} out · {inn} in) · live ▼ {NetworkMapTab._rate_s(tin)}"
+                        f" ▲ {NetworkMapTab._rate_s(tout)}" + (f" · via {myip}{approx}" if myip else ""))
+        self.node_overlay.set_data(d)
+        self._place_overlays()
     def _price_tick(self):
         # casual cadence: act only when a NEW hour needs its mark, or the data is >65 min
         # stale; failures retry no sooner than 5 min — the free tier is never hammered
@@ -3367,6 +3475,7 @@ class GeoMapTab(QtWidgets.QWidget):
     def refresh(self):
         spawn("getpeerinfo", self._on_peers, timeout=10)
         spawn("getnetworkinfo", self._on_ni, timeout=8)
+        spawn("getblockchaininfo", self._on_bci, timeout=10)   # 🏠 overlay: height/sync/tip age
         if self.allnodes.isChecked():                        # off = peers only; on = whole addrman
             spawn_fn(lambda: known_nodes(5000), self._on_net)
         else:
@@ -3717,9 +3826,10 @@ class GeoMapTab(QtWidgets.QWidget):
                             + (f"     top ASNs: {top_a}" if top_a else "") + spd + upt)
         # feed the spinning globe (same data, projected onto the sphere)
         self.globe.set_data([(n["lat"], n["lon"]) for n in self._net], gpeers, my)
+        self._update_nodeinfo()                 # 🏠 overlay rides the same truth
     def resizeEvent(self, e):
         if self.scene.sceneRect().width(): self.view.fitInView(self.scene.sceneRect(), QtCore.Qt.KeepAspectRatio)
-        if self.price_chk.isChecked(): self._place_price_overlay()
+        self._place_overlays()
         super().resizeEvent(e)
 
 
@@ -6266,6 +6376,22 @@ class AdminWindow(QtWidgets.QWidget):
             b = QtWidgets.QPushButton(txt); b.setToolTip(tip); b.clicked.connect(cb)
             av.addWidget(b, i // 2, i % 2)
         v.addWidget(ag)
+        # ── 🧊 I.C.E — the TOOL (Intrusion Countermeasures Electronics): thermal wall +
+        # RF kill-switch (AIRGAP) + forensics. NOT the 🖤 blackICE THEME above. Per
+        # docs/ICE.md the admin only LINKS to ICE — every ICE action executes in ICE
+        # itself ("ICE has precedence"; no remote-control surface).
+        ig = QtWidgets.QGroupBox("🧊 I.C.E — the tool"); iv = QtWidgets.QHBoxLayout(ig)
+        it = QtWidgets.QPushButton("🧊 ICE tab")
+        it.setToolTip("Open the console's 🧊 ICE tab — CPU temp · AIRGAP (cut all radios) · "
+                      "restore radios · forensics · evidence trail")
+        it.clicked.connect(self._show_ice_tab); iv.addWidget(it)
+        ic = QtWidgets.QPushButton("🛠 full controller")
+        ic.setToolTip("Launch the standalone ICE controller (~/ICE/ice.py — GTK tray app, "
+                      "self-elevates via sudo in a terminal)")
+        ic.clicked.connect(self._launch_ice); iv.addWidget(ic)
+        inote = QtWidgets.QLabel("🖤 blackICE above is the THEME — this is the wall.")
+        inote.setStyleSheet("color:#5a7891"); inote.setWordWrap(True); iv.addWidget(inote, 1)
+        v.addWidget(ig)
         # ── window choreography (the launcher's DOCK / CALL, in-process) ──
         wg = QtWidgets.QGroupBox("Window"); wv = QtWidgets.QHBoxLayout(wg)
         self.dockbox = QtWidgets.QComboBox(); self.dockbox.addItems(self.DOCKS)
@@ -6274,8 +6400,9 @@ class AdminWindow(QtWidgets.QWidget):
         self.dockbox.setToolTip("Where ⚓ DOCK parks this popup — the geo map (its birth dock), a console "
                                 "edge, the ₿ANKON launcher's side, a screen corner, or the remembered open space")
         wv.addWidget(self.dockbox, 1)
-        dk = QtWidgets.QPushButton("⚓ DOCK"); dk.setToolTip("Park the popup at the chosen dock (remembered)")
-        dk.clicked.connect(lambda: self._apply_dock()); wv.addWidget(dk)
+        dk = QtWidgets.QPushButton("⚓ DOCK"); dk.setToolTip("Park the popup at the chosen dock (remembered); "
+                                                            "'geo map' also brings the Geo Map tab up")
+        dk.clicked.connect(lambda: self._apply_dock(switch=True)); wv.addWidget(dk)
         cl = QtWidgets.QPushButton("📞 CALL console")
         cl.setToolTip("Bring the console window HERE — onto this popup's display — and raise both; "
                       "they find each other even across multiple displays")
@@ -6369,15 +6496,19 @@ class AdminWindow(QtWidgets.QWidget):
         tabs = self.main.tabs
         return QtCore.QRect(tabs.mapToGlobal(QtCore.QPoint(0, 0)), tabs.size())
 
-    def _apply_dock(self, mode=None):
+    def _apply_dock(self, mode=None, switch=False):
         mode = mode or self.dockbox.currentText()
         QtCore.QSettings("BANKON", "bankon-qt").setValue("admin/dock", mode)
         fg = self.frameGeometry(); mg = self.main.frameGeometry()
         scr = (self.screen() or QtGui.QGuiApplication.primaryScreen()).availableGeometry()
-        if mode == "geo map":                # birth dock — the geo display's lower-right corner
+        if mode == "geo map":                # birth dock — BESIDE the globe, right side,
+            geo = getattr(self.main, "geo", None)   # below the 🪙 price strip so both show
+            if switch and geo is not None:
+                self.main.tabs.setCurrentWidget(geo)
             r = self._geomap_rect()
-            pos = QtCore.QPoint(max(r.left(), r.right() - fg.width() - 16),
-                                max(r.top(), r.bottom() - fg.height() - 16))
+            y = r.top() + max(170, (r.height() - fg.height()) // 2)
+            pos = QtCore.QPoint(max(r.left() + 8, r.right() - fg.width() - 12),
+                                min(max(r.top() + 8, y), max(r.top() + 8, r.bottom() - fg.height() - 8)))
         elif mode == "console right":
             pos = QtCore.QPoint(mg.right() + 8, mg.top())
         elif mode == "console left":
@@ -6415,6 +6546,19 @@ class AdminWindow(QtWidgets.QWidget):
         self.raise_(); self.activateWindow()               # popup back on top — DOCK relation
         self.status.setText("📞 console called to this display — popup at its side.")
 
+    # ── 🧊 I.C.E — links only; the tool itself acts (docs/ICE.md: "ICE has precedence") ──
+    def _show_ice_tab(self):
+        self.main.tabs.setCurrentWidget(self.main.ice)
+        self.main.showNormal(); self.main.raise_(); self.main.activateWindow()
+        self.raise_()
+        self.status.setText("🧊 ICE tab opened in the console — the wall, not the theme.")
+    def _launch_ice(self):
+        try:
+            self.main.ice._launch()
+            self.status.setText("🧊 launching the full ICE controller — sudo prompt in the terminal.")
+        except Exception as e:
+            self.status.setText(f"ICE launch failed: {e}")
+
     def _clear_cache(self):
         try:
             from services.rpc_service import clear_cache
@@ -6437,8 +6581,9 @@ class AdminWindow(QtWidgets.QWidget):
 
     def _reset_layout(self):
         st = QtCore.QSettings("BANKON", "bankon-qt")
-        for k in ("tabs/order", "tabs/geomap", "admin/dock", "admin/geometry", "banner/dock",
-                  "geomap/borders", "geomap/cities", "geomap/accuracy", "geomap/price", "geomap/tz"):
+        for k in ("tabs/order", "tabs/geomap", "admin/dock", "admin/geometry", "admin/open",
+                  "banner/dock", "geomap/borders", "geomap/cities", "geomap/accuracy",
+                  "geomap/price", "geomap/tz", "geomap/ovl_node", "geomap/ovl_net", "geomap/ovl_blocks"):
             st.remove(k)
         self.status.setText("🧭 saved layout forgotten — defaults return next launch.")
 
@@ -6450,6 +6595,7 @@ class AdminWindow(QtWidgets.QWidget):
         QtCore.QSettings("BANKON", "bankon-qt").setValue("admin/geometry", self.saveGeometry())
         super().resizeEvent(e)
     def closeEvent(self, e):
+        QtCore.QSettings("BANKON", "bankon-qt").setValue("admin/open", "false")
         e.ignore(); self.hide()                # popup hides — reopen from the 🛠 toolbar button
 
 
@@ -6600,6 +6746,10 @@ class Main(QtWidgets.QMainWindow):
         if QtCore.QSettings("BANKON", "bankon-qt").value("tabs/geomap", "true") == "true":
             self.geo_chk.setChecked(True)              # builds + inserts the Geo Map tab now…
             self.tabs.setCurrentIndex(0)               # …while the session still opens on Overview
+        # 🛠 ADMIN popup auto-opens when it was open last time (default ON — so it is SEEN,
+        # docked beside the globe); deferred so the console is shown and placed first
+        if QtCore.QSettings("BANKON", "bankon-qt").value("admin/open", "true") == "true":
+            QtCore.QTimer.singleShot(700, self._show_admin)
         self.apply_rate(); self.poll_health(); self.do_refresh()
     def current(self): return self.tabs.currentWidget()
     def _save_tab_order(self, *_):
@@ -6661,6 +6811,7 @@ class Main(QtWidgets.QMainWindow):
         self._style_spin_chk(on)
     def _show_admin(self):
         st = QtCore.QSettings("BANKON", "bankon-qt")
+        st.setValue("admin/open", "true")              # visibility is remembered (closes → false)
         if self.admin is None:
             self.admin = AdminWindow(self)
             g = st.value("admin/geometry")

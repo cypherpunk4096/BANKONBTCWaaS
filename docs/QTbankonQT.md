@@ -86,7 +86,12 @@ know keep their default place.
 The **🛠 Admin** toolbar button opens the **ADMIN popup** — every toolbar toggle (Geo Map,
 SPINTRADE, invert, blackICE, refresh rate, thermal pause) as two-way mirrors, plus admin
 actions (refresh-all, open Console/WaaS, clear RPC cache, wipe `.history` with confirm,
-reset saved layout). It follows the ₿ANKON launcher's window choreography: **⚓ DOCK**
+reset saved layout) and a **🧊 I.C.E — the tool** section: open the console's ICE tab or
+launch the full standalone controller (`~/ICE/ice.py`). **🖤 blackICE is only the THEME;
+🧊 I.C.E is the tool** — the thermal wall + RF kill-switch (AIRGAP) + forensics; per
+`ICE.md` the admin only *links* to it, every ICE action executes in ICE itself. The popup
+**auto-opens at startup when it was open last time** (default on, remembered), docked
+beside the globe. It follows the ₿ANKON launcher's window choreography: **⚓ DOCK**
 parks it (**geo map** — its birth dock, console right/left/banner, **launcher right/left**
 — the GTK launcher is found cross-process via wmctrl, screen corners, or open space) and
 **📞 CALL console** summons the console window to the popup's display — the windows find
@@ -103,7 +108,7 @@ remembered across sessions.
 | **Node** | Node state (running/booting/validating/stopped), Start/Stop, live `debug.log` stream, "what/how/where Bitcoin Core is doing" |
 | **Network** | Peer table (addr, subver, direction, ping, height) |
 | **Net Map** | EtherApe-style: our node centre (`bankon:<addr>`), connected peers radial with **traffic-gradient** links (blue→green→orange), **inbound/outbound** tint, sizes by traffic, and a faint **cloud of all known nodes** (addrman). Traffic animates as **comets** — bright head, fading tail laid against the direction of travel (orange streams IN, green OUT), **brightness = link quality** (measured ping) |
-| **Geo Map** | The **whole known network** (addrman, geolocated) as a density layer + connected peers with **great-circle arcs** + **ASN/org** colour & tooltips; EPSG:4326 plate carrée; disclosures (arcs inferred, geo approximate). **🎯 accuracy** toggle draws each address's GeoLite2 `accuracy_radius` circle (globe + flat + flatearth, tier in tooltip, median in caption); legend tallies peers **by country / speed (ping) / uptime**; **🕐 tz** picks UTC (default) / local / fixed offset for every stamp; **🪙 ₿ price** is an OPT-IN CoinGecko free-tier poll (casual, once an hour) drawn completely in-house as an overlay with each price **marked on the hour** — off = zero external contact. Packet flow rides the great-circle arcs as **comets** whose tails bend with the sphere (heading adapts to the projected angle; brightness = link quality), and in **🗺 political** mode each globe node point is labeled with its **address + geographic city, country** |
+| **Geo Map** | The **whole known network** (addrman, geolocated) as a density layer + connected peers with **great-circle arcs** + **ASN/org** colour & tooltips; EPSG:4326 plate carrée; disclosures (arcs inferred, geo approximate). **🎯 accuracy** toggle draws each address's GeoLite2 `accuracy_radius` circle (globe + flat + flatearth, tier in tooltip, median in caption); legend tallies peers **by country / speed (ping) / uptime**; **🕐 tz** picks UTC (default) / local / fixed offset for every stamp; **🪙 ₿ price** is an OPT-IN CoinGecko free-tier poll (casual, once an hour) drawn completely in-house as an overlay with each price **marked on the hour** — off = zero external contact. Packet flow rides the great-circle arcs as **comets** whose tails bend with the sphere (heading adapts to the projected angle; brightness = link quality), and in **🗺 political** mode each globe node point is labeled with its **address + geographic city, country**. Every globe point (peers **and** our node) answers **on hover** with its actual data — ip · location · ±km accuracy · speed (ping + live ▼/▲ B/s) · traffic · uptime · direction (gold ring on the hovered point). The **🏠 local node overlay** (top-left, in-house QPainter) shows this machine's node **prominently** from actual data — NODE (height · sync % · agent) / NET (peers · live ▼/▲ totals · our address) / BLOCKS (tip · age · headers), each line a toggle — with the **time in the chosen timezone** riding its header |
 | **Mempool** | size, vbytes, memory, min relay fee |
 | **Blocks** | Live chain tip (cached) + avg blocktime + recent-blocks table (from `/api/recentblocks`) |
 | **Indexes** | txindex height / tip / % (live), refresh-stamped |

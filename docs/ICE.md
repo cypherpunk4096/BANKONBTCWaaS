@@ -85,10 +85,16 @@ seen persists in one shared **`.history`** (`bankon-console/.history`, shared wi
 passes, **default 7**, plus a final zero pass) for when the location record itself is sensitive.
 
 ### Control links & precedence
-BANKON control surfaces (Qt Control Center, the ₿UTTON) **link to ICE** — they can *launch* it.
-That is the whole contract: ICE exposes **no network listener and no remote-control API**; every
-ICE action (firewall, AIRGAP, thermal, datadir custody, `.history` hygiene) executes only in ICE,
-as root, locally. **ICE has precedence** — nothing outside ICE can drive ICE.
+BANKON control surfaces (Qt Control Center, the ₿UTTON, the Qt **🛠 Admin popup**'s
+"🧊 I.C.E — the tool" section) **link to ICE** — they can *launch* it (or jump to the Qt 🧊 ICE
+tab). That is the whole contract: ICE exposes **no network listener and no remote-control API**;
+every ICE action (firewall, AIRGAP, thermal, datadir custody, `.history` hygiene) executes only in
+ICE, as root, locally. **ICE has precedence** — nothing outside ICE can drive ICE.
+
+> **Naming, once and for all:** 🧊 **I.C.E is the TOOL** (this document — the wall). 🖤 **blackICE
+> is a Qt console THEME** (transparent fields, black font/outlines) that merely borrows the name;
+> §6's *blackICE roadmap* is the tool's future active-defense evolution. The Admin popup labels all
+> three accordingly so they are never confused.
 
 ### E. 3D controllers (knobs)
 Both primary controls are cairo-drawn **rotary knobs** (QKnob-styled: coloured value arc on a dark
