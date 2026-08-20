@@ -178,6 +178,15 @@ def anim_on(w):
         return w.isVisible()
 
 
+def link_quality(p):
+    """Link QUALITY 0.25..1.0 from the peer's measured ping — one law for every map:
+    ≤60 ms → 1.0 (crisp, bright), ≥600 ms → 0.25 (dim, diffuse). Unknown ping = 0.6."""
+    pt = p.get("pingtime") if isinstance(p, dict) else None
+    if not pt:
+        return 0.6
+    return max(0.25, min(1.0, 1.0 - (pt * 1000 - 60) / 720))
+
+
 CANDLE = "#16C784"
 def sync_color(p):
     # <51% dark; 51%→99% dark green → lighter; ≥99% candle green (held to 100%)
@@ -2310,22 +2319,35 @@ class NetworkMapTab(QtWidgets.QWidget):
         # Packets = ACTUAL traffic measured between the last two peer polls (B/s deltas).
         # A direction with zero live traffic shows no dots — the map only flows when data flows.
         c0x, c0y = getattr(self, "_c0", (0.0, 0.0))
-        for k, (x, y, pin, pout) in enumerate(self._links):
+        # COMET packets (improvement fed back from the globe): a bright head with a fading
+        # tail laid exactly against the direction of travel — orange comets visibly STREAM
+        # INTO the centre, green ones stream OUT. Link QUALITY (measured ping) sets the
+        # comet's brightness and tail crispness: fast link = crisp and bright, slow = dim.
+        for k, ln in enumerate(self._links):
+            x, y, pin, pout = ln[0], ln[1], ln[2], ln[3]
+            q = ln[4] if len(ln) > 4 else 0.6
             dx, dy = x - c0x, y - c0y
-            if pin > 0:    # real incoming data — bitcoin orange, external peer → ₿ANKON node
-                npk = 1 + int(round(2 * pin)); spd = 0.6 + 2.4 * pin; rad = 2.0 + 3.0 * pin
+            L = math.hypot(dx, dy) or 1.0
+            ux, uy = dx / L, dy / L                            # unit vector centre → peer
+            for frac, col, inbound in ((pin, ORANGE, True), (pout, GREEN, False)):
+                if frac <= 0: continue
+                npk = 1 + int(round(2 * frac)); spd = 0.6 + 2.4 * frac; rad = 2.0 + 3.0 * frac
+                alpha = int(110 + 145 * q)
+                tlen = (8 + 18 * frac) * (0.55 + 0.45 * q)     # quality link = tighter tail
+                bdir = 1.0 if inbound else -1.0                # tail points BEHIND the head
                 for j in range(npk):
-                    t = (self._phase * spd + j / npk + k * 0.13) % 1.0
-                    px, py = c0x + dx * (1.0 - t), c0y + dy * (1.0 - t)
+                    t = (self._phase * spd + j / npk + k * (0.13 if inbound else 0.17)) % 1.0
+                    tt = 1.0 - t if inbound else t             # inbound heads run peer → centre
+                    px, py = c0x + dx * tt, c0y + dy * tt
+                    mx_, my_ = px + ux * tlen * 0.45 * bdir, py + uy * tlen * 0.45 * bdir
+                    tx, ty = px + ux * tlen * bdir, py + uy * tlen * bdir
+                    self._anim.append(self.scene.addLine(px, py, mx_, my_,
+                        QtGui.QPen(QtGui.QColor(col.red(), col.green(), col.blue(), int(alpha * 0.50)), rad * 0.9)))
+                    self._anim.append(self.scene.addLine(mx_, my_, tx, ty,
+                        QtGui.QPen(QtGui.QColor(col.red(), col.green(), col.blue(), int(alpha * 0.20)), rad * 0.5)))
                     self._anim.append(self.scene.addEllipse(px - rad, py - rad, 2 * rad, 2 * rad,
-                                                            QtGui.QPen(QtCore.Qt.NoPen), QtGui.QBrush(ORANGE)))
-            if pout > 0:   # real outgoing data — candle green, ₿ANKON node → external peer
-                npk = 1 + int(round(2 * pout)); spd = 0.6 + 2.4 * pout; rad = 2.0 + 3.0 * pout
-                for j in range(npk):
-                    t = (self._phase * spd + j / npk + k * 0.17) % 1.0
-                    px, py = c0x + dx * t, c0y + dy * t
-                    self._anim.append(self.scene.addEllipse(px - rad, py - rad, 2 * rad, 2 * rad,
-                                                            QtGui.QPen(QtCore.Qt.NoPen), QtGui.QBrush(GREEN)))
+                        QtGui.QPen(QtCore.Qt.NoPen),
+                        QtGui.QBrush(QtGui.QColor(col.red(), col.green(), col.blue(), alpha))))
         if self._sel:                                              # pulsing selection halo
             sx = sy = None
             for (x, y, r, p) in self._hits:
@@ -2616,7 +2638,7 @@ class NetworkMapTab(QtWidgets.QWidget):
             elif inbound: pen = QtGui.QPen(QtGui.QColor("#F7931A"), 2)         # inbound = orange ring
             else: pen = QtGui.QPen(QtGui.QColor("#14405c"), 1)
             self.scene.addEllipse(x - r, y - r, 2 * r, 2 * r, pen, QtGui.QBrush(col))
-            self._hits.append((x, y, r, p)); self._links.append((x, y, pin, pout))
+            self._hits.append((x, y, r, p)); self._links.append((x, y, pin, pout, link_quality(p)))
             lbl = self.scene.addText(p.get('addr', '')[:24] + "\n" + p.get('subver', '').replace('/', ''))
             lbl.setDefaultTextColor(QtGui.QColor("#FFD37A") if selected else QtGui.QColor("#d6e3ef")); lbl.setScale(0.75)
             if pyramid:
@@ -2645,7 +2667,8 @@ class NetworkMapTab(QtWidgets.QWidget):
             drawn = -(-_kn // max(1, _kn // 240)) if _kn else 0   # exact count the [::step] slice draws
             cloud = (f"cloud shows {drawn} of {len(self._known):,} known" if self._known else "no addrman data yet")
             self.info.setText(f"Network map (topology view — positions are not geographic) — {len(peers)} peers · {cloud} · "
-                              f"orange dots = live data IN (peer→node) · green dots = live data OUT (node→peer) · "
+                              f"orange comets = live data IN (peer→node) · green comets = data OUT · "
+                              f"brightness = link quality (ping) · "
                               f"gold ring = ★favourite · wheel = zoom · click a node{' · cached' if stale else ''}")
         elif acts:
             nc = sum(1 for e in acts if e['kind'] == 'connected'); nf = sum(1 for e in acts if e['kind'] == 'failed')
@@ -2675,6 +2698,7 @@ class GlobeWidget(QtWidgets.QWidget):
         self.zoom = 1.0
         self._drag = None; self._vel = 0.0     # hand-drag state + fling inertia (deg/frame)
         self._nodes, self._peers, self._arcs, self._my = [], [], [], None
+        self._fphase = 0.0                     # packet-flow phase (comets riding the arcs)
         _st = QtCore.QSettings("BANKON", "bankon-qt")
         self.show_borders = _st.value("geomap/borders", "true") == "true"
         self.show_acc = _st.value("geomap/accuracy", "true") == "true"
@@ -2689,6 +2713,7 @@ class GlobeWidget(QtWidgets.QWidget):
             self.spin = (self.spin + self.auto + self._vel) % 360
             self._vel *= 0.92
             if abs(self._vel) < 0.01: self._vel = 0.0
+        self._fphase += 0.03                   # packet flow keeps moving even when spin is held
         self.update()
     # --- interaction (learned from QGlobe / Qt_Globe_Engine / Marble): grab to rotate,
     #     wheel to zoom, inertial fling on release; pure-QPainter so it works software-rendered ---
@@ -2713,9 +2738,9 @@ class GlobeWidget(QtWidgets.QWidget):
     def set_data(self, nodes, peers, my):
         self._nodes_total = len(nodes)         # full count, so captions can be honest about the cut
         self._nodes = nodes[:700]              # subsample the cloud for smooth spin
-        self._peers = peers
+        self._peers = peers                    # list of dicts — see GeoMapTab._redraw for the keys
         self._my = my
-        self._arcs = [great_circle_points(my[0], my[1], p[0], p[1], 36) for p in peers] if my else []
+        self._arcs = [great_circle_points(my[0], my[1], p["lat"], p["lon"], 36) for p in peers] if my else []
         self.update()
     def _proj(self, lat, lon, cx, cy, R):
         p = math.radians(lat); l = math.radians(lon + self.spin)
@@ -2729,6 +2754,41 @@ class GlobeWidget(QtWidgets.QWidget):
             if prev is not None and prev[2] and cur[2]:
                 qp.drawLine(QtCore.QPointF(prev[0], prev[1]), QtCore.QPointF(cur[0], cur[1]))
             prev = cur
+    def _flow_arc(self, qp, pts, pin, pout, q, k):
+        """Packet COMETS riding a projected great-circle arc: the head follows the arc, the
+        fading tail is drawn from the arc's own trailing samples — so both bend WITH the
+        sphere and always point along the true direction of travel. orange = data IN
+        (peer→node), green = OUT; link QUALITY (measured ping) sets brightness — a crisp
+        bright comet is a fast link, a dim one a slow link. Arcs run node→peer."""
+        n = len(pts)
+        if n < 2 or (pin <= 0 and pout <= 0):
+            return
+        for frac, col, inbound in ((pin, QtGui.QColor("#F7931A"), True),
+                                   (pout, QtGui.QColor("#16C784"), False)):
+            if frac <= 0: continue
+            npk = 1 + int(round(2 * frac)); spd = 0.5 + 2.0 * frac; rad = 1.5 + 2.3 * frac
+            alpha = int(110 + 145 * q)
+            tail = 2 + int(3 * frac)
+            for j in range(npk):
+                t = (self._fphase * spd + j / npk + k * (0.13 if inbound else 0.17)) % 1.0
+                if inbound: t = 1.0 - t                       # IN travels peer→node (param ↓)
+                fpos = t * (n - 1); i0 = int(fpos); fr = fpos - i0
+                a, b = pts[i0], pts[min(i0 + 1, n - 1)]
+                if not (a[2] and b[2]): continue              # front hemisphere only
+                hx, hy = a[0] + (b[0] - a[0]) * fr, a[1] + (b[1] - a[1]) * fr
+                step = 1 if inbound else -1                   # tail = BEHIND the direction of travel
+                px, py = hx, hy
+                for s in range(1, tail + 1):
+                    ii = i0 + step * s
+                    if not (0 <= ii < n) or not pts[ii][2]: break
+                    fade = 1 - s / (tail + 1.0)
+                    qp.setPen(QtGui.QPen(QtGui.QColor(col.red(), col.green(), col.blue(),
+                                                      int(alpha * fade * 0.55)), max(0.8, rad * fade)))
+                    qp.drawLine(QtCore.QPointF(px, py), QtCore.QPointF(pts[ii][0], pts[ii][1]))
+                    px, py = pts[ii][0], pts[ii][1]
+                qp.setPen(QtCore.Qt.NoPen)
+                qp.setBrush(QtGui.QBrush(QtGui.QColor(col.red(), col.green(), col.blue(), alpha)))
+                qp.drawEllipse(QtCore.QPointF(hx, hy), rad, rad)
     def _ensure_map(self, R):
         """Spin-independent per-pixel map (lat→row, base-lon→col, Lambert shade, disc mask).
         Rebuilt only when size/tilt/zoom change; spin is a cheap column shift each frame."""
@@ -2808,12 +2868,17 @@ class GlobeWidget(QtWidgets.QWidget):
         for (la, lo) in self._nodes:                                    # known-node cloud
             x, y, v = self._proj(la, lo, cx, cy, R)
             if v: qp.drawEllipse(QtCore.QPointF(x, y), 1.4, 1.4)
-        qp.setPen(QtGui.QPen(QtGui.QColor(247, 147, 26, 180), 1.2))     # great-circle arcs
-        for arc in self._arcs:
-            self._polyline(qp, [self._proj(la, lo, cx, cy, R) for (la, lo) in arc])
+        # great-circle arcs — projected once per frame, then REUSED by the packet flow so the
+        # comets ride the exact same curve the eye sees (heading adapts to the sphere's angle)
+        proj_arcs = [[self._proj(la, lo, cx, cy, R) for (la, lo) in arc] for arc in self._arcs]
+        qp.setPen(QtGui.QPen(QtGui.QColor(247, 147, 26, 180), 1.2))
+        for pa in proj_arcs:
+            self._polyline(qp, pa)
+        for i, p in enumerate(self._peers):
+            if i >= len(proj_arcs): break
+            self._flow_arc(qp, proj_arcs[i], p.get("pin", 0.0), p.get("pout", 0.0), p.get("q", 0.6), i)
         for pk in self._peers:                                         # connected peers
-            la, lo, col, r = pk[0], pk[1], pk[2], pk[3]
-            acc = pk[4] if len(pk) > 4 else 0
+            la, lo, col, r, acc = pk["lat"], pk["lon"], pk["col"], pk["r"], pk.get("acc", 0)
             x, y, v = self._proj(la, lo, cx, cy, R)
             if not v: continue
             if acc and self.show_acc:
@@ -2826,6 +2891,14 @@ class GlobeWidget(QtWidgets.QWidget):
                     qp.drawEllipse(QtCore.QPointF(x, y), ar, ar)
             qp.setPen(QtGui.QPen(QtGui.QColor("#0b0f15"), 1)); qp.setBrush(QtGui.QBrush(col))
             qp.drawEllipse(QtCore.QPointF(x, y), r, r)
+            # 🗺 political mode: each node point states its DATA — address, then geographic
+            # city + country — right on the sphere (front hemisphere only)
+            if self.show_borders and pk.get("label"):
+                f = qp.font(); f.setPointSize(8); f.setBold(False); qp.setFont(f)
+                qp.setPen(QtGui.QColor(230, 237, 243, 225))
+                qp.drawText(QtCore.QPointF(x + r + 3, y - 1), pk["label"][0])
+                qp.setPen(QtGui.QColor(138, 190, 220, 205))
+                qp.drawText(QtCore.QPointF(x + r + 3, y + 10), pk["label"][1])
         if self._my:                                                    # our node
             x, y, v = self._proj(self._my[0], self._my[1], cx, cy, R)
             if v:
@@ -3304,32 +3377,41 @@ class GeoMapTab(QtWidgets.QWidget):
         if not self._flows:
             return
         self._fphase += 0.04
-        ORANGE = QtGui.QColor("#F7931A"); GREEN = QtGui.QColor("#16C784")
-        def at(pts, t):
-            # position along a (possibly seam-broken) polyline at parameter t ∈ [0,1)
-            n = len(pts)
-            f = t * (n - 1); i = int(f); fr = f - i
-            a, b = pts[i], pts[min(i + 1, n - 1)]
-            if a is None or b is None: return None
-            return (a[0] + (b[0] - a[0]) * fr, a[1] + (b[1] - a[1]) * fr)
-        for k, (pts, pin, pout) in enumerate(self._flows):
+        # COMETS, not plain dots: the head rides the arc, a fading tail is laid along the
+        # arc's own trailing samples — so the trail bends with the great circle and always
+        # points against the direction of travel. Link QUALITY (ping) sets brightness.
+        for k, (pts, pin, pout, q) in enumerate(self._flows):
             if len(pts) < 2: continue
-            if pin > 0:      # peer → OUR node: run the arc backwards (pts are node→peer)
-                npk = 1 + int(round(2 * pin)); spd = 0.5 + 2.0 * pin; rad = 1.6 + 2.4 * pin
-                for j in range(npk):
-                    t = (self._fphase * spd + j / npk + k * 0.11) % 1.0
-                    pos = at(pts, 1.0 - t)
-                    if pos:
-                        self._fanim.append(self.scene.addEllipse(pos[0] - rad, pos[1] - rad, 2 * rad, 2 * rad,
-                                                                 QtGui.QPen(QtCore.Qt.NoPen), QtGui.QBrush(ORANGE)))
-            if pout > 0:     # OUR node → peer
-                npk = 1 + int(round(2 * pout)); spd = 0.5 + 2.0 * pout; rad = 1.6 + 2.4 * pout
-                for j in range(npk):
-                    t = (self._fphase * spd + j / npk + k * 0.17) % 1.0
-                    pos = at(pts, t)
-                    if pos:
-                        self._fanim.append(self.scene.addEllipse(pos[0] - rad, pos[1] - rad, 2 * rad, 2 * rad,
-                                                                 QtGui.QPen(QtCore.Qt.NoPen), QtGui.QBrush(GREEN)))
+            self._comet(pts, pin, QtGui.QColor("#F7931A"), True, k, q)    # IN: peer → node
+            self._comet(pts, pout, QtGui.QColor("#16C784"), False, k, q)  # OUT: node → peer
+    def _comet(self, pts, frac, col, inbound, k, q):
+        """One direction's comets along a (possibly seam-broken) node→peer polyline."""
+        if frac <= 0:
+            return
+        n = len(pts)
+        npk = 1 + int(round(2 * frac)); spd = 0.5 + 2.0 * frac; rad = 1.6 + 2.4 * frac
+        alpha = int(110 + 145 * q)
+        tail = 2 + int(3 * frac)
+        for j in range(npk):
+            t = (self._fphase * spd + j / npk + k * (0.11 if inbound else 0.17)) % 1.0
+            if inbound: t = 1.0 - t                       # IN runs the arc backwards
+            f = t * (n - 1); i0 = int(f); fr = f - i0
+            a, b = pts[i0], pts[min(i0 + 1, n - 1)]
+            if a is None or b is None: continue           # antimeridian seam break
+            hx, hy = a[0] + (b[0] - a[0]) * fr, a[1] + (b[1] - a[1]) * fr
+            step = 1 if inbound else -1                   # tail trails BEHIND the travel direction
+            px, py = hx, hy
+            for s in range(1, tail + 1):
+                ii = i0 + step * s
+                if not (0 <= ii < n) or pts[ii] is None: break
+                fade = 1 - s / (tail + 1.0)
+                pen = QtGui.QPen(QtGui.QColor(col.red(), col.green(), col.blue(),
+                                              int(alpha * fade * 0.55)), max(0.8, rad * fade))
+                self._fanim.append(self.scene.addLine(px, py, pts[ii][0], pts[ii][1], pen))
+                px, py = pts[ii][0], pts[ii][1]
+            self._fanim.append(self.scene.addEllipse(hx - rad, hy - rad, 2 * rad, 2 * rad,
+                                                     QtGui.QPen(QtCore.Qt.NoPen),
+                                                     QtGui.QBrush(QtGui.QColor(col.red(), col.green(), col.blue(), alpha))))
     def _my_latlon(self):
         la = (self._ni or {}).get("localaddresses") or []
         for a in la:
@@ -3450,7 +3532,7 @@ class GeoMapTab(QtWidgets.QWidget):
                 ri, ro = self._rates.get(p.get("addr"), (0.0, 0.0))
                 pin, pout = NetworkMapTab._flow_frac(ri), NetworkMapTab._flow_frac(ro)
                 if pin > 0 or pout > 0:
-                    self._flows.append((pts, pin, pout))
+                    self._flows.append((pts, pin, pout, link_quality(p)))
             _macc = getattr(self, "_my_acc", None)
             if _macc and self.acc_chk.isChecked():
                 self._draw_acc(mx, my_y, my[0], _macc, QtGui.QColor("#F7931A"))
@@ -3482,7 +3564,6 @@ class GeoMapTab(QtWidgets.QWidget):
             r = 5 + min(6, traf / (1 << 21))
             acc = g.get("acc") or 0
             if acc: accs.append(acc)
-            gpeers.append((g["lat"], g["lon"], col, max(4.0, r), acc))
             if acc and self.acc_chk.isChecked():
                 self._draw_acc(x, y, g["lat"], acc, col)     # the ADDRESS is inside this circle
             self.scene.addEllipse(x - r - 3, y - r - 3, 2 * (r + 3), 2 * (r + 3), QtGui.QPen(QtCore.Qt.NoPen), QtGui.QBrush(QtGui.QColor(col.red(), col.green(), col.blue(), 60)))
@@ -3492,6 +3573,14 @@ class GeoMapTab(QtWidgets.QWidget):
             _ce = nearest_city_entry(g["lat"], g["lon"])
             _pop = f", pop {_ce[5]:,}" if len(_ce) > 5 and _ce[5] else ""
             _city = f"{g['city']} (GeoIP)" if g.get("city") else f"near {_ce[0]} (~{_ce[4]:.0f} km{_pop})"
+            # globe payload: position/size/colour + accuracy + LIVE flow fractions + link
+            # quality + the political-mode label (address · geographic city, country)
+            _ri, _ro = self._rates.get(p.get("addr"), (0.0, 0.0))
+            gpeers.append({"lat": g["lat"], "lon": g["lon"], "col": col, "r": max(4.0, r), "acc": acc,
+                           "pin": NetworkMapTab._flow_frac(_ri), "pout": NetworkMapTab._flow_frac(_ro),
+                           "q": link_quality(p),
+                           "label": ((p.get("addr") or "")[:28],
+                                     f"{g.get('city') or _ce[0]}, {g['country']}")})
             _accs = f"±{acc:,} km ({self._acc_tier(acc)})" if acc else "accuracy unknown"
             _ping = f"{p.get('pingtime', 0) * 1000:.0f} ms" if p.get("pingtime") else "ping ?"
             _up = human_dt(time.time() - p["conntime"]) if p.get("conntime") else "?"
@@ -3542,7 +3631,11 @@ class GeoMapTab(QtWidgets.QWidget):
                 dd = self.scene.addEllipse(x - 4, y - 4, 8, 8, QtGui.QPen(QtGui.QColor("#eef3f8"), 1), QtGui.QBrush(col))
                 dd.setToolTip(f"{e.get('kind')} {e.get('addr')} · {flag(g['iso'])} {g['country']}"
                               + (f" · ±{g['acc']:,} km" if g.get("acc") else ""))
-                gpeers.append((g["lat"], g["lon"], col, 5.0, g.get("acc") or 0)); act_plotted += 1
+                gpeers.append({"lat": g["lat"], "lon": g["lon"], "col": col, "r": 5.0,
+                               "acc": g.get("acc") or 0,
+                               "label": ((e.get("addr") or "")[:28],
+                                         f"{g.get('city') or '?'}, {g['country']}")})
+                act_plotted += 1
         # AE disc: fit the view to the DISC (square scene rect), not the 2:1 pixmap —
         # otherwise the flat-earth occupies only the centre of a wide letterboxed scene
         if self.projmode == "flatearth":
@@ -6063,6 +6156,209 @@ class SpintradeTab(QtWidgets.QWidget):
         self.src.setText(f"source: {src} · as of block {d.get('asOfBlock','—')} · prices in SAT · exact to 18 dp")
 
 
+class AdminWindow(QtWidgets.QWidget):
+    """🛠 ADMIN — every toolbar toggle plus admin actions in ONE POPUP, styled after the
+    ₿ANKON launcher's window choreography: ⚓ DOCK parks it, 📞 CALL summons the console,
+    so the two windows always FIND EACH OTHER — even across multiple displays. Resizable;
+    drag the ⠿ grip and DROP it — near a console edge or a screen corner it SNAPS to that
+    dock, anywhere else it docks to that OPEN SPACE — and both the dock choice and the
+    exact position are remembered across sessions. Read-only invariants hold: nothing in
+    this window can spend or touch a key."""
+    DOCK_FREE = "open space (remembered)"
+    DOCKS = ["console right", "console left", "console banner",
+             "screen ↖", "screen ↗", "screen ↙", "screen ↘", DOCK_FREE]
+
+    def __init__(self, main):
+        super().__init__(None, QtCore.Qt.Window)
+        self.main = main
+        self.setWindowTitle("🛠 ₿ANKON Admin")
+        self.setMinimumSize(300, 340)          # resizable — this is only the floor
+        self.resize(420, 540)
+        v = QtWidgets.QVBoxLayout(self)
+        grow = QtWidgets.QHBoxLayout()
+        self.grip = QtWidgets.QLabel("⠿ drag")
+        self.grip.setStyleSheet("color:#8aa0b4;font-weight:800;padding:2px 8px;border:1px solid #14405c;border-radius:6px")
+        self.grip.setToolTip("Drag the popup by this grip. DROP near a console edge or a screen corner to "
+                             "snap-dock there; drop anywhere else to dock in that open space. Remembered.")
+        self.grip.setCursor(QtCore.Qt.OpenHandCursor)
+        self.grip.installEventFilter(self); self._gdrag = None
+        grow.addWidget(self.grip)
+        t = QtWidgets.QLabel("🛠 ADMIN — toggles & controls"); t.setStyleSheet("color:#F7931A;font-weight:800")
+        grow.addWidget(t); grow.addStretch(1)
+        v.addLayout(grow)
+        # ── toggles: two-way mirrors of the console toolbar (flip here or there — same switch) ──
+        tg = QtWidgets.QGroupBox("Toggles"); tv = QtWidgets.QVBoxLayout(tg)
+        for text, src in (("🌍 Geo Map tab", main.geo_chk),
+                          ("⟲ SPINTRADE (consent-gated)", main.spin_chk),
+                          ("◐ invert theme", main.inv_chk),
+                          ("🖤 blackICE theme", main.blackice_chk)):
+            tv.addWidget(self._mirror_chk(text, src))
+        rrow = QtWidgets.QHBoxLayout()
+        rrow.addWidget(QtWidgets.QLabel("↻ auto-refresh"))
+        self.rate = QtWidgets.QComboBox()
+        for i in range(main.rate.count()):
+            self.rate.addItem(main.rate.itemText(i), main.rate.itemData(i))
+        self.rate.setCurrentIndex(main.rate.currentIndex())
+        self.rate.currentIndexChanged.connect(main.rate.setCurrentIndex)
+        main.rate.currentIndexChanged.connect(
+            lambda i: (self.rate.blockSignals(True), self.rate.setCurrentIndex(i), self.rate.blockSignals(False)))
+        rrow.addWidget(self.rate); rrow.addStretch(1)
+        rrow.addWidget(QtWidgets.QLabel("⏸@"))
+        self.ptemp = QtWidgets.QSpinBox(); self.ptemp.setRange(80, 110); self.ptemp.setSuffix("°C")
+        self.ptemp.setValue(main.pausetemp.value()); self.ptemp.setToolTip(main.pausetemp.toolTip())
+        self.ptemp.valueChanged.connect(main.pausetemp.setValue)      # same-value set doesn't loop
+        main.pausetemp.valueChanged.connect(self.ptemp.setValue)
+        rrow.addWidget(self.ptemp)
+        tv.addLayout(rrow)
+        v.addWidget(tg)
+        # ── admin actions ──
+        ag = QtWidgets.QGroupBox("Admin"); av = QtWidgets.QGridLayout(ag)
+        acts = [("↻ refresh all now", "Refresh the active tab immediately", main.do_refresh),
+                ("🌐 open web Console", CONSOLE_URL, lambda: webbrowser.open(CONSOLE_URL)),
+                ("＋ open WaaS", WAAS_URL, lambda: webbrowser.open(WAAS_URL)),
+                ("🧹 clear RPC cache", "Drop every cached RPC result — next refresh pulls fresh", self._clear_cache),
+                ("🗑 wipe .history", "Delete the local connectivity evidence trail (confirmed first)", self._wipe_history),
+                ("🧭 reset saved layout", "Forget tab order, geomap toggles and this popup's dock memory", self._reset_layout)]
+        for i, (txt, tip, cb) in enumerate(acts):
+            b = QtWidgets.QPushButton(txt); b.setToolTip(tip); b.clicked.connect(cb)
+            av.addWidget(b, i // 2, i % 2)
+        v.addWidget(ag)
+        # ── window choreography (the launcher's DOCK / CALL, in-process) ──
+        wg = QtWidgets.QGroupBox("Window"); wv = QtWidgets.QHBoxLayout(wg)
+        self.dockbox = QtWidgets.QComboBox(); self.dockbox.addItems(self.DOCKS)
+        saved = QtCore.QSettings("BANKON", "bankon-qt").value("admin/dock", "console right")
+        if saved in self.DOCKS: self.dockbox.setCurrentText(saved)
+        self.dockbox.setToolTip("Where ⚓ DOCK parks this popup — a console edge, a screen corner, "
+                                "or the remembered open space")
+        wv.addWidget(self.dockbox, 1)
+        dk = QtWidgets.QPushButton("⚓ DOCK"); dk.setToolTip("Park the popup at the chosen dock (remembered)")
+        dk.clicked.connect(lambda: self._apply_dock()); wv.addWidget(dk)
+        cl = QtWidgets.QPushButton("📞 CALL console")
+        cl.setToolTip("Bring the console window HERE — onto this popup's display — and raise both; "
+                      "they find each other even across multiple displays")
+        cl.clicked.connect(self._call_console); wv.addWidget(cl)
+        v.addWidget(wg)
+        self.status = QtWidgets.QLabel(""); self.status.setStyleSheet("color:#8aa0b4"); self.status.setWordWrap(True)
+        v.addWidget(self.status); v.addStretch(1)
+
+    def _mirror_chk(self, text, src):
+        c = QtWidgets.QCheckBox(text)
+        c.setChecked(src.isChecked()); c.setToolTip(src.toolTip())
+        c.toggled.connect(src.setChecked)                 # admin → toolbar (real switch)
+        src.toggled.connect(                              # toolbar → admin (silent echo)
+            lambda on, cc=c: (cc.blockSignals(True), cc.setChecked(on), cc.blockSignals(False)))
+        return c
+
+    # ── grip drag: move the whole popup; on drop, snap-dock or claim the open space ──
+    def eventFilter(self, obj, ev):
+        if obj is self.grip:
+            t = ev.type()
+            if t == QtCore.QEvent.MouseButtonPress and ev.button() == QtCore.Qt.LeftButton:
+                self._gdrag = ev.globalPosition().toPoint() - self.frameGeometry().topLeft()
+                self.grip.setCursor(QtCore.Qt.ClosedHandCursor); return True
+            if t == QtCore.QEvent.MouseMove and self._gdrag is not None:
+                self.move(ev.globalPosition().toPoint() - self._gdrag); return True
+            if t == QtCore.QEvent.MouseButtonRelease and self._gdrag is not None:
+                self._gdrag = None; self.grip.setCursor(QtCore.Qt.OpenHandCursor)
+                self._drop_snap(); return True
+        return super().eventFilter(obj, ev)
+
+    def _drop_snap(self):
+        fg = self.frameGeometry(); mg = self.main.frameGeometry()
+        scr = (self.screen() or QtGui.QGuiApplication.primaryScreen()).availableGeometry()
+        mode = self.DOCK_FREE
+        if abs(fg.left() - mg.right()) < 48 and abs(fg.top() - mg.top()) < 220:
+            mode = "console right"
+        elif abs(fg.right() - mg.left()) < 48 and abs(fg.top() - mg.top()) < 220:
+            mode = "console left"
+        elif mg.contains(fg.center()) and fg.center().y() > mg.center().y():
+            mode = "console banner"
+        else:
+            for corner, cx, cy in (("screen ↖", scr.left(), scr.top()), ("screen ↗", scr.right(), scr.top()),
+                                   ("screen ↙", scr.left(), scr.bottom()), ("screen ↘", scr.right(), scr.bottom())):
+                if (min(abs(fg.left() - cx), abs(fg.right() - cx)) < 56
+                        and min(abs(fg.top() - cy), abs(fg.bottom() - cy)) < 56):
+                    mode = corner; break
+        self.dockbox.blockSignals(True); self.dockbox.setCurrentText(mode); self.dockbox.blockSignals(False)
+        QtCore.QSettings("BANKON", "bankon-qt").setValue("admin/dock", mode)
+        if mode != self.DOCK_FREE:
+            self._apply_dock(mode)
+            self.status.setText(f"⚓ snapped: {mode} (remembered)")
+        else:
+            self.status.setText("⚓ docked to this open space — position remembered")
+
+    def _apply_dock(self, mode=None):
+        mode = mode or self.dockbox.currentText()
+        QtCore.QSettings("BANKON", "bankon-qt").setValue("admin/dock", mode)
+        fg = self.frameGeometry(); mg = self.main.frameGeometry()
+        scr = (self.screen() or QtGui.QGuiApplication.primaryScreen()).availableGeometry()
+        if mode == "console right":
+            pos = QtCore.QPoint(mg.right() + 8, mg.top())
+        elif mode == "console left":
+            pos = QtCore.QPoint(mg.left() - fg.width() - 8, mg.top())
+        elif mode == "console banner":       # the '₿ the wallet you can ₿ANKON' field, bottom-left
+            pos = QtCore.QPoint(mg.left() + 16, mg.bottom() - fg.height() - 16)
+        elif mode.startswith("screen"):
+            c = mode.split()[-1]
+            pos = QtCore.QPoint(scr.left() + 12 if c in ("↖", "↙") else scr.right() - fg.width() - 12,
+                                scr.top() + 12 if c in ("↖", "↗") else scr.bottom() - fg.height() - 12)
+        else:                                # open space — stay at the remembered free spot
+            self.show(); self.raise_(); self.activateWindow(); return
+        self.move(pos); self.show(); self.raise_(); self.activateWindow()
+        self.status.setText(f"⚓ docked: {mode}")
+
+    def _call_console(self):
+        m = self.main
+        fg = self.frameGeometry()
+        scr = (self.screen() or QtGui.QGuiApplication.primaryScreen()).availableGeometry()
+        mw, mh = m.frameGeometry().width(), m.frameGeometry().height()
+        x = fg.left() - mw - 8                             # console to the popup's LEFT if it fits…
+        if x < scr.left(): x = fg.right() + 8              # …otherwise to its right
+        x = max(scr.left(), min(x, scr.right() - mw))
+        y = max(scr.top(), min(fg.top() - 24, scr.bottom() - mh))
+        m.showNormal(); m.move(x, y)                       # crosses displays to reach the popup
+        m.raise_(); m.activateWindow()
+        self.raise_(); self.activateWindow()               # popup back on top — DOCK relation
+        self.status.setText("📞 console called to this display — popup at its side.")
+
+    def _clear_cache(self):
+        try:
+            from services.rpc_service import clear_cache
+            clear_cache(); self.status.setText("🧹 RPC cache cleared — next refresh pulls fresh.")
+        except Exception as e:
+            self.status.setText(f"cache clear failed: {e}")
+
+    def _wipe_history(self):
+        r = QtWidgets.QMessageBox.question(
+            self, "Wipe .history?",
+            "Delete the local .history evidence trail (a PUBLIC record of connectivity)?\n"
+            "Mint/anchor first in 🧊 ICE if you want a verifiable copy. This cannot be undone.",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No, QtWidgets.QMessageBox.No)
+        if r == QtWidgets.QMessageBox.Yes:
+            try:
+                from services import history_service as H
+                H.delete(); self.status.setText("🗑 .history wiped.")
+            except Exception as e:
+                self.status.setText(f"wipe failed: {e}")
+
+    def _reset_layout(self):
+        st = QtCore.QSettings("BANKON", "bankon-qt")
+        for k in ("tabs/order", "admin/dock", "admin/geometry", "banner/dock", "geomap/borders",
+                  "geomap/cities", "geomap/accuracy", "geomap/price", "geomap/tz"):
+            st.remove(k)
+        self.status.setText("🧭 saved layout forgotten — defaults return next launch.")
+
+    # memory of position/size — every move or resize is written (multi-display safe)
+    def moveEvent(self, e):
+        QtCore.QSettings("BANKON", "bankon-qt").setValue("admin/geometry", self.saveGeometry())
+        super().moveEvent(e)
+    def resizeEvent(self, e):
+        QtCore.QSettings("BANKON", "bankon-qt").setValue("admin/geometry", self.saveGeometry())
+        super().resizeEvent(e)
+    def closeEvent(self, e):
+        e.ignore(); self.hide()                # popup hides — reopen from the 🛠 toolbar button
+
+
 class Main(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__(); self.setWindowTitle("₿ANKON ₿ITCOIN Wallet as a Service")
@@ -6101,6 +6397,7 @@ class Main(QtWidgets.QMainWindow):
         self.geo = None          # Geo Map is OPTIONAL (toolbar toggle, default OFF) — built lazily so
                                  # its GeoIP lookups + globe spin-timer cost nothing unless enabled.
         self.spin = None         # ⟲ SPINTRADE is OPTIONAL — always starts OFF; consent-gated attach.
+        self.admin = None        # 🛠 ADMIN popup — built on first open (toolbar button).
         self.ords = OrdinalsTab()   # 🜚 Ordinals — a STANDARD tab (idle-free: no timers; work only on click)
         self.oracle = OracleTab()
         self.con = ConsoleTab()
@@ -6153,6 +6450,11 @@ class Main(QtWidgets.QMainWindow):
         self.blackice_chk.setToolTip("blackICE theme — transparent fields, black font, thin prominent black outline "
                                      "on every field (mutually exclusive with ◐ invert).")
         self.blackice_chk.toggled.connect(self._toggle_blackice); bar.addWidget(self.blackice_chk)
+        adm = QtWidgets.QPushButton("🛠 Admin")
+        adm.setToolTip("Open the ADMIN popup — every toggle + admin actions in one resizable window,\n"
+                       "with ⚓ DOCK / 📞 CALL choreography (launcher-style) so it and the console\n"
+                       "find each other even across multiple displays. Dock spot is remembered.")
+        adm.clicked.connect(self._show_admin); bar.addWidget(adm)
         self.status_lbl = QtWidgets.QLabel("  ● checking…"); self.status_lbl.setStyleSheet("color:#8aa0b4; " + CHIP); bar.addWidget(self.status_lbl)
         self.core_lbl = QtWidgets.QLabel(" ● CORE"); bar.addWidget(self.core_lbl)
         self.core_lbl.setToolTip("₿itcoin Core monitor — orange ON · red OFF · green ring = connecting/feeding")
@@ -6258,6 +6560,18 @@ class Main(QtWidgets.QMainWindow):
             self.spin.deleteLater(); self.spin = None      # ABSOLUTE detach — nothing keeps running
             H.append("spintrade", state="detached")
         self._style_spin_chk(on)
+    def _show_admin(self):
+        st = QtCore.QSettings("BANKON", "bankon-qt")
+        if self.admin is None:
+            self.admin = AdminWindow(self)
+            g = st.value("admin/geometry")
+            if g is not None:
+                self.admin.restoreGeometry(g)          # memory: size + position, any display
+        mode = st.value("admin/dock", "console right")
+        self.admin.show()
+        if mode != AdminWindow.DOCK_FREE:
+            self.admin._apply_dock(mode)               # console-relative docks re-park live
+        self.admin.raise_(); self.admin.activateWindow()
     def _toggle_geo(self, on):
         # Build the Geo Map on enable (insert right after Net Map); destroy on disable so its
         # globe spin-timer + GeoIP work fully stop — "default off = nothing running".
@@ -6285,6 +6599,9 @@ class Main(QtWidgets.QMainWindow):
         for name in ("timer", "health", "systimer", "coretimer", "logt", "nettimer"):
             try: getattr(self, name).stop()
             except Exception: pass
+        try:                                  # the 🛠 ADMIN popup must not outlive the console
+            if self.admin is not None: self.admin.hide()
+        except Exception: pass
         for t in self.findChildren(QtCore.QTimer):    # child-widget timers (map pulse, globe spin, oracle throb)
             try: t.stop()
             except Exception: pass
