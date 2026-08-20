@@ -1,6 +1,6 @@
 {
   "name": "bankon-waas",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
   "description": "BANKON Wallet-as-a-Service — non-custodial. Keys are minted client-side; the node holds watch-only descriptors only.",
