@@ -6163,9 +6163,16 @@ class AdminWindow(QtWidgets.QWidget):
     drag the ⠿ grip and DROP it — near a console edge or a screen corner it SNAPS to that
     dock, anywhere else it docks to that OPEN SPACE — and both the dock choice and the
     exact position are remembered across sessions. Read-only invariants hold: nothing in
-    this window can spend or touch a key."""
+    this window can spend or touch a key.
+
+    BIRTH DOCK: with nothing remembered yet, the popup begins life docked on the GEO MAP
+    (the geo display's corner when the tab is up, the tab area otherwise) and can then be
+    moved to any preference — every move is remembered. It docks with the ₿ANKON LAUNCHER
+    too (a separate GTK process, found via wmctrl exactly the way the launcher finds the
+    console), not only with the console window."""
     DOCK_FREE = "open space (remembered)"
-    DOCKS = ["console right", "console left", "console banner",
+    DOCKS = ["geo map", "console right", "console left", "console banner",
+             "launcher right", "launcher left",
              "screen ↖", "screen ↗", "screen ↙", "screen ↘", DOCK_FREE]
 
     def __init__(self, main):
@@ -6226,10 +6233,10 @@ class AdminWindow(QtWidgets.QWidget):
         # ── window choreography (the launcher's DOCK / CALL, in-process) ──
         wg = QtWidgets.QGroupBox("Window"); wv = QtWidgets.QHBoxLayout(wg)
         self.dockbox = QtWidgets.QComboBox(); self.dockbox.addItems(self.DOCKS)
-        saved = QtCore.QSettings("BANKON", "bankon-qt").value("admin/dock", "console right")
+        saved = QtCore.QSettings("BANKON", "bankon-qt").value("admin/dock", "geo map")
         if saved in self.DOCKS: self.dockbox.setCurrentText(saved)
-        self.dockbox.setToolTip("Where ⚓ DOCK parks this popup — a console edge, a screen corner, "
-                                "or the remembered open space")
+        self.dockbox.setToolTip("Where ⚓ DOCK parks this popup — the geo map (its birth dock), a console "
+                                "edge, the ₿ANKON launcher's side, a screen corner, or the remembered open space")
         wv.addWidget(self.dockbox, 1)
         dk = QtWidgets.QPushButton("⚓ DOCK"); dk.setToolTip("Park the popup at the chosen dock (remembered)")
         dk.clicked.connect(lambda: self._apply_dock()); wv.addWidget(dk)
@@ -6266,11 +6273,19 @@ class AdminWindow(QtWidgets.QWidget):
     def _drop_snap(self):
         fg = self.frameGeometry(); mg = self.main.frameGeometry()
         scr = (self.screen() or QtGui.QGuiApplication.primaryScreen()).availableGeometry()
+        lg = self._launcher_geom()
         mode = self.DOCK_FREE
-        if abs(fg.left() - mg.right()) < 48 and abs(fg.top() - mg.top()) < 220:
+        if self._geomap_rect().contains(fg.center()) and getattr(self.main, "geo", None) is not None \
+                and self.main.geo.isVisible():
+            mode = "geo map"                 # dropped ON the geo display → its birth dock
+        elif abs(fg.left() - mg.right()) < 48 and abs(fg.top() - mg.top()) < 220:
             mode = "console right"
         elif abs(fg.right() - mg.left()) < 48 and abs(fg.top() - mg.top()) < 220:
             mode = "console left"
+        elif lg is not None and abs(fg.left() - lg.right()) < 48 and abs(fg.top() - lg.top()) < 220:
+            mode = "launcher right"
+        elif lg is not None and abs(fg.right() - lg.left()) < 48 and abs(fg.top() - lg.top()) < 220:
+            mode = "launcher left"
         elif mg.contains(fg.center()) and fg.center().y() > mg.center().y():
             mode = "console banner"
         else:
@@ -6287,17 +6302,60 @@ class AdminWindow(QtWidgets.QWidget):
         else:
             self.status.setText("⚓ docked to this open space — position remembered")
 
+    @staticmethod
+    def _launcher_geom():
+        """The ₿ANKON launcher's window rect — a SEPARATE GTK process, found via wmctrl
+        exactly the way the launcher finds the console. None when it isn't running (or
+        wmctrl is absent), so callers can say so instead of docking to nowhere."""
+        import shutil
+        if not shutil.which("wmctrl"):
+            return None
+        try:
+            out = subprocess.run(["wmctrl", "-lG"], capture_output=True, text=True, timeout=5).stdout
+        except Exception:
+            return None
+        for ln in out.splitlines():
+            p = ln.split(None, 7)
+            if len(p) >= 8 and "launcher" in p[7].lower() and (
+                    "bankon" in p[7].lower() or "₿ankon" in p[7].lower()):
+                try:
+                    return QtCore.QRect(int(p[2]), int(p[3]), int(p[4]), int(p[5]))
+                except ValueError:
+                    pass
+        return None
+
+    def _geomap_rect(self):
+        """Global rect of the geo map's display when the tab is up; the tab area otherwise
+        — the popup's BIRTH dock anchors here."""
+        geo = getattr(self.main, "geo", None)
+        if geo is not None and geo.isVisible():
+            return QtCore.QRect(geo.stack.mapToGlobal(QtCore.QPoint(0, 0)), geo.stack.size())
+        tabs = self.main.tabs
+        return QtCore.QRect(tabs.mapToGlobal(QtCore.QPoint(0, 0)), tabs.size())
+
     def _apply_dock(self, mode=None):
         mode = mode or self.dockbox.currentText()
         QtCore.QSettings("BANKON", "bankon-qt").setValue("admin/dock", mode)
         fg = self.frameGeometry(); mg = self.main.frameGeometry()
         scr = (self.screen() or QtGui.QGuiApplication.primaryScreen()).availableGeometry()
-        if mode == "console right":
+        if mode == "geo map":                # birth dock — the geo display's lower-right corner
+            r = self._geomap_rect()
+            pos = QtCore.QPoint(max(r.left(), r.right() - fg.width() - 16),
+                                max(r.top(), r.bottom() - fg.height() - 16))
+        elif mode == "console right":
             pos = QtCore.QPoint(mg.right() + 8, mg.top())
         elif mode == "console left":
             pos = QtCore.QPoint(mg.left() - fg.width() - 8, mg.top())
         elif mode == "console banner":       # the '₿ the wallet you can ₿ANKON' field, bottom-left
             pos = QtCore.QPoint(mg.left() + 16, mg.bottom() - fg.height() - 16)
+        elif mode.startswith("launcher"):
+            lg = self._launcher_geom()
+            if lg is None:
+                self.show(); self.raise_(); self.activateWindow()
+                self.status.setText("⚓ launcher not found — is the ₿ANKON launcher running (and wmctrl installed)?")
+                return
+            pos = (QtCore.QPoint(lg.right() + 8, lg.top()) if mode.endswith("right")
+                   else QtCore.QPoint(lg.left() - fg.width() - 8, lg.top()))
         elif mode.startswith("screen"):
             c = mode.split()[-1]
             pos = QtCore.QPoint(scr.left() + 12 if c in ("↖", "↙") else scr.right() - fg.width() - 12,
@@ -6567,10 +6625,10 @@ class Main(QtWidgets.QMainWindow):
             g = st.value("admin/geometry")
             if g is not None:
                 self.admin.restoreGeometry(g)          # memory: size + position, any display
-        mode = st.value("admin/dock", "console right")
+        mode = st.value("admin/dock", "geo map")       # BIRTH dock: the geo map, until moved
         self.admin.show()
         if mode != AdminWindow.DOCK_FREE:
-            self.admin._apply_dock(mode)               # console-relative docks re-park live
+            self.admin._apply_dock(mode)               # relative docks re-park live
         self.admin.raise_(); self.admin.activateWindow()
     def _toggle_geo(self, on):
         # Build the Geo Map on enable (insert right after Net Map); destroy on disable so its

@@ -87,11 +87,15 @@ The **🛠 Admin** toolbar button opens the **ADMIN popup** — every toolbar to
 SPINTRADE, invert, blackICE, refresh rate, thermal pause) as two-way mirrors, plus admin
 actions (refresh-all, open Console/WaaS, clear RPC cache, wipe `.history` with confirm,
 reset saved layout). It follows the ₿ANKON launcher's window choreography: **⚓ DOCK**
-parks it (console right/left/banner, screen corners, or open space) and **📞 CALL console**
-summons the console window to the popup's display — the two windows find each other even
-across multiple displays. Resizable; drag the **⠿ grip** and drop it — near a console
-edge or a screen corner it snaps to that dock, anywhere else it claims that open space —
-and both the dock choice and exact position are remembered across sessions.
+parks it (**geo map** — its birth dock, console right/left/banner, **launcher right/left**
+— the GTK launcher is found cross-process via wmctrl, screen corners, or open space) and
+**📞 CALL console** summons the console window to the popup's display — the windows find
+each other even across multiple displays. The popup **begins life docked on the geo map**
+(the geo display's corner when the tab is up, the tab area otherwise) and can then be
+moved as preference. Resizable; drag the **⠿ grip** and drop it — on the geo display,
+near a console or launcher edge, or in a screen corner it snaps to that dock, anywhere
+else it claims that open space — and both the dock choice and exact position are
+remembered across sessions.
 
 | Tab | What it shows |
 |-----|---------------|
