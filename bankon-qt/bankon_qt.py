@@ -3167,8 +3167,40 @@ class NodeInfoOverlay(QtWidgets.QWidget):
         self._tzfmt = tzfmt
         self._d = {}
         self._flags = ("node", "net", "blocks")
-        self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
+        # never in the way: DRAG anywhere on the card to move it (snap-docks to a corner on
+        # release, or stays free), drag the ⇲ grip to RESIZE — both remembered
+        self.on_layout = None                   # GeoMapTab's persist/snap hook
+        self._drag = None; self._resz = None
+        self.setMouseTracking(True)
+        self.setCursor(QtCore.Qt.OpenHandCursor)
         self.hide()
+    def _in_grip(self, pos):
+        return pos.x() > self.width() - 18 and pos.y() > self.height() - 18
+    def mousePressEvent(self, e):
+        if e.button() != QtCore.Qt.LeftButton: return
+        if self._in_grip(e.position()):
+            self._resz = (e.position().x(), self.width())
+        else:
+            self._drag = e.position(); self.setCursor(QtCore.Qt.ClosedHandCursor)
+    def mouseMoveEvent(self, e):
+        par = self.parentWidget()
+        if self._resz is not None and par is not None:
+            w = int(self._resz[1] + e.position().x() - self._resz[0])
+            self.resize(max(240, min(par.width() - self.x() - 6, w)), self.wanted_height())
+            self.update()
+        elif self._drag is not None and par is not None:
+            np_ = self.mapToParent(e.position()) - self._drag
+            self.move(int(max(0, min(np_.x(), par.width() - self.width()))),
+                      int(max(0, min(np_.y(), par.height() - self.height()))))
+        else:
+            self.setCursor(QtCore.Qt.SizeFDiagCursor if self._in_grip(e.position())
+                           else QtCore.Qt.OpenHandCursor)
+    def mouseReleaseEvent(self, e):
+        moved = self._drag is not None or self._resz is not None
+        self._drag = self._resz = None
+        self.setCursor(QtCore.Qt.OpenHandCursor)
+        if moved and self.on_layout:
+            self.on_layout()
     def set_flags(self, flags):
         self._flags = tuple(flags); self.update()
     def set_data(self, d):
@@ -3193,6 +3225,8 @@ class NodeInfoOverlay(QtWidgets.QWidget):
             y += 16
             qp.setPen(QtGui.QColor("#5a7891")); qp.drawText(10, y, self.LBL.get(k, k.upper()))
             qp.setPen(QtGui.QColor("#d6e3ef")); qp.drawText(62, y, (self._d.get(k) or "…")[:170])
+        qp.setPen(QtGui.QColor("#3a4b5c"))      # ⇲ resize grip, bottom-right
+        qp.drawText(w - 14, h - 5, "⇲")
         qp.end()
 
 
@@ -3276,6 +3310,14 @@ class GeoMapTab(QtWidgets.QWidget):
                                   "🥇🥈🥉 measured-fastest medals (score/ping) · 🚫 banned addresses as red ✖ "
                                   "at their geolocation")
         self.marks_chk.toggled.connect(self._marks_toggled); row2.addWidget(self.marks_chk)
+        self.maxbtn = QtWidgets.QPushButton("⛶ max")
+        self.maxbtn.setToolTip("Maximize the geo display to the whole screen — ⤢ retract (or Esc) puts it "
+                               "back exactly where it was")
+        self.maxbtn.clicked.connect(self._toggle_max); row2.addWidget(self.maxbtn)
+        ngb = QtWidgets.QPushButton("🌐 +globe")
+        ngb.setToolTip("Create a NEW globe instance in its own window to watch — fed the same live data; "
+                       "drag it to any display, close it when done")
+        ngb.clicked.connect(self._new_globe); row2.addWidget(ngb)
         # 🏠 local-node overlay toggles — the participant's own node, prominent, actual data
         self.ovl_node = QtWidgets.QCheckBox("🏠 node")
         self.ovl_node.setToolTip("Overlay line: this node's height · sync % · agent (actual getblockchaininfo)")
@@ -3322,6 +3364,10 @@ class GeoMapTab(QtWidgets.QWidget):
         mid = QtWidgets.QHBoxLayout(); mid.setSpacing(0)
         mid.addWidget(self.stack, 1); mid.addWidget(self.feed)
         v.addLayout(mid, 1)
+        self._mid = mid                         # ⛶ max lifts the stack out and retracts it here
+        self._max_win = None
+        self._watchers = []                     # 🌐 +globe: (window, GlobeWidget) mirrors
+        self.stack.installEventFilter(self)     # any stack resize (tab OR fullscreen) → re-place overlays
         self._mp_prev = None                    # (txcount, t) for the mempool Δ line
         self._fast, self._favs, self._banned = {}, set(), []   # 🏆 Net Map knowledge
         # 🪙 price OVERLAY floats over whichever view is showing (globe / flat / flatearth / advanced)
@@ -3331,6 +3377,7 @@ class GeoMapTab(QtWidgets.QWidget):
         self._price_timer.setInterval(60_000)   # 1-min heartbeat that only ACTS once an hour
         # 🏠 local-node OVERLAY (top-left counterpart) + its data + a 1 s clock in the chosen tz
         self.node_overlay = NodeInfoOverlay(self.stack, self._tzfmt)
+        self.node_overlay.on_layout = self._nodeovl_dropped   # drag/resize → snap-dock + remember
         self._bci = {}
         self._clock_t = QtCore.QTimer(self); self._clock_t.timeout.connect(self._clock_tick)
         self._clock_t.start(1000)
@@ -3425,9 +3472,86 @@ class GeoMapTab(QtWidgets.QWidget):
         w = min(360, max(240, self.stack.width() - 24))
         self.price_overlay.setGeometry(max(8, self.stack.width() - w - 12), 10, w, 150)
         self.price_overlay.raise_()
-        nw = min(560, max(280, int(self.stack.width() * 0.5)))
-        self.node_overlay.setGeometry(10, 10, nw, self.node_overlay.wanted_height())
+        # 🏠 card: remembered dock corner (TL/TR/BL/BR) or the remembered free spot + width
+        st = QtCore.QSettings("BANKON", "bankon-qt")
+        dock = st.value("geomap/nodeovl", "TL")
+        try:
+            gx, gy, gw = [int(t) for t in (st.value("geomap/nodeovl_geom") or "").split(",")]
+        except Exception:
+            gx, gy, gw = 10, 10, 0
+        sw, sh = self.stack.width(), self.stack.height()
+        nw = max(240, min(gw or int(sw * 0.5), max(240, sw - 20)))
+        nh = self.node_overlay.wanted_height()
+        pos = {"TL": (10, 10), "TR": (sw - nw - 10, 10),
+               "BL": (10, sh - nh - 10), "BR": (sw - nw - 10, sh - nh - 10)}.get(dock)
+        if pos is None:                          # free — clamp the remembered spot into view
+            pos = (max(0, min(gx, sw - nw)), max(0, min(gy, sh - nh)))
+        self.node_overlay.setGeometry(pos[0], pos[1], nw, nh)
         self.node_overlay.raise_()
+    def eventFilter(self, obj, ev):
+        if obj is self.stack and ev.type() == QtCore.QEvent.Resize:
+            self._place_overlays()
+        return super().eventFilter(obj, ev)
+    # ── ⛶ maximize the geo display to the screen · ⤢ retract to its original position ──
+    def _toggle_max(self):
+        if self._max_win is None:
+            w = self._max_win = QtWidgets.QWidget(None)
+            w.setWindowTitle("🌍 ₿ANKON Geo Map — fullscreen (Esc or ⤢ to retract)")
+            lay = QtWidgets.QVBoxLayout(w); lay.setContentsMargins(4, 4, 4, 4)
+            bar = QtWidgets.QHBoxLayout()
+            back = QtWidgets.QPushButton("⤢ retract")
+            back.setToolTip("Return the geo display to its place in the tab (Esc works too)")
+            back.clicked.connect(self._toggle_max); bar.addWidget(back); bar.addStretch(1)
+            lay.addLayout(bar)
+            self.stack.setParent(None); lay.addWidget(self.stack, 1)   # overlays ride along
+            w.keyPressEvent = lambda e: self._toggle_max() if e.key() == QtCore.Qt.Key_Escape else None
+            def _closed(e):
+                if self._max_win is not None: self._toggle_max()       # WM close = retract, never lose the stack
+                e.accept()
+            w.closeEvent = _closed
+            w.showFullScreen()
+            self.maxbtn.setText("⤢ retract")
+        else:
+            w, self._max_win = self._max_win, None
+            self.stack.setParent(None)
+            self._mid.insertWidget(0, self.stack, 1)                   # back to the original position
+            w.deleteLater()
+            self.maxbtn.setText("⛶ max")
+        QtCore.QTimer.singleShot(150, self._place_overlays)
+    # ── 🌐 +globe: an extra watcher globe in its own window, fed the same live data ──
+    def _new_globe(self):
+        gw = GlobeWidget()
+        win = QtWidgets.QWidget(None)
+        win.setWindowTitle("🌐 ₿ANKON Globe — watcher")
+        lay = QtWidgets.QVBoxLayout(win); lay.setContentsMargins(2, 2, 2, 2); lay.addWidget(gw)
+        win.resize(520, 540)
+        gw.show_borders = self.globe.show_borders; gw.show_acc = self.globe.show_acc
+        gw.my_tip = self.globe.my_tip
+        gw.set_data(list(self.globe._nodes), self.globe._peers, self.globe._my)
+        self._watchers.append((win, gw))
+        def _closed(e, w=win):
+            self._watchers = [(a, b) for (a, b) in self._watchers if a is not w]
+            e.accept()
+        win.closeEvent = _closed
+        win.show()
+    def close_aux_windows(self):
+        for w, _g in list(self._watchers): w.close()
+        if self._max_win is not None: self._toggle_max()
+    def _nodeovl_dropped(self):
+        # drop → snap-dock to the nearest stack corner (≤40 px) or keep the free spot; remember
+        st = QtCore.QSettings("BANKON", "bankon-qt")
+        g = self.node_overlay.geometry()
+        sw, sh = self.stack.width(), self.stack.height()
+        dock = "free"
+        for k, (dx, dy) in {"TL": (g.left() - 10, g.top() - 10),
+                            "TR": (sw - 10 - g.right(), g.top() - 10),
+                            "BL": (g.left() - 10, sh - 10 - g.bottom()),
+                            "BR": (sw - 10 - g.right(), sh - 10 - g.bottom())}.items():
+            if abs(dx) < 40 and abs(dy) < 40:
+                dock = k; break
+        st.setValue("geomap/nodeovl", dock)
+        st.setValue("geomap/nodeovl_geom", f"{g.x()},{g.y()},{g.width()}")
+        self._place_overlays()
     # ── 🏠 local-node overlay: prominent, actual data — node/net/blocks toggles + time ──
     def _nodeinfo_changed(self, _on):
         st = QtCore.QSettings("BANKON", "bankon-qt")
@@ -4002,8 +4126,11 @@ class GeoMapTab(QtWidgets.QWidget):
                    f" · median {human_dt(_ups[len(_ups) // 2])}")
         self.legend.setText(f"peers by country (located only): {top_c or '—'}"
                             + (f"     top ASNs: {top_a}" if top_a else "") + spd + upt)
-        # feed the spinning globe (same data, projected onto the sphere)
+        # feed the spinning globe (same data, projected onto the sphere) — and every watcher
         self.globe.set_data([(n["lat"], n["lon"]) for n in self._net], gpeers, my)
+        for _w, _gw in self._watchers:
+            _gw.my_tip = self.globe.my_tip
+            _gw.set_data(list(self.globe._nodes), gpeers, my)
         self._update_nodeinfo()                 # 🏠 overlay rides the same truth
     def resizeEvent(self, e):
         if self.scene.sceneRect().width(): self.view.fitInView(self.scene.sceneRect(), QtCore.Qt.KeepAspectRatio)
@@ -4171,7 +4298,7 @@ class BlockSciencePanel(QtWidgets.QFrame):
     """🔬 Scientific analysis of a SINGLE block — defaults to the CURRENT RUNNING TIP and follows it
     as new blocks arrive; any height on demand. A visual workflow rendered from actual node
     measurements only (getblockhash → getblockheader + getblockstats, no third party):
-        ① identity → ② proof-of-work → ③ structure → ④ economics
+        ① identity → ② proof-of-work → ③ structure → ④ cryptnomics
     DeFi meets sci-fi, and ₿ANKON.oracle is accuracy: every figure below is measured, none estimated."""
     def __init__(self):
         super().__init__(); self.setObjectName("scienceframe")
@@ -4191,7 +4318,7 @@ class BlockSciencePanel(QtWidgets.QFrame):
         self.head.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse); self.head.setWordWrap(True)
         v.addWidget(self.head)
         grid = QtWidgets.QGridLayout(); grid.setHorizontalSpacing(18); self.q = {}
-        for col, (key, title) in enumerate([("pow", "② proof-of-work"), ("struct", "③ structure"), ("econ", "④ economics")]):
+        for col, (key, title) in enumerate([("pow", "② proof-of-work"), ("struct", "③ structure"), ("econ", "④ cryptnomics")]):
             lab = QtWidgets.QLabel(f"<b>{title}</b>"); lab.setStyleSheet("color:#00BFFF"); grid.addWidget(lab, 0, col)
             body = QtWidgets.QLabel("…"); body.setStyleSheet("font-family:monospace;font-size:11px;color:#c9d4e0")
             body.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse); body.setWordWrap(True)
@@ -4251,15 +4378,23 @@ class BlockSciencePanel(QtWidgets.QFrame):
             f"segwit share {100*sw/w if w else 0:.1f}%\n"
             f"inputs {S.get('ins',0):,} · outputs {S.get('outs',0):,}\n"
             f"UTXO Δ {S.get('utxo_increase',0):+,}")
-        # economics stay INTEGER SATOSHIS end-to-end; display is exact Decimal at 18 dp
-        # (first 8 decimals = satoshi resolution, tail zeros exact) — no float /1e8 anywhere
+        # cryptnomics stay INTEGER SATOSHIS end-to-end; display is exact Decimal at 18 dp
+        # (first 8 decimals = satoshi resolution, tail zeros exact) — no float /1e8 anywhere.
+        # Fees are MEASURED, not just totalled: a "0.03 ₿TC fees" block is ~3M sat spread
+        # over thousands of txs — the per-tx and per-vB lines below say what was really paid.
         sub_s = S.get("subsidy", 0) or 0; fee_s = S.get("totalfee", 0) or 0
+        ntx = max(1, S.get("txs", 1) - 1)                 # fee-paying txs (coinbase pays none)
+        pctl = S.get("feerate_percentiles") or []
+        p50 = pctl[2] if len(pctl) == 5 else None
+        share = 100.0 * fee_s / (sub_s + fee_s) if (sub_s + fee_s) else 0.0
         self.q["econ"].setText(
             f"subsidy {btc18(sub_s)} ₿TC\n"
-            f"fees {btc18(fee_s)} ₿TC\n"
-            f"reward {btc18(sub_s + fee_s)} ₿TC\n"
-            f"avg feerate {S.get('avgfeerate',0)} sat/vB\n"
-            f"avg fee {S.get('avgfee',0):,} sat\n"
+            f"fees {btc18(fee_s)} ₿TC = {fee_s:,} sat\n"
+            f"  = {share:.2f}% of the {btc18(sub_s + fee_s)} ₿TC reward\n"
+            f"  ÷ {ntx:,} paying txs → avg {S.get('avgfee', 0):,} sat · median {S.get('medianfee', 0):,} sat\n"
+            f"feerate avg {S.get('avgfeerate', 0)} sat/vB"
+            + (f" · median {p50} sat/vB" if p50 is not None else "") + "\n"
+            f"fee span {S.get('minfee', 0):,} – {S.get('maxfee', 0):,} sat\n"
             f"total out {btc18(S.get('total_out', 0))} ₿TC")
         self.fullbar.setValue(min(4_000_000, int(w)))
         pct = S.get("feerate_percentiles") or []
@@ -5081,15 +5216,40 @@ class ControlTab(QtWidgets.QWidget):
         # -- Admin: node control + AIRGAP switch --
         v.addWidget(QtWidgets.QLabel("<b>⚙ Admin</b> — node control · airgap for WaaS wallet generation"))
         ar = QtWidgets.QHBoxLayout()
-        st = QtWidgets.QPushButton("▶ Start node"); st.clicked.connect(self._start); ar.addWidget(st)
+        self.start_btn = QtWidgets.QPushButton("▶ Start node")
+        self.start_btn.clicked.connect(self._start); ar.addWidget(self.start_btn)
         sp = QtWidgets.QPushButton("■ Stop node"); sp.setObjectName("danger"); sp.clicked.connect(self._stop); ar.addWidget(sp)
         ar.addSpacing(24)
         self.airgap = QtWidgets.QPushButton("…"); self.airgap.setEnabled(False)   # armed once state is known
         self.airgap.setToolTip("setnetworkactive — take the ₿itcoin network dark, generate wallet keys in the "
                                "WaaS with zero P2P traffic, then switch back ON")
         self.airgap.clicked.connect(self._toggle_net); ar.addWidget(self.airgap)
-        waas = QtWidgets.QPushButton("Open WaaS"); waas.clicked.connect(lambda: webbrowser.open(WAAS_URL)); ar.addWidget(waas)
+        self.waas_btn = QtWidgets.QPushButton("Open WaaS")
+        self.waas_btn.clicked.connect(lambda: webbrowser.open(WAAS_URL)); ar.addWidget(self.waas_btn)
         ar.addStretch(); v.addLayout(ar)
+        # -- pruned node controls: the lean WaaS backend (bankon-nodes.sh · RPC :8342) --
+        pr = QtWidgets.QHBoxLayout()
+        pr.addWidget(QtWidgets.QLabel("pruned WaaS node:"))
+        self.pstart_btn = QtWidgets.QPushButton("▶ Start pruned")
+        self.pstart_btn.setToolTip("Start the lean pruned node (bankon-nodes.sh start pruned — RPC :8342, "
+                                   "prune=2048, plays nice with the archival node)")
+        self.pstart_btn.clicked.connect(lambda: self._pruned("start")); pr.addWidget(self.pstart_btn)
+        pstop = QtWidgets.QPushButton("■ Stop pruned"); pstop.setObjectName("danger")
+        pstop.setToolTip("Stop the pruned node — the full archival node keeps running")
+        pstop.clicked.connect(lambda: self._pruned("stop")); pr.addWidget(pstop)
+        pr.addStretch(); v.addLayout(pr)
+        # -- 🐧 host OS — shown ABOVE the tools so the platform is never a mystery --
+        _pretty, _fam, _pkg = os_release()
+        self._pkg_cmd = _pkg
+        osl = QtWidgets.QLabel(
+            f"🐧 OS: {_pretty} — " + ("Debian family ✓ (apt) — ₿ANKON ₿TC's first-class host" if _fam == "debian"
+            else f"{_fam} family — supported, installs via {' '.join(_pkg)}" if _pkg
+            else "unrecognized — install packages manually"))
+        osl.setStyleSheet("color:%s;font-weight:600" % ("#16C784" if _fam == "debian"
+                                                        else "#F7931A" if _pkg else "#f85149"))
+        osl.setToolTip("/etc/os-release · ₿ANKON ₿TC is developed on Debian variants; other Linux "
+                       "families are recognized and one-click installs adapt to their package manager")
+        v.addWidget(osl)
         # -- External tools: EtherApe live wire visualizer (also surfaced in 🧊 ICE) --
         v.addWidget(QtWidgets.QLabel("<b>🔧 External tools</b> — forensic wire visualizer"))
         xr = QtWidgets.QHBoxLayout()
@@ -5100,9 +5260,15 @@ class ControlTab(QtWidgets.QWidget):
                                    "₿ANKON's Net Map borrows from: node size ∝ traffic, protocol colors.\n"
                                    "docs/reference/etherape.md")
         xr.addWidget(self.eth_status, 1)
-        eb = QtWidgets.QPushButton("🕸 EtherApe (port 8333)"); eb.setObjectName("secondary"); eb.setEnabled(_ok)
-        eb.setToolTip("pkexec etherape -f 'port 8333' — live pcap of this node's ₿itcoin P2P traffic")
-        eb.clicked.connect(lambda: etherape_launch(self.eth_status.setText)); xr.addWidget(eb)
+        self.eth_install = QtWidgets.QPushButton("⬇ Install EtherApe")
+        self.eth_install.setToolTip("ONE CLICK: pkexec %s etherape — authorize in the prompt, the button "
+                                    "flips to launch when done" % (" ".join(_pkg) if _pkg else "<pkg-mgr>"))
+        self.eth_install.setVisible(not _ok); self.eth_install.setEnabled(_pkg is not None)
+        self.eth_install.clicked.connect(self._install_etherape); xr.addWidget(self.eth_install)
+        self.eth_launch = QtWidgets.QPushButton("🕸 EtherApe (port 8333)")
+        self.eth_launch.setObjectName("secondary"); self.eth_launch.setEnabled(_ok)
+        self.eth_launch.setToolTip("pkexec etherape -f 'port 8333' — live pcap of this node's ₿itcoin P2P traffic")
+        self.eth_launch.clicked.connect(lambda: etherape_launch(self.eth_status.setText)); xr.addWidget(self.eth_launch)
         v.addLayout(xr)
         self.status = QtWidgets.QLabel("network state: checking…"); self.status.setStyleSheet("color:#8aa0b4")
         v.addWidget(self.status)
@@ -5135,6 +5301,74 @@ class ControlTab(QtWidgets.QWidget):
                 if c == 1: it.setForeground(QtGui.QColor("#16C784" if up else "#f85149"))
                 self.t.setItem(r, c, it)
         self.t.resizeColumnsToContents()
+        up_by_port = {port: up for (name, port, up, ms) in rows or []}
+        self._style_node_btn(up_by_port.get(8332))
+        self._style_pruned_btn(up_by_port.get(8342))
+        self._style_waas_btn(up_by_port.get(self._port_of(WAAS_URL, 8088)))
+    def _style_node_btn(self, up):
+        # launcher idiom: Start LOOKS PRESSED (sunken green) while the node it starts is running
+        if up is None: return
+        if up:
+            self.start_btn.setText("● Node running")
+            self.start_btn.setToolTip("₿itcoin Core RPC :8332 is up — Start is held pressed while it runs")
+            self.start_btn.setStyleSheet(
+                "QPushButton{background:#0a4a24;color:#bfe8cd;border:2px solid #06371b;"
+                "border-radius:8px;padding:4px 12px;font-weight:800;}"
+                "QPushButton:hover{background:#0a4a24;}")
+        else:
+            self.start_btn.setText("▶ Start node")
+            self.start_btn.setToolTip("Start bitcoind")
+            self.start_btn.setStyleSheet("")
+    def _style_pruned_btn(self, up):
+        if up is None: return
+        if up:
+            self.pstart_btn.setText("● Pruned running")
+            self.pstart_btn.setToolTip("Pruned node RPC :8342 is up — held pressed while it runs")
+            self.pstart_btn.setStyleSheet(
+                "QPushButton{background:#0a4a24;color:#bfe8cd;border:2px solid #06371b;"
+                "border-radius:8px;padding:4px 12px;font-weight:800;}"
+                "QPushButton:hover{background:#0a4a24;}")
+        else:
+            self.pstart_btn.setText("▶ Start pruned")
+            self.pstart_btn.setStyleSheet("")
+    NODES_SH = os.path.expanduser("~/bankon-tools/bankon-nodes.sh")
+    def _pruned(self, action):
+        self.status.setText(f"pruned node: {action}…")
+        def work():
+            r = subprocess.run(["bash", self.NODES_SH, action, "pruned"],
+                               capture_output=True, text=True, timeout=90)
+            return ((r.stdout or "") + (r.stderr or "")).strip()[-160:] or f"{action} dispatched"
+        spawn_fn(work, lambda s: (self.status.setText(f"pruned node: {s}"), self._probe()),
+                 lambda e: self.status.setText(f"pruned {action} failed: {e}"))
+    def _install_etherape(self):
+        if not self._pkg_cmd:
+            self.eth_status.setText("no known package manager — install etherape manually"); return
+        self.eth_status.setText("⬇ installing etherape — authorize in the pkexec prompt…")
+        self.eth_install.setEnabled(False)
+        def work():
+            r = subprocess.run(["pkexec"] + self._pkg_cmd + ["etherape"],
+                               capture_output=True, text=True, timeout=600)
+            return r.returncode
+        def done(rc):
+            ok, txt = etherape_status()
+            self.eth_status.setText(txt if ok else f"install did not complete (rc {rc}) — {txt}")
+            self.eth_status.setStyleSheet("color:%s" % ("#16C784" if ok else "#f85149"))
+            self.eth_launch.setEnabled(ok)
+            self.eth_install.setVisible(not ok); self.eth_install.setEnabled(not ok)
+        spawn_fn(work, done, lambda e: (self.eth_status.setText(f"install failed: {e}"),
+                                        self.eth_install.setEnabled(True)))
+    def _style_waas_btn(self, up):
+        # Open WaaS highlights CANDLE GREEN while the WaaS is live at its port
+        if up is None: return
+        if up:
+            self.waas_btn.setStyleSheet(
+                "QPushButton{background:#16C784;color:#04220f;border:1px solid #0b5d34;"
+                "border-radius:8px;padding:4px 12px;font-weight:800;}"
+                "QPushButton:hover{background:#27d96b;}")
+            self.waas_btn.setToolTip(f"₿ANKON WaaS is LIVE — {WAAS_URL}")
+        else:
+            self.waas_btn.setStyleSheet("")
+            self.waas_btn.setToolTip(WAAS_URL + "   (WaaS not running — ~/bankon-tools/bankon up)")
     # ---- thermal & host card (called by Main._sys so there's exactly one /api/system poller) ----
     def update_sys(self, d, paused):
         t = d.get("tempC")
@@ -5564,6 +5798,28 @@ class OrdinalsTab(QtWidgets.QWidget):
                  on_fail=lambda e: (self.out.setPlainText(str(e)),
                                     self.status.setText(f"○ {method} failed (is `ord` installed & the "
                                                         f"{self.netbox.currentText()} node running?)")))
+
+
+def os_release():
+    """(pretty, family, pkg_install_cmd) from /etc/os-release. ₿ANKON ₿TC targets Debian
+    variants first-class (apt); other Linux families are recognized and get their own
+    package-manager install command so one-click installs still work."""
+    info = {}
+    try:
+        for ln in open("/etc/os-release"):
+            if "=" in ln:
+                k, val = ln.rstrip().split("=", 1); info[k] = val.strip('"')
+    except Exception:
+        pass
+    ids = (info.get("ID", "") + " " + info.get("ID_LIKE", "")).lower()
+    pretty = info.get("PRETTY_NAME") or "unknown Linux"
+    import shutil as _sh
+    if "debian" in ids or "ubuntu" in ids or _sh.which("apt-get"):
+        return pretty, "debian", ["apt-get", "install", "-y"]
+    if _sh.which("dnf"):    return pretty, "fedora", ["dnf", "install", "-y"]
+    if _sh.which("pacman"): return pretty, "arch", ["pacman", "-S", "--noconfirm"]
+    if _sh.which("zypper"): return pretty, "suse", ["zypper", "--non-interactive", "install"]
+    return pretty, "unknown", None
 
 
 def etherape_status():
@@ -7011,6 +7267,8 @@ class Main(QtWidgets.QMainWindow):
             self.tabs.insertTab(i, self.geo, "🌍 Geo Map")
             self.tabs.setCurrentWidget(self.geo)                  # currentChanged → refresh
         elif self.geo is not None:
+            try: self.geo.close_aux_windows()   # watcher globes + fullscreen retract first
+            except Exception: pass
             i = self.tabs.indexOf(self.geo)
             if i != -1: self.tabs.removeTab(i)
             self.geo.deleteLater(); self.geo = None
