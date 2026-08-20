@@ -196,6 +196,20 @@
     </details>
 
     <details name="faq">
+      <summary>What are Ordinals — inscriptions, runes, rare sats?</summary>
+      <p class="muted"><b>Ordinal theory</b> numbers every satoshi by the order it was mined, so an
+        individual sat can be tracked, collected, and <b>inscribed</b> with content carried in a taproot
+        witness — an immutable on-chain artifact; <b>runes</b> are fungible tokens etched/minted with the
+        same tooling. <b>Custody differs from the wallets above:</b> ordinal wallets are descriptor
+        wallets <b>inside your own Bitcoin Core</b> (the node holds those keys), and BANKON keeps
+        <b>ordinal</b> and <b>cardinal</b> (plain-BTC) wallets strictly separated so an inscribed sat is
+        never spent away as change. Every action is gated fail-closed — dry-run first, explicit
+        ⚠ broadcast, refused over 0.1 ₿TC or on unknown balance. Use the 🜚 Ordinals tab above, the
+        Console's 🜚 tab, or the Qt app's 🜚 tab — one gated engine behind all three.
+        <a href="/docs/ordinals.md" target="_blank" rel="noopener">Ordinals guide ↗</a></p>
+    </details>
+
+    <details name="faq">
       <summary>Which wallet type should I choose?</summary>
       <p class="muted">Short answer: <b>Native SegWit (bc1q…)</b> — the BTC Standard default, lowest fees,
         universally spendable. <b>Taproot (bc1p…)</b> if you want the newest script system and best privacy.

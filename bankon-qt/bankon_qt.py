@@ -5615,6 +5615,11 @@ class OrdinalsTab(QtWidgets.QWidget):
     Degrades honestly: no module → says so; no `ord` binary → the preflight report says so."""
     def __init__(self):
         super().__init__(); v = QtWidgets.QVBoxLayout(self)
+        # ord commonly lives in ~/.cargo/bin (source build — the only build that matches this
+        # host's glibc); make sure this process actually SEES it before any diagnostics run
+        _cargo = os.path.expanduser("~/.cargo/bin")
+        if os.path.isdir(_cargo) and _cargo not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = _cargo + os.pathsep + os.environ.get("PATH", "")
         h = QtWidgets.QLabel("🜚 Ordinals — inscriptions · runes · sat hunting (gated interaction)")
         h.setStyleSheet("font-weight:700;font-size:15px;color:#F7931A"); v.addWidget(h)
         top = QtWidgets.QHBoxLayout()
@@ -5625,6 +5630,12 @@ class OrdinalsTab(QtWidgets.QWidget):
         pf.clicked.connect(self.preflight); top.addWidget(pf)
         self.status = QtWidgets.QLabel("—"); top.addWidget(self.status); top.addStretch(1)
         v.addLayout(top)
+        # 🩺 always-visible diagnostics strip: ord binary · key preflight facts · ord server
+        self.diag = QtWidgets.QLabel("🩺 diagnostics run automatically on first open — or press ▶ preflight")
+        self.diag.setStyleSheet("color:#8aa0b4"); self.diag.setWordWrap(True)
+        self.diag.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        v.addWidget(self.diag)
+        self._srv_state = ""
         wl = QtWidgets.QHBoxLayout()
         wl.addWidget(QtWidgets.QLabel("wallet:"))
         self.wname = QtWidgets.QLineEdit(); self.wname.setPlaceholderText("ord wallet name (e.g. ord-main)")
@@ -5645,6 +5656,7 @@ class OrdinalsTab(QtWidgets.QWidget):
         gl = QtWidgets.QGridLayout(box)
         gl.addWidget(QtWidgets.QLabel("ord server:"), 0, 0)
         self.srv = QtWidgets.QLineEdit(); self.srv.setPlaceholderText("http://127.0.0.1:8080 (wallet ops need `ord server`)")
+        self.srv.editingFinished.connect(self._probe_server)
         gl.addWidget(self.srv, 0, 1, 1, 5)
         cw = QtWidgets.QPushButton("create wallet"); cw.clicked.connect(lambda: self._simple("create_wallet"))
         rc = QtWidgets.QPushButton("receive"); rc.clicked.connect(lambda: self._simple("receive"))
@@ -5684,9 +5696,29 @@ class OrdinalsTab(QtWidgets.QWidget):
         self.wname.textChanged.connect(self._iso_badge)
 
     def refresh(self):
-        # participate quietly in the central refresh loop — ordinals work only on explicit clicks
-        # (preflight spawns a subprocess; polling it every tick would be waste, not diagnostics).
-        pass
+        # a diagnostic tab should DIAGNOSE on open: run preflight + server probe ONCE
+        # automatically; after that everything is explicit clicks (no polling waste).
+        if not getattr(self, "_pf_auto", False):
+            self._pf_auto = True
+            self.preflight()
+            self._probe_server()
+    def _probe_server(self):
+        url = self.srv.text().strip() or "http://127.0.0.1:8080"
+        try:
+            hostport = url.split("//", 1)[-1].split("/", 1)[0]
+            host, port = hostport.rsplit(":", 1) if ":" in hostport else (hostport, "80")
+            port = int(port)
+        except Exception:
+            return
+        def work():
+            s = socket.socket(); s.settimeout(1.2)
+            try: return s.connect_ex((host, port)) == 0
+            finally: s.close()
+        def done(up):
+            self._srv_state = (f"   ·   ord server {url}: "
+                               + ("● up" if up else "○ down — wallet ops need `ord server`"))
+            self.diag.setText(self.diag.text().split("   ·   ord server")[0] + self._srv_state)
+        spawn_fn(work, done)
 
     # ---- shared webbridge (subprocess; identical gating/receipts to the web Console) ----
     def _bridge(self, body, on_done):
@@ -5707,6 +5739,7 @@ class OrdinalsTab(QtWidgets.QWidget):
         self.out.setPlainText(f"[{stamp}] {tag} → {'✓' if r.get('ok') else '✗'} "
                               f"({r.get('elapsed_ms', '?')} ms)\n" + json.dumps(r, indent=2, default=str))
         self.status.setText(("● " if r.get("ok") else "○ ") + tag)
+        self.status.setStyleSheet("color:%s;font-weight:700" % ("#16C784" if r.get("ok") else "#f85149"))
 
     def _mut_body(self, kind):
         w = self.wname.text().strip()
@@ -5778,11 +5811,21 @@ class OrdinalsTab(QtWidgets.QWidget):
         o = self._ord()
         if o is None: return
         self.status.setText("… preflight")
-        spawn_fn(o.preflight,
-                 on_done=lambda r: (self.out.setPlainText(json.dumps(r, indent=2, default=str)),
-                                    self.status.setText("● ord ready" if r.get("ord_installed")
-                                                        else "○ ord binary not installed (see report)")),
-                 on_fail=lambda e: self.status.setText(f"preflight failed: {e}"))
+        def done(r):
+            r = r or {}
+            self.out.setPlainText(json.dumps(r, indent=2, default=str))
+            ok = bool(r.get("ord_installed"))
+            self.status.setText("● ord ready" if ok else "○ ord binary not installed (see report)")
+            self.status.setStyleSheet("color:%s;font-weight:700" % ("#16C784" if ok else "#f85149"))
+            import shutil as _sh
+            facts = " · ".join(f"{k}: {r[k]}" for k in
+                               ("ord_version", "network", "core_version", "core_running",
+                                "txindex", "can_inscribe", "capable") if r.get(k) is not None)
+            self.diag.setText("🩺 ord: " + (_sh.which("ord") or "NOT on PATH — bash bankon-ord/install.sh")
+                              + (f" · {facts}" if facts else "") + self._srv_state)
+        spawn_fn(o.preflight, on_done=done,
+                 on_fail=lambda e: (self.status.setText(f"preflight failed: {e}"),
+                                    self.status.setStyleSheet("color:#f85149;font-weight:700")))
 
     def inspect(self, method):
         o = self._ord()
