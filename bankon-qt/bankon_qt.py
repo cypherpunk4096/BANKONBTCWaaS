@@ -2675,7 +2675,9 @@ class GlobeWidget(QtWidgets.QWidget):
         self.zoom = 1.0
         self._drag = None; self._vel = 0.0     # hand-drag state + fling inertia (deg/frame)
         self._nodes, self._peers, self._arcs, self._my = [], [], [], None
-        self.show_borders = QtCore.QSettings("BANKON", "bankon-qt").value("geomap/borders", "true") == "true"
+        _st = QtCore.QSettings("BANKON", "bankon-qt")
+        self.show_borders = _st.value("geomap/borders", "true") == "true"
+        self.show_acc = _st.value("geomap/accuracy", "true") == "true"
         from services.earth import earth_texture
         self._tex = earth_texture()            # real Blue Marble (numpy HxWx3) or None → vector fallback
         self._th, self._tw = (self._tex.shape[0], self._tex.shape[1]) if self._tex is not None else (0, 0)
@@ -2713,7 +2715,7 @@ class GlobeWidget(QtWidgets.QWidget):
         self._nodes = nodes[:700]              # subsample the cloud for smooth spin
         self._peers = peers
         self._my = my
-        self._arcs = [great_circle_points(my[0], my[1], la, lo, 36) for (la, lo, _c, _r) in peers] if my else []
+        self._arcs = [great_circle_points(my[0], my[1], p[0], p[1], 36) for p in peers] if my else []
         self.update()
     def _proj(self, lat, lon, cx, cy, R):
         p = math.radians(lat); l = math.radians(lon + self.spin)
@@ -2809,11 +2811,21 @@ class GlobeWidget(QtWidgets.QWidget):
         qp.setPen(QtGui.QPen(QtGui.QColor(247, 147, 26, 180), 1.2))     # great-circle arcs
         for arc in self._arcs:
             self._polyline(qp, [self._proj(la, lo, cx, cy, R) for (la, lo) in arc])
-        for (la, lo, col, r) in self._peers:                           # connected peers
+        for pk in self._peers:                                         # connected peers
+            la, lo, col, r = pk[0], pk[1], pk[2], pk[3]
+            acc = pk[4] if len(pk) > 4 else 0
             x, y, v = self._proj(la, lo, cx, cy, R)
-            if v:
-                qp.setPen(QtGui.QPen(QtGui.QColor("#0b0f15"), 1)); qp.setBrush(QtGui.QBrush(col))
-                qp.drawEllipse(QtCore.QPointF(x, y), r, r)
+            if not v: continue
+            if acc and self.show_acc:
+                # GeoIP accuracy ring — angular radius acc/RE on the sphere; the dot is a
+                # centroid, the address is somewhere inside this circle
+                ar = R * math.sin(min(1.2, acc / 6371.0))
+                if ar > r + 2:
+                    qp.setBrush(QtCore.Qt.NoBrush)
+                    qp.setPen(QtGui.QPen(QtGui.QColor(col.red(), col.green(), col.blue(), 80), 1, QtCore.Qt.DashLine))
+                    qp.drawEllipse(QtCore.QPointF(x, y), ar, ar)
+            qp.setPen(QtGui.QPen(QtGui.QColor("#0b0f15"), 1)); qp.setBrush(QtGui.QBrush(col))
+            qp.drawEllipse(QtCore.QPointF(x, y), r, r)
         if self._my:                                                    # our node
             x, y, v = self._proj(self._my[0], self._my[1], cx, cy, R)
             if v:
@@ -2942,6 +2954,71 @@ class AdvancedGeoWidget(QtWidgets.QWidget):
         QtGui.QDesktopServices.openUrl(QtCore.QUrl(url))
 
 
+class PriceOverlay(QtWidgets.QWidget):
+    """🪙 ₿TC/USD price OVERLAY — floats over the geo display (globe, flat map, flatearth,
+    advanced), drawn completely IN-HOUSE with QPainter. Data source is the opt-in CoinGecko
+    free-tier poll (casual: once an hour); the chart shows the last ~24 hourly prices with
+    each price MARKED ON THE HOUR. Rendered only while the 🪙 toggle is on — zero cost off."""
+    def __init__(self, parent, tzfmt):
+        super().__init__(parent)
+        self._tzfmt = tzfmt                    # GeoMapTab's timezone-choice formatter
+        self._series = []                      # [(epoch_s on-the-hour, usd)] ascending
+        self._spot = None                      # (usd, epoch_s) most recent spot quote
+        self._err = ""
+        self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)   # never steal globe drags
+        self.hide()
+    def set_data(self, series, spot):
+        self._series = series or []; self._err = ""
+        if spot: self._spot = spot
+        self.update()
+    def set_error(self, msg):
+        self._err = msg or ""; self.update()
+    def paintEvent(self, e):
+        qp = QtGui.QPainter(self); qp.setRenderHint(QtGui.QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        qp.setPen(QtGui.QPen(QtGui.QColor("#F7931A"), 1))
+        qp.setBrush(QtGui.QBrush(QtGui.QColor(4, 7, 12, 215)))      # translucent in-house panel
+        qp.drawRoundedRect(0, 0, w - 1, h - 1, 8, 8)
+        f = qp.font()
+        spot, sat = self._spot if self._spot else (None, None)
+        f.setPointSize(14); f.setBold(True); qp.setFont(f); qp.setPen(QtGui.QColor("#F7931A"))
+        qp.drawText(QtCore.QRectF(10, 4, w - 20, 24), QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
+                    f"₿ ${spot:,.0f}" if spot else "₿ price …")
+        f.setPointSize(8); f.setBold(False); qp.setFont(f); qp.setPen(QtGui.QColor("#8aa0b4"))
+        sub = (self._err or "CoinGecko free tier · casual hourly poll · marked on the hour"
+               + (f" · updated {self._tzfmt(sat)}" if sat else ""))
+        qp.drawText(QtCore.QRectF(10, 26, w - 20, 14), QtCore.Qt.AlignLeft, sub[:96])
+        s = self._series[-25:]
+        if len(s) < 2:
+            qp.end(); return
+        L, R, T, B = 12, w - 12, 48, h - 20
+        vals = [p for _, p in s]
+        lo, hi = min(vals), max(vals); pad = max(1.0, (hi - lo) * 0.15); lo -= pad; hi += pad
+        xof = lambda i: L + i / (len(s) - 1) * (R - L)
+        yof = lambda v: B - (v - lo) / (hi - lo) * (B - T)
+        # hour ticks: label every 4th wall-clock hour along the bottom (chosen timezone)
+        qp.setPen(QtGui.QColor("#5a7891"))
+        for i, (ts, _v) in enumerate(s):
+            if (ts // 3600) % 4 == 0:
+                qp.drawText(int(xof(i)) - 14, h - 6, self._tzfmt(ts, "%H:00"))
+        line = QtGui.QPainterPath(); line.moveTo(xof(0), yof(s[0][1]))
+        for i, (_ts, v) in enumerate(s[1:], 1): line.lineTo(xof(i), yof(v))
+        qp.setPen(QtGui.QPen(QtGui.QColor("#F7931A"), 1.6)); qp.setBrush(QtCore.Qt.NoBrush)
+        qp.drawPath(line)
+        qp.setPen(QtGui.QPen(QtGui.QColor("#0b0f15"), 1)); qp.setBrush(QtGui.QBrush(QtGui.QColor("#F7931A")))
+        for i, (_ts, v) in enumerate(s):                      # ● every on-the-hour mark
+            qp.drawEllipse(QtCore.QPointF(xof(i), yof(v)), 2.4, 2.4)
+        # latest hourly mark: candle-green dot + its price
+        qp.setBrush(QtGui.QBrush(QtGui.QColor("#16C784")))
+        qp.drawEllipse(QtCore.QPointF(xof(len(s) - 1), yof(s[-1][1])), 3.2, 3.2)
+        qp.setPen(QtGui.QColor("#16C784"))
+        qp.drawText(int(min(xof(len(s) - 1) - 52, w - 64)), int(yof(s[-1][1])) - 6, f"${s[-1][1]:,.0f}")
+        qp.setPen(QtGui.QColor("#5a7891"))                    # range labels (inside the plot)
+        qp.drawText(L + 2, T + 10, f"${hi:,.0f}")
+        qp.drawText(L + 2, B - 4, f"${lo:,.0f}")
+        qp.end()
+
+
 class GeoMapTab(QtWidgets.QWidget):
     """Geo map (EPSG:4326 plate carrée). The WHOLE known network from this node's addrman
     (getnodeaddresses — ₿itnodes-style, self-sourced, no external API) as a density layer,
@@ -2994,12 +3071,40 @@ class GeoMapTab(QtWidgets.QWidget):
         self.advbtn.setToolTip("NASA actual · scientific WGS84 · satellite/SpaceNet (all opt-in, no default network)")
         self.advbtn.clicked.connect(self._show_advanced); top.addWidget(self.advbtn)
         v.addLayout(top)
+        # second control row: GeoIP truth + opt-in price overlay + timezone choice
+        row2 = QtWidgets.QHBoxLayout()
+        self.acc_chk = QtWidgets.QCheckBox("🎯 accuracy")
+        self.acc_chk.setChecked(_st.value("geomap/accuracy", "true") == "true")
+        self.acc_chk.setToolTip("GeoIP truth per node ADDRESS: draw GeoLite2's accuracy_radius as a circle — "
+                                "the address is somewhere INSIDE it, the dot is only the centroid. "
+                                "Tooltips state ±km and the precision tier.")
+        self.acc_chk.toggled.connect(self._overlay_changed); row2.addWidget(self.acc_chk)
+        self.price_chk = QtWidgets.QCheckBox("🪙 ₿ price")
+        self.price_chk.setChecked(_st.value("geomap/price", "false") == "true")
+        self.price_chk.setToolTip("OPT-IN external call: poll CoinGecko (free tier, no key) for ₿TC/USD at a casual "
+                                  "hourly cadence and overlay the chart on the display — each price marked ON THE HOUR. "
+                                  "Off (default) = zero network contact. Drawn completely in-house.")
+        self.price_chk.toggled.connect(self._price_toggled); row2.addWidget(self.price_chk)
+        row2.addWidget(QtWidgets.QLabel("🕐 tz"))
+        self.tz_box = QtWidgets.QComboBox()
+        self.tz_box.addItems(["UTC", "local"] + [f"UTC{h:+d}" for h in range(-12, 15) if h])
+        self.tz_box.setCurrentText(_st.value("geomap/tz", "UTC"))
+        self.tz_box.setToolTip("Timezone for every timestamp on this map (hour marks, updated-at, addrman as-of) — "
+                               "UTC by default, or local / a fixed UTC offset")
+        self.tz_box.currentTextChanged.connect(self._tz_changed); row2.addWidget(self.tz_box)
+        row2.addStretch(1)
+        v.addLayout(row2)
         self.scene = QtWidgets.QGraphicsScene(); self.view = QtWidgets.QGraphicsView(self.scene)
         self.view.setRenderHint(QtGui.QPainter.Antialiasing)
         self.view.setStyleSheet("background:#05080d;border:2px solid #00BFFF;border-radius:8px")
         self.advanced = AdvancedGeoWidget(self._my_latlon)
         self.stack = QtWidgets.QStackedWidget(); self.stack.addWidget(self.globe); self.stack.addWidget(self.view); self.stack.addWidget(self.advanced)
         v.addWidget(self.stack, 1)
+        # 🪙 price OVERLAY floats over whichever view is showing (globe / flat / flatearth / advanced)
+        self.price_overlay = PriceOverlay(self.stack, self._tzfmt)
+        self._price_series = []; self._price_last = 0.0; self._price_try = 0.0; self._price_busy = False
+        self._price_timer = QtCore.QTimer(self); self._price_timer.timeout.connect(self._price_tick)
+        self._price_timer.setInterval(60_000)   # 1-min heartbeat that only ACTS once an hour
         self.legend = QtWidgets.QLabel(""); self.legend.setStyleSheet("color:#d6e3ef"); self.legend.setWordWrap(True); v.addWidget(self.legend)
         self._peers, self._ni, self._net, self._act = [], {}, [], []
         self._bg = None; self._bg_n = -1     # cached background pixmap + the node count it was built for
@@ -3016,6 +3121,8 @@ class GeoMapTab(QtWidgets.QWidget):
         # DNS-named peers (addnode'd seed hostnames ride getpeerinfo.addr verbatim) resolve
         # here once per session so they can be plotted — labeled approximate, never implied exact
         self._dns = {}
+        if self.price_chk.isChecked():          # persisted opt-in → resume the casual hourly poll
+            self._price_toggled(True)
     def _peer_ip(self, p):
         """Peer's plottable IP: literal addr, or the session-resolved IP of a DNS-named peer."""
         host = (p.get("addr") or "").rsplit(":", 1)[0].strip("[]")
@@ -3055,9 +3162,104 @@ class GeoMapTab(QtWidgets.QWidget):
         st = QtCore.QSettings("BANKON", "bankon-qt")
         st.setValue("geomap/borders", "true" if self.borders_chk.isChecked() else "false")
         st.setValue("geomap/cities", "true" if self.cities_chk.isChecked() else "false")
+        st.setValue("geomap/accuracy", "true" if self.acc_chk.isChecked() else "false")
         self.globe.show_borders = self.borders_chk.isChecked()
+        self.globe.show_acc = self.acc_chk.isChecked()
         self._bg = None                        # borders live in the cached background pixmap
         self._redraw(); self.globe.update()
+    # ── timezone choice (UTC default · local · fixed UTC offset) — every stamp on this map ──
+    def _tzfmt(self, epoch, fmt="%H:%M"):
+        try:
+            choice = self.tz_box.currentText()
+        except Exception:
+            choice = "UTC"
+        if choice == "local":
+            return time.strftime(fmt, time.localtime(epoch))
+        off = int(choice[3:]) * 3600 if len(choice) > 3 else 0
+        return time.strftime(fmt, time.gmtime(epoch + off))
+    def _tz_changed(self, txt):
+        QtCore.QSettings("BANKON", "bankon-qt").setValue("geomap/tz", txt)
+        self.price_overlay.update(); self._redraw()
+    # ── 🪙 ₿ price (CoinGecko free tier) — OPT-IN, casual hourly, marked on the hour ──
+    def _price_toggled(self, on):
+        QtCore.QSettings("BANKON", "bankon-qt").setValue("geomap/price", "true" if on else "false")
+        self.price_overlay.setVisible(on)
+        if on:
+            self._place_price_overlay()
+            self._price_timer.start()
+            self._price_fetch(backfill=len(self._price_series) < 2)
+        else:
+            self._price_timer.stop()           # off = zero network contact
+    def _place_price_overlay(self):
+        w = min(360, max(240, self.stack.width() - 24))
+        self.price_overlay.setGeometry(max(8, self.stack.width() - w - 12), 10, w, 150)
+        self.price_overlay.raise_()
+    def _price_tick(self):
+        # casual cadence: act only when a NEW hour needs its mark, or the data is >65 min
+        # stale; failures retry no sooner than 5 min — the free tier is never hammered
+        now = time.time()
+        if self._price_busy or now - self._price_try < 300:
+            return
+        cur_hr = int(now // 3600) * 3600
+        have = {ts for ts, _ in self._price_series}
+        if cur_hr not in have or now - self._price_last >= 3900:
+            self._price_fetch(backfill=len(self._price_series) < 2)
+    def _price_fetch(self, backfill=False):
+        if self._price_busy:
+            return
+        self._price_busy = True; self._price_try = time.time()
+        def work():
+            from services.price_service import spot_usd, hourly_usd
+            out = {"spot": spot_usd()}
+            if backfill:
+                out["hist"] = hourly_usd(days=1)      # last 24h, snapped on the hour
+            return out
+        spawn_fn(work, self._on_price, self._on_price_fail)
+    def _on_price(self, d):
+        self._price_busy = False
+        d = d or {}
+        merged = dict(self._price_series)
+        merged.update(dict(d.get("hist") or []))
+        sp = d.get("spot") or {}
+        if sp.get("usd") is not None:
+            self._price_last = time.time()
+            # the first spot seen inside each hour stamps that hour → marked ON THE HOUR
+            merged.setdefault(int(self._price_last // 3600) * 3600, float(sp["usd"]))
+        self._price_series = sorted(merged.items())[-26:]
+        self.price_overlay.set_data(self._price_series,
+                                    (float(sp["usd"]), sp.get("at") or self._price_last) if sp.get("usd") is not None else None)
+    def _on_price_fail(self, err):
+        self._price_busy = False
+        self.price_overlay.set_error(f"CoinGecko unreachable — retrying (casual): {str(err)[:60]}")
+    # ── GeoIP accuracy: radius (km) → on-map ellipse for the ACTIVE projection ──
+    def _acc_px(self, lat, km):
+        if self.projmode == "flatearth":
+            # AE from the pole: radial scale is exact (20015 km pole→rim); tangential scale
+            # stretches by colat/sin(colat) — return (radial, tangential) for a rotated ellipse
+            rr = km * self._AE_R / 20015.0
+            colat = math.radians(90 - lat)
+            stretch = colat / math.sin(colat) if 0.01 < colat < math.pi - 0.01 else 1.0
+            return rr, rr * min(4.0, stretch)
+        rx = km / (111.32 * max(0.2, math.cos(math.radians(lat)))) / 360 * self.W
+        ry = km / 111.32 / 180 * self.H
+        return rx, ry
+    def _draw_acc(self, x, y, lat, km, col):
+        """Dashed GeoIP-accuracy circle under a located dot — flatearth gets the properly
+        ROTATED ellipse (radial axis toward the pole), plate carrée an axis-aligned one."""
+        rx, ry = self._acc_px(lat, km)
+        if max(rx, ry) < 2.5:
+            return
+        pen = QtGui.QPen(QtGui.QColor(col.red(), col.green(), col.blue(), 80), 1, QtCore.Qt.DashLine)
+        brush = QtGui.QBrush(QtGui.QColor(col.red(), col.green(), col.blue(), 14))
+        it = self.scene.addEllipse(-rx, -ry, 2 * rx, 2 * ry, pen, brush)
+        it.setPos(x, y)
+        if self.projmode == "flatearth":
+            cx, cy = self.W / 2, self.H / 2
+            it.setRotation(math.degrees(math.atan2(y - cy, x - cx)))   # radial axis outward
+    @staticmethod
+    def _acc_tier(km):
+        return ("precise" if km <= 20 else "city-level" if km <= 100
+                else "region-level" if km <= 500 else "country-level")
     # Flat-map point projection → scene (x, y). Dispatches on the selected mode.
     _AE_R = 350.0
     def proj(self, lon, lat):
@@ -3133,7 +3335,7 @@ class GeoMapTab(QtWidgets.QWidget):
         for a in la:
             g = geolocate(a.get("address", ""))
             if g:
-                self._my_src = "localaddress"
+                self._my_src = "localaddress"; self._my_acc = g.get("acc")
                 return g["lat"], g["lon"]
         # not publicly reachable → locate by the address our peers report they see us as
         from collections import Counter
@@ -3143,8 +3345,9 @@ class GeoMapTab(QtWidgets.QWidget):
             g = geolocate(ip)
             if g:
                 self._my_src = "addrlocal"    # NAT'd — this is the ISP egress, mark it approx
+                self._my_acc = g.get("acc")
                 return g["lat"], g["lon"]
-        self._my_src = ""
+        self._my_src = ""; self._my_acc = None
         return None
     def _build_bg(self):
         """World + graticule + the whole known network as a dim density layer (one pixmap)."""
@@ -3196,6 +3399,16 @@ class GeoMapTab(QtWidgets.QWidget):
             qp.setPen(QtGui.QPen(QtGui.QColor("#16324a")))     # equator + boundary
             qp.drawEllipse(QtCore.QPointF(cx, cy), self._AE_R / 2, self._AE_R / 2)
             qp.drawEllipse(QtCore.QPointF(cx, cy), self._AE_R, self._AE_R)
+            # labeled graticule — the AE disc reads as a chart, not just rings: parallels
+            # tagged along the NE diagonal, cardinal meridians tagged inside the rim
+            f = qp.font(); f.setPointSize(8); qp.setFont(f)
+            qp.setPen(QtGui.QColor("#3d5a70"))
+            for la in (60, 30, 0, -30, -60):
+                rho = self._AE_R * (90 - la) / 180.0
+                qp.drawText(int(cx + rho * 0.7071) + 3, int(cy - rho * 0.7071) - 2, f"{la}°")
+            for lo, tag in ((0, "0°"), (90, "90°E"), (180, "180°"), (-90, "90°W")):
+                x, y = self.proj(lo, -78)
+                qp.drawText(int(x) - 12, int(y) + 4, tag)
         else:
             for lo in range(-150, 181, 30):
                 x, _ = self.proj(lo, 0); qp.drawLine(int(x), 0, int(x), self.H)
@@ -3238,16 +3451,20 @@ class GeoMapTab(QtWidgets.QWidget):
                 pin, pout = NetworkMapTab._flow_frac(ri), NetworkMapTab._flow_frac(ro)
                 if pin > 0 or pout > 0:
                     self._flows.append((pts, pin, pout))
+            _macc = getattr(self, "_my_acc", None)
+            if _macc and self.acc_chk.isChecked():
+                self._draw_acc(mx, my_y, my[0], _macc, QtGui.QColor("#F7931A"))
             mk = self.scene.addEllipse(mx - 6, my_y - 6, 12, 12, QtGui.QPen(QtGui.QColor("#F7931A"), 2), QtGui.QBrush(QtGui.QColor("#1a1200")))
             _nc = nearest_city(my[0], my[1])
             # honesty: an addrlocal-derived position is the ISP egress, not this machine
             _src = " · (approx — ISP egress, from addrlocal)" if getattr(self, "_my_src", "") == "addrlocal" else ""
-            mk.setToolTip(f"bankon: this node · nearest city: {_nc[0]}, {_nc[1]} (~{_nc[2]:.0f} km){_src}")
+            _accs = f" · ±{_macc:,} km ({self._acc_tier(_macc)})" if _macc else ""
+            mk.setToolTip(f"bankon: this node · nearest city: {_nc[0]}, {_nc[1]} (~{_nc[2]:.0f} km){_accs}{_src}")
         # connected peers on top, coloured by traffic/direction, ASN in tooltip.
         # EVERY connected peer is accounted for: located ones at their true position, the rest
         # (Tor / I2P / unmapped IPs) in an honest strip — never silently dropped.
         cc, asncc, located, gpeers = Counter(), Counter(), 0, []
-        unlocated = []
+        unlocated, accs = [], []
         _citymarks = {}          # (name, iso) -> city entry — deduped nearest-major-city labels
         for p in (self._peers if show_conn else []):
             ip, _host = self._peer_ip(p)
@@ -3263,7 +3480,11 @@ class GeoMapTab(QtWidgets.QWidget):
             traf = p.get("bytessent", 0) + p.get("bytesrecv", 0); inbound = p.get("inbound")
             col = QtGui.QColor("#16C784") if traf > (1 << 20) else (QtGui.QColor("#F7931A") if inbound else QtGui.QColor("#00BFFF"))
             r = 5 + min(6, traf / (1 << 21))
-            gpeers.append((g["lat"], g["lon"], col, max(4.0, r)))
+            acc = g.get("acc") or 0
+            if acc: accs.append(acc)
+            gpeers.append((g["lat"], g["lon"], col, max(4.0, r), acc))
+            if acc and self.acc_chk.isChecked():
+                self._draw_acc(x, y, g["lat"], acc, col)     # the ADDRESS is inside this circle
             self.scene.addEllipse(x - r - 3, y - r - 3, 2 * (r + 3), 2 * (r + 3), QtGui.QPen(QtCore.Qt.NoPen), QtGui.QBrush(QtGui.QColor(col.red(), col.green(), col.blue(), 60)))
             d = self.scene.addEllipse(x - r, y - r, 2 * r, 2 * r, QtGui.QPen(QtGui.QColor("#eef3f8"), 1), QtGui.QBrush(col))
             # city truth ladder: the mmdb's own per-IP city name first, then the nearest city
@@ -3271,7 +3492,12 @@ class GeoMapTab(QtWidgets.QWidget):
             _ce = nearest_city_entry(g["lat"], g["lon"])
             _pop = f", pop {_ce[5]:,}" if len(_ce) > 5 and _ce[5] else ""
             _city = f"{g['city']} (GeoIP)" if g.get("city") else f"near {_ce[0]} (~{_ce[4]:.0f} km{_pop})"
-            d.setToolTip(f"{p.get('addr')}  ·  {flag(g['iso'])} {g['country']}  ·  {_city}  ·  AS{an.get('asn','?')} {an.get('org','')}  ·  {(traf/1048576):.1f} MiB  ·  {'in' if inbound else 'out'}{_dnsnote}")
+            _accs = f"±{acc:,} km ({self._acc_tier(acc)})" if acc else "accuracy unknown"
+            _ping = f"{p.get('pingtime', 0) * 1000:.0f} ms" if p.get("pingtime") else "ping ?"
+            _up = human_dt(time.time() - p["conntime"]) if p.get("conntime") else "?"
+            d.setToolTip(f"{p.get('addr')}  ·  {flag(g['iso'])} {g['country']}  ·  {_city}  ·  {_accs}  ·  "
+                         f"AS{an.get('asn','?')} {an.get('org','')}  ·  {(traf/1048576):.1f} MiB  ·  "
+                         f"{_ping}  ·  up {_up}  ·  {'in' if inbound else 'out'}{_dnsnote}")
             if self.cities_chk.isChecked() and _ce:
                 _citymarks[(_ce[0], _ce[1])] = _ce
         # 🏙 optional overlay: nearest MAJOR CITY per located peer — drawn at the city's own
@@ -3314,8 +3540,9 @@ class GeoMapTab(QtWidgets.QWidget):
                 x, y = self.proj(g["lon"], g["lat"])
                 self.scene.addEllipse(x - 6, y - 6, 12, 12, QtGui.QPen(QtCore.Qt.NoPen), QtGui.QBrush(QtGui.QColor(col.red(), col.green(), col.blue(), 60)))
                 dd = self.scene.addEllipse(x - 4, y - 4, 8, 8, QtGui.QPen(QtGui.QColor("#eef3f8"), 1), QtGui.QBrush(col))
-                dd.setToolTip(f"{e.get('kind')} {e.get('addr')} · {flag(g['iso'])} {g['country']}")
-                gpeers.append((g["lat"], g["lon"], col, 5.0)); act_plotted += 1
+                dd.setToolTip(f"{e.get('kind')} {e.get('addr')} · {flag(g['iso'])} {g['country']}"
+                              + (f" · ±{g['acc']:,} km" if g.get("acc") else ""))
+                gpeers.append((g["lat"], g["lon"], col, 5.0, g.get("acc") or 0)); act_plotted += 1
         # AE disc: fit the view to the DISC (square scene rect), not the 2:1 pixmap —
         # otherwise the flat-earth occupies only the centre of a wide letterboxed scene
         if self.projmode == "flatearth":
@@ -3325,7 +3552,9 @@ class GeoMapTab(QtWidgets.QWidget):
             self.scene.setSceneRect(0, 0, self.W, self.H)
         self.view.fitInView(self.scene.sceneRect(), QtCore.Qt.KeepAspectRatio)
         net_age = network_asof()
-        net_when = datetime.fromtimestamp(net_age).strftime("%H:%M") if net_age else "—"
+        net_when = (self._tzfmt(net_age) + f" {self.tz_box.currentText()}") if net_age else "—"
+        # honest accuracy statement for the whole picture: median GeoLite2 radius of what's drawn
+        _amed = f" · GeoIP median ±{sorted(accs)[len(accs) // 2]:,} km" if accs else ""
         if located == 0 and act_plotted:
             self.info.setText(f"Geo map — peer RPC busy (IBD); plotting {act_plotted} geolocated connection events from the log · "
                               "geo approximate (EPSG:4326)" + ("" if HAVE_GEOIP else "  (GeoIP DB missing)"))
@@ -3336,15 +3565,32 @@ class GeoMapTab(QtWidgets.QWidget):
                 (f"Network {_kn:,} known nodes (addrman @ {net_when}"
                  + (f" · globe draws {min(700, _kn)}" if _kn > 700 else "") + ") · " if self._net else "") +
                 f"connected: {located} located" + (f" + {_unl} no-geo (tor/unmapped)" if _unl else "") +
-                f" of {len(self._peers)} · {len(cc)} countries · orange dots = data IN · green = data OUT · "
+                f" of {len(self._peers)} · {len(cc)} countries{_amed} · orange dots = data IN · green = data OUT · "
                 "arcs inferred · geo approximate (EPSG:4326)" + ("" if HAVE_GEOIP else "  (GeoIP DB missing)"))
         top_c = "  ".join(f"{flag(iso)} {iso} {n}" for iso, n in cc.most_common(12))
         top_a = "  ·  ".join(f"{o} {n}" for o, n in asncc.most_common(4))
-        self.legend.setText(f"peers by country: {top_c or '—'}" + (f"     top ASNs: {top_a}" if top_a else ""))
+        # peers by SPEED (measured ping) and by UPTIME (connection age) — ALL connected peers,
+        # Tor/unmapped included, so these tallies are complete even when geolocation isn't
+        _pings = sorted(p["pingtime"] * 1000 for p in self._peers if p.get("pingtime"))
+        _now = time.time()
+        _ups = sorted(_now - p["conntime"] for p in self._peers if p.get("conntime"))
+        spd = ""
+        if _pings:
+            b = [sum(1 for v in _pings if lo <= v < hi) for lo, hi in ((0, 100), (100, 300), (300, 1e9))]
+            spd = (f"     by speed (ping): ⚡<100ms {b[0]} · 100–300ms {b[1]} · 🐢≥300ms {b[2]}"
+                   f" · median {_pings[len(_pings) // 2]:.0f} ms")
+        upt = ""
+        if _ups:
+            u = [sum(1 for v in _ups if lo <= v < hi) for lo, hi in ((0, 3600), (3600, 86400), (86400, 1e12))]
+            upt = (f"     by uptime: <1h {u[0]} · 1–24h {u[1]} · >24h {u[2]}"
+                   f" · median {human_dt(_ups[len(_ups) // 2])}")
+        self.legend.setText(f"peers by country (located only): {top_c or '—'}"
+                            + (f"     top ASNs: {top_a}" if top_a else "") + spd + upt)
         # feed the spinning globe (same data, projected onto the sphere)
         self.globe.set_data([(n["lat"], n["lon"]) for n in self._net], gpeers, my)
     def resizeEvent(self, e):
         if self.scene.sceneRect().width(): self.view.fitInView(self.scene.sceneRect(), QtCore.Qt.KeepAspectRatio)
+        if self.price_chk.isChecked(): self._place_price_overlay()
         super().resizeEvent(e)
 
 
@@ -5872,6 +6118,11 @@ class Main(QtWidgets.QMainWindow):
                 self.tabs.addTab(w, emoji_icon(name[0]), name[1])
             else:
                 self.tabs.addTab(w, name)
+        # tabs are DRAG-AND-DROP re-orderable — the client's chosen order persists across
+        # sessions (restore BEFORE connecting tabMoved, so restoring doesn't re-save)
+        self.tabs.setMovable(True)
+        self._restore_tab_order()
+        self.tabs.tabBar().tabMoved.connect(self._save_tab_order)
         self.tabs.currentChanged.connect(self.do_refresh)
         # ICE forensics → Net Map cross-link: jump to the map with the peer selected
         self.ice.netmap_link = self._show_peer_on_map
@@ -5950,6 +6201,19 @@ class Main(QtWidgets.QMainWindow):
         self.zmq.start()
         self.apply_rate(); self.poll_health(); self.do_refresh()
     def current(self): return self.tabs.currentWidget()
+    def _save_tab_order(self, *_):
+        QtCore.QSettings("BANKON", "bankon-qt").setValue(
+            "tabs/order", [self.tabs.tabText(i) for i in range(self.tabs.count())])
+    def _restore_tab_order(self):
+        saved = QtCore.QSettings("BANKON", "bankon-qt").value("tabs/order") or []
+        if isinstance(saved, str): saved = [saved]          # QSettings collapses 1-item lists
+        bar, pos = self.tabs.tabBar(), 0
+        for name in saved:                                  # stable re-order; unknown names skip,
+            for i in range(pos, self.tabs.count()):         # new tabs keep their default place
+                if self.tabs.tabText(i) == name:
+                    if i != pos: bar.moveTab(i, pos)
+                    pos += 1
+                    break
     def _toggle_invert(self, on):
         # invert + blackICE are mutually exclusive themes; enabling one clears the other
         if on and self.blackice_chk.isChecked():

@@ -79,13 +79,17 @@ The node spends long stretches lock-bound during IBD, so the app never depends o
 
 ## 4. The tabs
 
+Tabs are **drag-and-drop re-orderable** — grab a tab and drop it where you want it; the
+chosen order **persists across sessions** (QSettings), and tabs a saved order doesn't
+know keep their default place.
+
 | Tab | What it shows |
 |-----|---------------|
 | **Overview** | Live sync gauge (log-based, 6-digit, candle-green ramp ≥51%→99%, FULL NODE at 100%), +N-blocks delta, height/peers/mempool/disk, BTC.oracle (avg blocktime), filesystem |
 | **Node** | Node state (running/booting/validating/stopped), Start/Stop, live `debug.log` stream, "what/how/where Bitcoin Core is doing" |
 | **Network** | Peer table (addr, subver, direction, ping, height) |
 | **Net Map** | EtherApe-style: our node centre (`bankon:<addr>`), connected peers radial with **traffic-gradient** links (blue→green→orange), **inbound/outbound** tint, sizes by traffic, and a faint **cloud of all known nodes** (addrman) |
-| **Geo Map** | The **whole known network** (addrman, geolocated) as a density layer + connected peers with **great-circle arcs** + **ASN/org** colour & tooltips; EPSG:4326 plate carrée; disclosures (arcs inferred, geo approximate) |
+| **Geo Map** | The **whole known network** (addrman, geolocated) as a density layer + connected peers with **great-circle arcs** + **ASN/org** colour & tooltips; EPSG:4326 plate carrée; disclosures (arcs inferred, geo approximate). **🎯 accuracy** toggle draws each address's GeoLite2 `accuracy_radius` circle (globe + flat + flatearth, tier in tooltip, median in caption); legend tallies peers **by country / speed (ping) / uptime**; **🕐 tz** picks UTC (default) / local / fixed offset for every stamp; **🪙 ₿ price** is an OPT-IN CoinGecko free-tier poll (casual, once an hour) drawn completely in-house as an overlay with each price **marked on the hour** — off = zero external contact |
 | **Mempool** | size, vbytes, memory, min relay fee |
 | **Blocks** | Live chain tip (cached) + avg blocktime + recent-blocks table (from `/api/recentblocks`) |
 | **Indexes** | txindex height / tip / % (live), refresh-stamped |

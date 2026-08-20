@@ -38,6 +38,9 @@ def geolocate(ip):
             return None
         return {"lat": loc["latitude"], "lon": loc["longitude"],
                 "country": ctry.get("names", {}).get("en", "?"), "iso": ctry.get("iso_code", "??"),
+                # GeoLite2's own confidence for THIS address: the address is somewhere inside
+                # a circle of this radius (km) around lat/lon — the dot is a centroid, not a fix
+                "acc": loc.get("accuracy_radius"),
                 # per-IP city name straight from the mmdb (empty for many datacenter IPs —
                 # callers fall back to nearest_city); this field was previously left unread
                 "city": (g.get("city", {}).get("names", {}) or {}).get("en")}
