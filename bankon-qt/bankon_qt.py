@@ -6401,8 +6401,8 @@ class AdminWindow(QtWidgets.QWidget):
 
     def _reset_layout(self):
         st = QtCore.QSettings("BANKON", "bankon-qt")
-        for k in ("tabs/order", "admin/dock", "admin/geometry", "banner/dock", "geomap/borders",
-                  "geomap/cities", "geomap/accuracy", "geomap/price", "geomap/tz"):
+        for k in ("tabs/order", "tabs/geomap", "admin/dock", "admin/geometry", "banner/dock",
+                  "geomap/borders", "geomap/cities", "geomap/accuracy", "geomap/price", "geomap/tz"):
             st.remove(k)
         self.status.setText("🧭 saved layout forgotten — defaults return next launch.")
 
@@ -6489,8 +6489,8 @@ class Main(QtWidgets.QMainWindow):
         for label, ms in [("off",0),("10s",10000),("30s",30000),("1 min",60000),("5 min",300000)]:
             self.rate.addItem(label, ms)
         self.rate.setCurrentText("1 min"); self.rate.currentIndexChanged.connect(self.apply_rate); bar.addWidget(self.rate)
-        self.geo_chk = QtWidgets.QCheckBox(" 🌍 Geo Map")          # optional GeoIP map tab — default OFF
-        self.geo_chk.setToolTip("Show the Geo Map tab (needs geoip/*.mmdb). Off by default.")
+        self.geo_chk = QtWidgets.QCheckBox(" 🌍 Geo Map")          # GeoIP map tab — PERSISTED, default ON
+        self.geo_chk.setToolTip("Show the Geo Map tab (needs geoip/*.mmdb). Remembered across sessions.")
         self.geo_chk.toggled.connect(self._toggle_geo); bar.addWidget(self.geo_chk)
         # ⟲ SPINTRADE — optional module, ALWAYS starts OFF; the client chooses to open it and
         # consents through the innerstand gate first. Absolute attach/detach: built on enable,
@@ -6559,6 +6559,11 @@ class Main(QtWidgets.QMainWindow):
         self.zmq.block.connect(self.on_zmq_block)
         self.zmq.status.connect(self.on_zmq_status)
         self.zmq.start()
+        # Geo Map tab is PERSISTED (default ON) — restored last, once the whole toolbar
+        # exists, so the insert's currentChanged→do_refresh finds every widget it touches
+        if QtCore.QSettings("BANKON", "bankon-qt").value("tabs/geomap", "true") == "true":
+            self.geo_chk.setChecked(True)              # builds + inserts the Geo Map tab now…
+            self.tabs.setCurrentIndex(0)               # …while the session still opens on Overview
         self.apply_rate(); self.poll_health(); self.do_refresh()
     def current(self): return self.tabs.currentWidget()
     def _save_tab_order(self, *_):
@@ -6632,7 +6637,8 @@ class Main(QtWidgets.QMainWindow):
         self.admin.raise_(); self.admin.activateWindow()
     def _toggle_geo(self, on):
         # Build the Geo Map on enable (insert right after Net Map); destroy on disable so its
-        # globe spin-timer + GeoIP work fully stop — "default off = nothing running".
+        # globe spin-timer + GeoIP work fully stop. The choice is REMEMBERED (default ON).
+        QtCore.QSettings("BANKON", "bankon-qt").setValue("tabs/geomap", "true" if on else "false")
         if on:
             if self.geo is None: self.geo = GeoMapTab()
             i = self.tabs.indexOf(self.map) + 1
