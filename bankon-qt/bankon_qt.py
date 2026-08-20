@@ -2916,6 +2916,12 @@ class GlobeWidget(QtWidgets.QWidget):
                     qp.drawEllipse(QtCore.QPointF(x, y), ar, ar)
             qp.setPen(QtGui.QPen(QtGui.QColor("#0b0f15"), 1)); qp.setBrush(QtGui.QBrush(col))
             qp.drawEllipse(QtCore.QPointF(x, y), r, r)
+            if pk.get("fav"):                                          # ★ promoted = gold ring
+                qp.setBrush(QtCore.Qt.NoBrush)
+                qp.setPen(QtGui.QPen(QtGui.QColor("#FFD37A"), 2))
+                qp.drawEllipse(QtCore.QPointF(x, y), r + 3, r + 3)
+            if pk.get("medal"):                                        # 🥇 measured fastest
+                qp.drawText(QtCore.QPointF(x - r - 14, y + 4), pk["medal"])
             # every node point states its DATA right on the sphere — address, geographic
             # city + country, and the LIVE rate when data is flowing (front hemisphere only)
             if pk.get("label"):
@@ -3262,6 +3268,14 @@ class GeoMapTab(QtWidgets.QWidget):
         self.feed_chk.setToolTip("Side column beside the globe: live node activity (connections, from this "
                                  "node's log) + transactions (mempool Δ and connected blocks)")
         self.feed_chk.toggled.connect(self._feed_toggled); row2.addWidget(self.feed_chk)
+        # 🏆 marks — the Network / Net Map tabs' knowledge overlaid HERE: ★ promoted peers
+        # (gold ring), 🏆 measured-fastest medals, 🚫 banned addresses geolocated
+        self.marks_chk = QtWidgets.QCheckBox("🏆 marks")
+        self.marks_chk.setChecked(_st.value("geomap/marks", "true") == "true")
+        self.marks_chk.setToolTip("Overlay what Network / Net Map already know: ★ promoted (addnode) = gold ring · "
+                                  "🥇🥈🥉 measured-fastest medals (score/ping) · 🚫 banned addresses as red ✖ "
+                                  "at their geolocation")
+        self.marks_chk.toggled.connect(self._marks_toggled); row2.addWidget(self.marks_chk)
         # 🏠 local-node overlay toggles — the participant's own node, prominent, actual data
         self.ovl_node = QtWidgets.QCheckBox("🏠 node")
         self.ovl_node.setToolTip("Overlay line: this node's height · sync % · agent (actual getblockchaininfo)")
@@ -3286,11 +3300,11 @@ class GeoMapTab(QtWidgets.QWidget):
         self.view.setStyleSheet("background:#05080d;border:2px solid #00BFFF;border-radius:8px")
         self.advanced = AdvancedGeoWidget(self._my_latlon, lambda: self._peers)
         self.stack = QtWidgets.QStackedWidget(); self.stack.addWidget(self.globe); self.stack.addWidget(self.view); self.stack.addWidget(self.advanced)
-        # LEFT data column — the empty flank beside the globe becomes OUTPUT from the local
+        # RIGHT data column — the empty flank beside the globe becomes OUTPUT from the local
         # node's perspective: live connection activity (top) + transactions/blocks (bottom).
-        # The right flank stays clear for the 🛠 admin popup's geo-map dock.
+        # The LEFT flank stays clear for the 🛠 admin popup's geo-map dock.
         self.feed = QtWidgets.QWidget(); fv = QtWidgets.QVBoxLayout(self.feed)
-        fv.setContentsMargins(0, 0, 6, 0); fv.setSpacing(4)
+        fv.setContentsMargins(6, 0, 0, 0); fv.setSpacing(4)
         self.feed.setFixedWidth(285)
         _t1 = QtWidgets.QLabel("📡 node activity — this node's log")
         _t1.setStyleSheet("color:#00BFFF;font-weight:700"); fv.addWidget(_t1)
@@ -3306,9 +3320,10 @@ class GeoMapTab(QtWidgets.QWidget):
         fv.addWidget(self.tx_list, 2)
         self.feed.setVisible(_st.value("geomap/feed", "true") == "true")
         mid = QtWidgets.QHBoxLayout(); mid.setSpacing(0)
-        mid.addWidget(self.feed); mid.addWidget(self.stack, 1)
+        mid.addWidget(self.stack, 1); mid.addWidget(self.feed)
         v.addLayout(mid, 1)
         self._mp_prev = None                    # (txcount, t) for the mempool Δ line
+        self._fast, self._favs, self._banned = {}, set(), []   # 🏆 Net Map knowledge
         # 🪙 price OVERLAY floats over whichever view is showing (globe / flat / flatearth / advanced)
         self.price_overlay = PriceOverlay(self.stack, self._tzfmt)
         self._price_series = []; self._price_last = 0.0; self._price_try = 0.0; self._price_busy = False
@@ -3540,6 +3555,10 @@ class GeoMapTab(QtWidgets.QWidget):
         if self.feed_chk.isChecked():                          # 🧾 feed: mempool Δ + blocks
             spawn("getmempoolinfo", self._on_mpi, timeout=8)
             spawn_fn(lambda: fetch_json("/api/recentblocks?n=6").get("blocks", []), self._on_feed_blocks)
+        if self.marks_chk.isChecked():                         # 🏆 the Net Map's knowledge
+            spawn_fn(lambda: fetch_json("/api/node/fastnodes"), self._on_fast)
+            spawn_fn(lambda: fetch_json("/api/node/favourites"), self._on_favs)
+            spawn("listbanned", self._on_banned, timeout=10)
         if self.allnodes.isChecked():                        # off = peers only; on = whole addrman
             spawn_fn(lambda: known_nodes(5000), self._on_net)
         else:
@@ -3564,6 +3583,24 @@ class GeoMapTab(QtWidgets.QWidget):
     def _on_act(self, d):
         self._act = (d or {}).get("events", [])
         self._fill_act_feed()
+        self._redraw()
+    # ── 🏆 marks: Network / Net Map knowledge reused on the geo display ──
+    def _marks_toggled(self, on):
+        QtCore.QSettings("BANKON", "bankon-qt").setValue("geomap/marks", "true" if on else "false")
+        if on: self.refresh()
+        else: self._fast, self._favs, self._banned = {}, set(), []; self._redraw()
+    def _on_fast(self, d):
+        idx = (d or {}).get("nodes") or {}
+        rows = sorted((v for v in (idx.values() if isinstance(idx, dict) else idx) if isinstance(v, dict)),
+                      key=lambda x: (-(x.get("score") or 0), x.get("pingMs") or 9e9))[:12]
+        self._fast = {r.get("addr"): (i, r.get("pingMs"), r.get("score") or 0) for i, r in enumerate(rows)}
+        self._redraw()
+    def _on_favs(self, d):
+        self._favs = {v.get("addr") for v in ((d or {}).get("nodes") or []) if v.get("addr")}
+        self._redraw()
+    def _on_banned(self, rows, stale):
+        self._banned = [(b.get("address", "").split("/")[0], b.get("banned_until", 0))
+                        for b in (rows or [])][:50]
         self._redraw()
     # ── 📡/🧾 side feeds: OUTPUT from the local node's perspective ──
     def _feed_toggled(self, on):
@@ -3826,6 +3863,16 @@ class GeoMapTab(QtWidgets.QWidget):
             _accs = f"±{acc:,} km ({self._acc_tier(acc)})" if acc else "accuracy unknown"
             _ping = f"{p.get('pingtime', 0) * 1000:.0f} ms" if p.get("pingtime") else "ping ?"
             _up = human_dt(time.time() - p["conntime"]) if p.get("conntime") else "?"
+            # 🏆 marks — Net Map knowledge on THIS display: ★ promoted ring + fastest medal
+            _addr = p.get("addr")
+            _fav = self.marks_chk.isChecked() and (_addr in self._favs or p.get("addnode"))
+            _fr = self._fast.get(_addr) if self.marks_chk.isChecked() else None
+            _medal = "🥇🥈🥉"[_fr[0]] if _fr and _fr[0] < 3 else ""
+            if _fav:
+                self.scene.addEllipse(x - r - 4, y - r - 4, 2 * (r + 4), 2 * (r + 4),
+                                      QtGui.QPen(QtGui.QColor("#FFD37A"), 2), QtGui.QBrush(QtCore.Qt.NoBrush))
+            if _medal:
+                _mt = self.scene.addSimpleText(_medal); _mt.setPos(x - r - 16, y - 8)
             d.setToolTip(f"{p.get('addr')}  ·  {flag(g['iso'])} {g['country']}  ·  {_city}  ·  {_accs}  ·  "
                          f"AS{an.get('asn','?')} {an.get('org','')}  ·  {(traf/1048576):.1f} MiB  ·  "
                          f"{_ping}  ·  up {_up}  ·  {'in' if inbound else 'out'}{_dnsnote}")
@@ -3840,11 +3887,15 @@ class GeoMapTab(QtWidgets.QWidget):
                                      f"{g.get('city') or _ce[0]}, {g['country']} · {_ping}"),
                            "rate_s": (f"▼ {NetworkMapTab._rate_s(_ri)} ▲ {NetworkMapTab._rate_s(_ro)}"
                                       if (_ri >= 256 or _ro >= 256) else ""),
-                           "tip": (f"{p.get('addr')}\n"
+                           "fav": bool(_fav), "medal": _medal,
+                           "tip": (f"{('★ ' if _fav else '')}{_medal}{p.get('addr')}\n"
                                    f"{flag(g['iso'])} {g['country']} · {g.get('city') or _ce[0]}  ·  {_accs}\n"
-                                   f"AS{an.get('asn','?')} {an.get('org','')}\n"
+                                   f"AS{an.get('asn','?')} {an.get('org','')}"
+                                   + (f" · {(p.get('subver') or '').strip('/')}" if p.get("subver") else "") + "\n"
                                    f"speed: {_ping} · live ▼ {NetworkMapTab._rate_s(_ri)} ▲ {NetworkMapTab._rate_s(_ro)}\n"
-                                   f"{(traf/1048576):.1f} MiB total · up {_up} · "
+                                   + (f"🏆 fastest #{_fr[0] + 1} · score {_fr[2]}"
+                                      + (f" · measured {_fr[1]:.0f} ms" if _fr[1] is not None else "") + "\n" if _fr else "")
+                                   + f"{(traf/1048576):.1f} MiB total · up {_up} · "
                                    f"{'inbound' if inbound else 'outbound'}{_dnsnote.strip()}")})
             if self.cities_chk.isChecked() and _ce:
                 _citymarks[(_ce[0], _ce[1])] = _ce
@@ -3857,6 +3908,16 @@ class GeoMapTab(QtWidgets.QWidget):
             ct = self.scene.addSimpleText(_ce[0])
             ct.setBrush(QtGui.QColor(196, 162, 255, 200)); ct.setScale(0.66)   # sparse polygon purple
             ct.setPos(cx + 3, cy - 5)
+        # 🚫 banned addresses (listbanned — the Net Map's list) at their geolocation
+        if self.marks_chk.isChecked():
+            for _bip, _until in self._banned:
+                gb = geolocate(_bip)
+                if not gb: continue
+                bx, by = self.proj(gb["lon"], gb["lat"])
+                bt = self.scene.addSimpleText("✖")
+                bt.setBrush(QtGui.QColor("#f85149")); bt.setPos(bx - 4, by - 7)
+                bt.setToolTip(f"🚫 banned {_bip} · {flag(gb['iso'])} {gb['country']} · until "
+                              + datetime.fromtimestamp(_until, timezone.utc).strftime("%m-%d %H:%M"))
         if unlocated:
             uy = self.H - 16
             _ndns = sum(1 for p in unlocated if not is_ip_literal((p.get("addr") or "").rsplit(":", 1)[0].strip("[]")))
@@ -6618,13 +6679,13 @@ class AdminWindow(QtWidgets.QWidget):
         QtCore.QSettings("BANKON", "bankon-qt").setValue("admin/dock", mode)
         fg = self.frameGeometry(); mg = self.main.frameGeometry()
         scr = (self.screen() or QtGui.QGuiApplication.primaryScreen()).availableGeometry()
-        if mode == "geo map":                # birth dock — BESIDE the globe, right side,
-            geo = getattr(self.main, "geo", None)   # below the 🪙 price strip so both show
+        if mode == "geo map":                # birth dock — the globe's LEFT flank,
+            geo = getattr(self.main, "geo", None)   # below the 🏠 node overlay so both show
             if switch and geo is not None:
                 self.main.tabs.setCurrentWidget(geo)
             r = self._geomap_rect()
-            y = r.top() + max(170, (r.height() - fg.height()) // 2)
-            pos = QtCore.QPoint(max(r.left() + 8, r.right() - fg.width() - 12),
+            y = r.top() + max(130, (r.height() - fg.height()) // 2)
+            pos = QtCore.QPoint(r.left() + 12,
                                 min(max(r.top() + 8, y), max(r.top() + 8, r.bottom() - fg.height() - 8)))
         elif mode == "console right":
             pos = QtCore.QPoint(mg.right() + 8, mg.top())
@@ -6700,7 +6761,8 @@ class AdminWindow(QtWidgets.QWidget):
         st = QtCore.QSettings("BANKON", "bankon-qt")
         for k in ("tabs/order", "tabs/geomap", "admin/dock", "admin/geometry", "admin/open",
                   "banner/dock", "geomap/borders", "geomap/cities", "geomap/accuracy",
-                  "geomap/price", "geomap/tz", "geomap/ovl_node", "geomap/ovl_net", "geomap/ovl_blocks"):
+                  "geomap/price", "geomap/tz", "geomap/ovl_node", "geomap/ovl_net", "geomap/ovl_blocks",
+                  "geomap/feed", "geomap/marks"):
             st.remove(k)
         self.status.setText("🧭 saved layout forgotten — defaults return next launch.")
 
