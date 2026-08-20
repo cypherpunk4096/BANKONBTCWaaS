@@ -2895,12 +2895,14 @@ class GlobeWidget(QtWidgets.QWidget):
             if i >= len(proj_arcs): break
             self._flow_arc(qp, proj_arcs[i], p.get("pin", 0.0), p.get("pout", 0.0), p.get("q", 0.6), i)
         self._hits = []                                                # rebuilt every frame (globe spins)
+        self._hover_xy = None
         for pk in self._peers:                                         # connected peers
             la, lo, col, r, acc = pk["lat"], pk["lon"], pk["col"], pk["r"], pk.get("acc", 0)
             x, y, v = self._proj(la, lo, cx, cy, R)
             if not v: continue
             self._hits.append((x, y, r, pk))
             if pk is self._hover_pk:                                   # hovered = gold ring
+                self._hover_xy = (x, y)
                 qp.setBrush(QtCore.Qt.NoBrush)
                 qp.setPen(QtGui.QPen(QtGui.QColor("#FFD37A"), 2))
                 qp.drawEllipse(QtCore.QPointF(x, y), r + 4, r + 4)
@@ -2914,142 +2916,172 @@ class GlobeWidget(QtWidgets.QWidget):
                     qp.drawEllipse(QtCore.QPointF(x, y), ar, ar)
             qp.setPen(QtGui.QPen(QtGui.QColor("#0b0f15"), 1)); qp.setBrush(QtGui.QBrush(col))
             qp.drawEllipse(QtCore.QPointF(x, y), r, r)
-            # 🗺 political mode: each node point states its DATA — address, then geographic
-            # city + country — right on the sphere (front hemisphere only)
-            if self.show_borders and pk.get("label"):
+            # every node point states its DATA right on the sphere — address, geographic
+            # city + country, and the LIVE rate when data is flowing (front hemisphere only)
+            if pk.get("label"):
                 f = qp.font(); f.setPointSize(8); f.setBold(False); qp.setFont(f)
                 qp.setPen(QtGui.QColor(230, 237, 243, 225))
                 qp.drawText(QtCore.QPointF(x + r + 3, y - 1), pk["label"][0])
                 qp.setPen(QtGui.QColor(138, 190, 220, 205))
                 qp.drawText(QtCore.QPointF(x + r + 3, y + 10), pk["label"][1])
+                if pk.get("rate_s"):
+                    qp.setPen(QtGui.QColor("#16C784"))
+                    qp.drawText(QtCore.QPointF(x + r + 3, y + 21), pk["rate_s"])
         if self._my:                                                    # our node
             x, y, v = self._proj(self._my[0], self._my[1], cx, cy, R)
             if v:
                 qp.setPen(QtGui.QPen(QtGui.QColor("#F7931A"), 2)); qp.setBrush(QtGui.QBrush(QtGui.QColor("#1a1200")))
                 qp.drawEllipse(QtCore.QPointF(x, y), 6, 6)
                 if self.my_tip:
-                    self._hits.append((x, y, 8, {"tip": self.my_tip}))
+                    mypk = getattr(self, "_my_pk", None)
+                    if mypk is None or mypk.get("tip") != self.my_tip:
+                        mypk = self._my_pk = {"tip": self.my_tip}
+                    self._hits.append((x, y, 8, mypk))
+                    if mypk is self._hover_pk:
+                        self._hover_xy = (x, y)
+        # in-canvas HOVER CARD — the point's ACTUAL data drawn by us, so it can never be
+        # lost to a window manager that swallows tooltips
+        qp.setClipping(False)
+        if self._hover_pk is not None and self._hover_xy is not None and self._hover_pk.get("tip"):
+            lines = self._hover_pk["tip"].split("\n")
+            f = qp.font(); f.setPointSize(8); f.setBold(False); qp.setFont(f)
+            fm = QtGui.QFontMetricsF(f)
+            tw = max(fm.horizontalAdvance(t) for t in lines) + 16
+            th = 8 + 14 * len(lines)
+            hx, hy = self._hover_xy
+            bx = min(max(6.0, hx + 14), max(6.0, w - tw - 6))
+            by = min(max(6.0, hy - th - 10), max(6.0, h - th - 6))
+            qp.setPen(QtGui.QPen(QtGui.QColor("#F7931A"), 1))
+            qp.setBrush(QtGui.QBrush(QtGui.QColor(4, 7, 12, 235)))
+            qp.drawRoundedRect(QtCore.QRectF(bx, by, tw, th), 6, 6)
+            for i, t in enumerate(lines):
+                qp.setPen(QtGui.QColor("#F7931A") if i == 0 else QtGui.QColor("#d6e3ef"))
+                qp.drawText(QtCore.QPointF(bx + 8, by + 14 + 14 * i), t)
         qp.end()
 
 
 class AdvancedGeoWidget(QtWidgets.QWidget):
-    """🔬 Advanced geoearth: NASA actual imagery + scientific WGS84 shape/size, with
-    strictly OPT-IN external integrations (Google Earth, SpaceNet/satellite). Nothing
-    here contacts the network by default and NO wallet data ever leaves the app —
-    external features are off until the participant explicitly enables them."""
-    ASSET = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "earth_bm.jpg")
+    """🔬 Advanced — ₿ANKON network science, computed ONLY from this node's live data
+    (no external service, ever). Two instruments that actually matter for enhancing a
+    running Bitcoin Core:
 
-    def __init__(self, node_latlon_fn=None):
+    🩺 NETWORK HEALTH — peer-diversity / eclipse-risk indicators: country & ASN
+       concentration (Herfindahl–Hirschman index), inbound/outbound mix, transport mix,
+       ping distribution, addrman depth. A concentrated peer set is how eclipse attacks
+       start — this page says so plainly.
+    📏 LATENCY vs DISTANCE — per peer: geodesic distance (from GeoIP), the physical
+       light-in-fiber lower bound for that round trip, the MEASURED ping, and the link's
+       efficiency (bound ÷ measured). Finds slow links that geography cannot excuse."""
+    def __init__(self, node_latlon_fn=None, peers_fn=None):
         super().__init__()
         self._node_latlon = node_latlon_fn or (lambda: None)
+        self._peers_fn = peers_fn or (lambda: [])
         lay = QtWidgets.QVBoxLayout(self)
-        priv = QtWidgets.QLabel("🔒 Privacy: no external service is contacted by default; "
-                                "no wallet data is ever sent. Google Earth & SpaceNet are opt-in.")
+        priv = QtWidgets.QLabel("🔒 Computed locally from this node's RPC + bundled GeoLite2 — "
+                                "no external service is contacted. Geo is approximate (see 🎯 accuracy).")
         priv.setStyleSheet("color:#16C784;font-weight:600"); priv.setWordWrap(True)
         lay.addWidget(priv)
         tabs = QtWidgets.QTabWidget(); lay.addWidget(tabs, 1)
-        tabs.addTab(self._actual_tab(), "🌍 Actual (NASA)")
-        tabs.addTab(self._scientific_tab(), "🔬 Scientific (WGS84)")
-        tabs.addTab(self._satellite_tab(), "🛰 Satellite / SpaceNet")
+        # 🩺 health
+        hw = QtWidgets.QWidget(); hv = QtWidgets.QVBoxLayout(hw)
+        self.health = QtWidgets.QLabel("open with connected peers to compute…")
+        self.health.setWordWrap(True); self.health.setTextFormat(QtCore.Qt.RichText)
+        self.health.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.health.setAlignment(QtCore.Qt.AlignTop)
+        hs = QtWidgets.QScrollArea(); hs.setWidgetResizable(True); hs.setWidget(self.health)
+        hv.addWidget(hs)
+        tabs.addTab(hw, "🩺 network health")
+        # 📏 latency vs distance
+        lw = QtWidgets.QWidget(); lv = QtWidgets.QVBoxLayout(lw)
+        self.lat_note = QtWidgets.QLabel(
+            "distance = great circle from THIS node (GeoIP, approximate) · bound = physical best-case "
+            "RTT at light-in-fiber (~200,000 km/s) · efficiency = bound ÷ measured ping (100% = at the "
+            "physical limit; low % = routing/queueing overhead the geography cannot excuse)")
+        self.lat_note.setWordWrap(True); self.lat_note.setStyleSheet("color:#8aa0b4")
+        lv.addWidget(self.lat_note)
+        self.lat_tbl = QtWidgets.QTableWidget(0, 6)
+        self.lat_tbl.setHorizontalHeaderLabels(["peer", "location", "distance", "light bound", "ping", "efficiency"])
+        self.lat_tbl.verticalHeader().setVisible(False)
+        self.lat_tbl.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        # HD3000 rule: Interactive header + ONE resize per render, never ResizeToContents mode
+        self.lat_tbl.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
+        lv.addWidget(self.lat_tbl, 1)
+        tabs.addTab(lw, "📏 latency vs distance")
 
-    # ── Actual: bundled NASA Blue Marble (public domain, local — no ping) ──
-    def _actual_tab(self):
-        w = QtWidgets.QWidget(); v = QtWidgets.QVBoxLayout(w)
-        img = QtWidgets.QLabel(); img.setAlignment(QtCore.Qt.AlignCenter)
-        pm = QtGui.QPixmap(self.ASSET)
-        if not pm.isNull():
-            img.setPixmap(pm.scaled(720, 360, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
-        else:
-            img.setText("NASA Blue Marble imagery not found in assets/")
-        v.addWidget(img, 1)
-        v.addWidget(QtWidgets.QLabel("NASA Blue Marble — public domain, bundled locally (equirectangular). No network access."))
-        v.addWidget(self._google_earth_row())
-        return w
+    @staticmethod
+    def _hav_km(la1, lo1, la2, lo2):
+        p1, p2 = math.radians(la1), math.radians(la2)
+        dl, dp = math.radians(lo2 - lo1), p2 - p1
+        a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+        return 2 * 6371.0 * math.asin(min(1.0, math.sqrt(a)))
 
-    # ── Scientific: WGS84 size & shape, high precision ──
-    def _scientific_tab(self):
-        import math as _m
-        a = 6378137.0; f = 1.0 / 298.257223563; b = a * (1 - f); e2 = 2 * f - f * f
-        R1 = (2 * a + b) / 3.0
-        eq_circ = 2 * _m.pi * a
-        # Authalic-ish surface area and ellipsoid volume
-        vol = 4.0 / 3.0 * _m.pi * a * a * b
-        try:
-            import mpmath as mp; mp.mp.dps = 24
-            e = mp.sqrt(mp.mpf(str(e2)))
-            area = 2 * mp.pi * mp.mpf(str(a))**2 * (1 + (1 - e2) / e * mp.atanh(e))
-            area_s = mp.nstr(area, 20)
-        except Exception:
-            area = 4 * _m.pi * ((a**1.6 * 2 + b**1.6) / 3) ** (1 / 1.6); area_s = f"{area:.6e}"
-        rows = [
-            ("Datum", "WGS84 (EPSG:4326 / NGA TR8350.2)"),
-            ("Semi-major axis a", f"{a:.6f} m"),
-            ("Semi-minor axis b", f"{b:.9f} m"),
-            ("Flattening f", f"1 / {1/f:.9f}"),
-            ("First eccentricity² e²", f"{e2:.18f}"),
-            ("Mean radius R1=(2a+b)/3", f"{R1:.9f} m"),
-            ("Equatorial circumference", f"{eq_circ:.6f} m"),
-            ("Surface area", f"{area_s} m²"),
-            ("Volume", f"{vol:.6e} m³"),
-            ("Shape", "oblate spheroid (equatorial bulge; not a perfect sphere, not flat)"),
-        ]
-        w = QtWidgets.QWidget(); grid = QtWidgets.QGridLayout(w)
-        for i, (k, val) in enumerate(rows):
-            kl = QtWidgets.QLabel(k + ":"); kl.setStyleSheet("color:#8aa0b4")
-            vl = QtWidgets.QLabel(val); vl.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-            vl.setStyleSheet("font-family:monospace")
-            grid.addWidget(kl, i, 0); grid.addWidget(vl, i, 1)
-        note = QtWidgets.QLabel("Projection precision: rendering is float64 (~15–16 sig digits, "
-                                "visually exact); point measurement is available to 18 decimals (mpmath).")
-        note.setWordWrap(True); note.setStyleSheet("color:#6a808f")
-        grid.addWidget(note, len(rows), 0, 1, 2)
-        grid.addWidget(self._google_earth_row(), len(rows) + 1, 0, 1, 2)
-        return w
+    @staticmethod
+    def _hhi(counter):
+        n = sum(counter.values())
+        return sum((v / n) ** 2 for v in counter.values()) if n else 0.0
 
-    # ── Satellite / SpaceNet: placeholder, opt-in only, never pings ──
-    def _satellite_tab(self):
-        w = QtWidgets.QWidget(); v = QtWidgets.QVBoxLayout(w)
-        self.sat_optin = QtWidgets.QCheckBox("Join as participant to enable satellite / SpaceNet mapping")
-        self.sat_optin.setToolTip("Off by default. No SpaceNet/satellite endpoint is contacted unless you opt in.")
-        self.sat_optin.toggled.connect(self._on_sat_optin)
-        v.addWidget(self.sat_optin)
-        self.sat_body = QtWidgets.QLabel(
-            "🛰 Satellite / SpaceNet mapping — placeholder.\n\n"
-            "Not connected. This tab makes NO network request by default; SpaceNet is a "
-            "participant opt-in. Enable the checkbox above to activate (integration TBD).")
-        self.sat_body.setWordWrap(True); self.sat_body.setStyleSheet("color:#8aa0b4")
-        v.addWidget(self.sat_body, 1)
-        return w
+    def refresh_data(self):
+        from collections import Counter
+        peers = self._peers_fn() or []
+        my = self._node_latlon()
+        cc, asns, nets = Counter(), Counter(), Counter()
+        pings, located, rows = [], 0, []
+        inn = sum(1 for p in peers if p.get("inbound"))
+        for p in peers:
+            host = (p.get("addr") or "").rsplit(":", 1)[0].strip("[]")
+            g = geolocate(host) if is_ip_literal(host) else None
+            nets[p.get("network") or ("ip" if is_ip_literal(host) else "tor/other")] += 1
+            if p.get("pingtime"): pings.append(p["pingtime"] * 1000)
+            if not g: continue
+            located += 1; cc[g["iso"]] += 1
+            an = asn_lookup(host) or {}
+            if an.get("org"): asns[an["org"][:24]] += 1
+            if my and p.get("pingtime"):
+                d = self._hav_km(my[0], my[1], g["lat"], g["lon"])
+                bound = max(0.1, d / 100.0)               # RTT ms at ~200,000 km/s in fiber
+                ping = p["pingtime"] * 1000
+                rows.append((p.get("addr"), f"{g.get('city') or ''} {flag(g['iso'])}".strip(),
+                             d, bound, ping, min(1.0, bound / ping) if ping else 0.0))
+        # ── 🩺 health verdicts ──
+        pings.sort()
+        med = pings[len(pings) // 2] if pings else None
+        hhi_c, hhi_a = self._hhi(cc), self._hhi(asns)
+        def risk(h):
+            return ("<span style='color:#16C784'>diverse</span>" if h < 0.2 else
+                    "<span style='color:#F7931A'>concentrated</span>" if h < 0.4 else
+                    "<span style='color:#f85149'>ECLIPSE-RISK</span>")
+        top_c = "  ".join(f"{flag(i)} {i} {n}" for i, n in cc.most_common(5)) or "—"
+        top_a = " · ".join(f"{o} {n}" for o, n in asns.most_common(3)) or "—"
+        net_mix = " · ".join(f"{k} {n}" for k, n in nets.most_common()) or "—"
+        self.health.setText(
+            f"<b style='color:#F7931A'>peers</b> {len(peers)} ({len(peers) - inn} out · {inn} in) · "
+            f"{located} located · median ping {med:.0f} ms<br>" if med is not None else
+            f"<b style='color:#F7931A'>peers</b> {len(peers)} ({len(peers) - inn} out · {inn} in) · "
+            f"{located} located<br>")
+        self.health.setText(self.health.text() +
+            f"<b>countries</b> {len(cc)} — {top_c}<br>"
+            f"<b>country concentration</b> HHI {hhi_c:.2f} → {risk(hhi_c)}<br>"
+            f"<b>ASNs</b> {len(asns)} — {top_a}<br>"
+            f"<b>ASN concentration</b> HHI {hhi_a:.2f} → {risk(hhi_a)}<br>"
+            f"<b>transports</b> {net_mix}<br><br>"
+            "<span style='color:#8aa0b4'>Eclipse attacks begin with a homogeneous peer set: "
+            "if one country or one network operator carries most of your connections, that party "
+            "can isolate this node's view of the chain. Diversify with addnode / onion peers when "
+            "a line above turns orange or red. (Computation: Herfindahl–Hirschman index over the "
+            "located peers; inbound mix and transports from getpeerinfo.)</span>")
+        # ── 📏 table: one resize after fill (HD3000 rule) ──
+        rows.sort(key=lambda r: r[5])                     # worst efficiency first — the news
+        self.lat_tbl.setRowCount(len(rows))
+        for i, (addr, loc, d, bound, ping, eff) in enumerate(rows):
+            vals = [addr, loc, f"{d:,.0f} km", f"{bound:,.1f} ms", f"{ping:,.0f} ms", f"{eff * 100:.0f}%"]
+            for j, s in enumerate(vals):
+                it = QtWidgets.QTableWidgetItem(s)
+                if j == 5:
+                    it.setForeground(QtGui.QColor("#16C784" if eff > 0.5 else
+                                                  "#F7931A" if eff > 0.2 else "#f85149"))
+                self.lat_tbl.setItem(i, j, it)
+        self.lat_tbl.resizeColumnsToContents()
 
-    def _on_sat_optin(self, on):
-        self.sat_body.setText(
-            "🛰 Satellite / SpaceNet — participant mode ENABLED (opt-in).\n\n"
-            "Placeholder: a satellite/SpaceNet tile source would attach here. Still no data "
-            "is sent automatically; any request would be an explicit action."
-            if on else
-            "🛰 Satellite / SpaceNet mapping — placeholder.\n\nNot connected. No network request "
-            "is made by default; SpaceNet is a participant opt-in.")
-
-    # ── Google Earth: opt-in, location-only, no gmail stored, no wallet data ──
-    def _google_earth_row(self):
-        box = QtWidgets.QWidget(); h = QtWidgets.QHBoxLayout(box); h.setContentsMargins(0, 6, 0, 0)
-        self.ge_optin = QtWidgets.QCheckBox("Enable Google Earth (opt-in)")
-        self.ge_optin.setToolTip("Off by default. When on, opens a map LOCATION only — no wallet, "
-                                 "account, or gmail is sent or stored.")
-        self.ge_btn = QtWidgets.QPushButton("Open node location in Google Earth")
-        self.ge_btn.setEnabled(False)
-        self.ge_optin.toggled.connect(self.ge_btn.setEnabled)
-        self.ge_btn.clicked.connect(self._open_google_earth)
-        h.addWidget(self.ge_optin); h.addWidget(self.ge_btn); h.addStretch(1)
-        return box
-
-    def _open_google_earth(self):
-        if not self.ge_optin.isChecked():
-            return
-        ll = self._node_latlon() or (0.0, 0.0)   # approx node location only; never wallet data
-        lat, lon = ll
-        url = f"https://earth.google.com/web/@{lat:.6f},{lon:.6f},1000a,10000000d"
-        QtGui.QDesktopServices.openUrl(QtCore.QUrl(url))
 
 
 class PriceOverlay(QtWidgets.QWidget):
@@ -3207,7 +3239,8 @@ class GeoMapTab(QtWidgets.QWidget):
         self.projbox.currentIndexChanged.connect(self._on_proj); top.addWidget(self.projbox)
         self.projmode = "plate"
         self.advbtn = QtWidgets.QPushButton("🔬 Advanced")
-        self.advbtn.setToolTip("NASA actual · scientific WGS84 · satellite/SpaceNet (all opt-in, no default network)")
+        self.advbtn.setToolTip("₿ANKON network science from THIS node's live data: 🩺 peer-diversity / "
+                               "eclipse-risk health + 📏 latency-vs-distance efficiency. No external calls.")
         self.advbtn.clicked.connect(self._show_advanced); top.addWidget(self.advbtn)
         v.addLayout(top)
         # second control row: GeoIP truth + opt-in price overlay + timezone choice
@@ -3224,6 +3257,11 @@ class GeoMapTab(QtWidgets.QWidget):
                                   "hourly cadence and overlay the chart on the display — each price marked ON THE HOUR. "
                                   "Off (default) = zero network contact. Drawn completely in-house.")
         self.price_chk.toggled.connect(self._price_toggled); row2.addWidget(self.price_chk)
+        self.feed_chk = QtWidgets.QCheckBox("📡 feed")
+        self.feed_chk.setChecked(_st.value("geomap/feed", "true") == "true")
+        self.feed_chk.setToolTip("Side column beside the globe: live node activity (connections, from this "
+                                 "node's log) + transactions (mempool Δ and connected blocks)")
+        self.feed_chk.toggled.connect(self._feed_toggled); row2.addWidget(self.feed_chk)
         # 🏠 local-node overlay toggles — the participant's own node, prominent, actual data
         self.ovl_node = QtWidgets.QCheckBox("🏠 node")
         self.ovl_node.setToolTip("Overlay line: this node's height · sync % · agent (actual getblockchaininfo)")
@@ -3246,9 +3284,31 @@ class GeoMapTab(QtWidgets.QWidget):
         self.scene = QtWidgets.QGraphicsScene(); self.view = QtWidgets.QGraphicsView(self.scene)
         self.view.setRenderHint(QtGui.QPainter.Antialiasing)
         self.view.setStyleSheet("background:#05080d;border:2px solid #00BFFF;border-radius:8px")
-        self.advanced = AdvancedGeoWidget(self._my_latlon)
+        self.advanced = AdvancedGeoWidget(self._my_latlon, lambda: self._peers)
         self.stack = QtWidgets.QStackedWidget(); self.stack.addWidget(self.globe); self.stack.addWidget(self.view); self.stack.addWidget(self.advanced)
-        v.addWidget(self.stack, 1)
+        # LEFT data column — the empty flank beside the globe becomes OUTPUT from the local
+        # node's perspective: live connection activity (top) + transactions/blocks (bottom).
+        # The right flank stays clear for the 🛠 admin popup's geo-map dock.
+        self.feed = QtWidgets.QWidget(); fv = QtWidgets.QVBoxLayout(self.feed)
+        fv.setContentsMargins(0, 0, 6, 0); fv.setSpacing(4)
+        self.feed.setFixedWidth(285)
+        _t1 = QtWidgets.QLabel("📡 node activity — this node's log")
+        _t1.setStyleSheet("color:#00BFFF;font-weight:700"); fv.addWidget(_t1)
+        self.act_list = QtWidgets.QListWidget()
+        self.act_list.setStyleSheet("font-size:11px"); self.act_list.setWordWrap(False)
+        self.act_list.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        fv.addWidget(self.act_list, 3)
+        _t2 = QtWidgets.QLabel("🧾 transactions — mempool & blocks")
+        _t2.setStyleSheet("color:#F7931A;font-weight:700"); fv.addWidget(_t2)
+        self.tx_list = QtWidgets.QListWidget()
+        self.tx_list.setStyleSheet("font-size:11px"); self.tx_list.setWordWrap(False)
+        self.tx_list.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        fv.addWidget(self.tx_list, 2)
+        self.feed.setVisible(_st.value("geomap/feed", "true") == "true")
+        mid = QtWidgets.QHBoxLayout(); mid.setSpacing(0)
+        mid.addWidget(self.feed); mid.addWidget(self.stack, 1)
+        v.addLayout(mid, 1)
+        self._mp_prev = None                    # (txcount, t) for the mempool Δ line
         # 🪙 price OVERLAY floats over whichever view is showing (globe / flat / flatearth / advanced)
         self.price_overlay = PriceOverlay(self.stack, self._tzfmt)
         self._price_series = []; self._price_last = 0.0; self._price_try = 0.0; self._price_busy = False
@@ -3306,6 +3366,7 @@ class GeoMapTab(QtWidgets.QWidget):
         self.stack.setCurrentIndex(i)
         self.toggle.setText("🗺 Flat map" if i == 0 else "🌐 Globe")
     def _show_advanced(self):
+        self.advanced.refresh_data()           # compute from the CURRENT peers, every open
         self.stack.setCurrentIndex(2)
     def _on_proj(self, i):
         self.projmode = "flatearth" if i == 1 else "plate"
@@ -3476,6 +3537,9 @@ class GeoMapTab(QtWidgets.QWidget):
         spawn("getpeerinfo", self._on_peers, timeout=10)
         spawn("getnetworkinfo", self._on_ni, timeout=8)
         spawn("getblockchaininfo", self._on_bci, timeout=10)   # 🏠 overlay: height/sync/tip age
+        if self.feed_chk.isChecked():                          # 🧾 feed: mempool Δ + blocks
+            spawn("getmempoolinfo", self._on_mpi, timeout=8)
+            spawn_fn(lambda: fetch_json("/api/recentblocks?n=6").get("blocks", []), self._on_feed_blocks)
         if self.allnodes.isChecked():                        # off = peers only; on = whole addrman
             spawn_fn(lambda: known_nodes(5000), self._on_net)
         else:
@@ -3497,7 +3561,58 @@ class GeoMapTab(QtWidgets.QWidget):
         self._redraw()
     def _on_ni(self, ni, stale): self._ni = ni or {}; self._redraw()
     def _on_net(self, nodes): self._net = nodes or []; self._redraw()
-    def _on_act(self, d): self._act = (d or {}).get("events", []); self._redraw()
+    def _on_act(self, d):
+        self._act = (d or {}).get("events", [])
+        self._fill_act_feed()
+        self._redraw()
+    # ── 📡/🧾 side feeds: OUTPUT from the local node's perspective ──
+    def _feed_toggled(self, on):
+        QtCore.QSettings("BANKON", "bankon-qt").setValue("geomap/feed", "true" if on else "false")
+        self.feed.setVisible(on)
+        if on: self.refresh()
+    _ACT_ICO = {"connected": ("✚", "#16C784"), "inbound": ("◂", "#00BFFF"),
+                "failed": ("✖", "#f85149"), "disconnect": ("−", "#F7931A"), "local": ("🏠", "#F7931A")}
+    def _fill_act_feed(self):
+        self.act_list.clear()
+        for e in reversed((self._act or [])[-40:]):            # newest first
+            ico, colr = self._ACT_ICO.get(e.get("kind"), ("·", "#8aa0b4"))
+            when = (e.get("time") or "")[-8:]
+            addr = (e.get("addr") or e.get("text") or "")[:26]
+            ip = addr.rsplit(":", 1)[0].strip("[]")
+            g = geolocate(ip) if is_ip_literal(ip) else None
+            it = QtWidgets.QListWidgetItem(f"{when} {ico} {addr}" + (f" {flag(g['iso'])}" if g else ""))
+            it.setForeground(QtGui.QColor(colr))
+            it.setToolTip(f"{e.get('kind')} · {e.get('addr') or ''} · {e.get('subver') or ''}"
+                          + (f" · {g['country']}" if g else ""))
+            self.act_list.addItem(it)
+    def _on_mpi(self, mp, stale):
+        mp = mp or {}
+        now = time.time()
+        n = mp.get("size")
+        if n is None: return
+        line = f"mempool {n:,} tx · {mp.get('bytes', 0) / 1e6:.1f} vMB"
+        if self._mp_prev and now > self._mp_prev[1]:
+            dn = n - self._mp_prev[0]
+            line += f" · Δ {dn:+,} in {human_dt(now - self._mp_prev[1])}"
+        self._mp_prev = (n, now)
+        self._mp_line = line
+        self._fill_tx_feed()
+    def _on_feed_blocks(self, blocks):
+        self._feed_blocks = blocks or []
+        self._fill_tx_feed()
+    def _fill_tx_feed(self):
+        self.tx_list.clear()
+        if getattr(self, "_mp_line", None):
+            it = QtWidgets.QListWidgetItem("🧾 " + self._mp_line)
+            it.setForeground(QtGui.QColor("#F7931A")); self.tx_list.addItem(it)
+        for b in reversed(getattr(self, "_feed_blocks", [])):  # newest block first
+            when = self._tzfmt(b.get("time") or 0) if b.get("time") else "—"
+            ntx = b.get("nTx")
+            it = QtWidgets.QListWidgetItem(f"⛏ {b.get('height', 0):,} · "
+                                           + (f"{ntx:,} tx · " if ntx else "") + when)
+            it.setForeground(QtGui.QColor("#16C784"))
+            it.setToolTip(b.get("hash", ""))
+            self.tx_list.addItem(it)
     def _flow_pulse(self):
         # animated packets along the REAL great-circle arcs, scaled by ACTUAL per-peer B/s.
         # Same colour law as everywhere in ₿ANKON: orange = data IN (peer→node),
@@ -3722,7 +3837,9 @@ class GeoMapTab(QtWidgets.QWidget):
                            "pin": NetworkMapTab._flow_frac(_ri), "pout": NetworkMapTab._flow_frac(_ro),
                            "q": link_quality(p),
                            "label": ((p.get("addr") or "")[:28],
-                                     f"{g.get('city') or _ce[0]}, {g['country']}"),
+                                     f"{g.get('city') or _ce[0]}, {g['country']} · {_ping}"),
+                           "rate_s": (f"▼ {NetworkMapTab._rate_s(_ri)} ▲ {NetworkMapTab._rate_s(_ro)}"
+                                      if (_ri >= 256 or _ro >= 256) else ""),
                            "tip": (f"{p.get('addr')}\n"
                                    f"{flag(g['iso'])} {g['country']} · {g.get('city') or _ce[0]}  ·  {_accs}\n"
                                    f"AS{an.get('asn','?')} {an.get('org','')}\n"
