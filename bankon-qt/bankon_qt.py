@@ -2699,6 +2699,10 @@ class GlobeWidget(QtWidgets.QWidget):
         self._drag = None; self._vel = 0.0     # hand-drag state + fling inertia (deg/frame)
         self._nodes, self._peers, self._arcs, self._my = [], [], [], None
         self._fphase = 0.0                     # packet-flow phase (comets riding the arcs)
+        self._hits = []                        # hover targets: (x, y, r, peer dict) per frame
+        self._hover_pk = None                  # the dict under the cursor (gold-ringed)
+        self.my_tip = ""                       # our node's hover card (set by GeoMapTab)
+        self.setMouseTracking(True)            # hover cards without a button held
         _st = QtCore.QSettings("BANKON", "bankon-qt")
         self.show_borders = _st.value("geomap/borders", "true") == "true"
         self.show_acc = _st.value("geomap/accuracy", "true") == "true"
@@ -2720,7 +2724,20 @@ class GlobeWidget(QtWidgets.QWidget):
     def mousePressEvent(self, e):
         self._drag = e.position(); self._vel = 0.0; self.setCursor(QtCore.Qt.ClosedHandCursor)
     def mouseMoveEvent(self, e):
-        if self._drag is None: return
+        if self._drag is None:
+            # HOVER: the fixed points answer with their ACTUAL data — ip · location ·
+            # accuracy · speed (ping + live ▼/▲ B/s) · traffic · direction
+            p = e.position(); hit = None
+            for (hx, hy, hr, pk) in self._hits:
+                if (p.x() - hx) ** 2 + (p.y() - hy) ** 2 <= (hr + 5) ** 2:
+                    hit = pk; break
+            self._hover_pk = hit
+            if hit and hit.get("tip"):
+                QtWidgets.QToolTip.showText(e.globalPosition().toPoint(), hit["tip"], self)
+            elif not hit:
+                QtWidgets.QToolTip.hideText()
+            self.setCursor(QtCore.Qt.PointingHandCursor if hit else QtCore.Qt.OpenHandCursor)
+            return
         p = e.position(); dx = p.x() - self._drag.x(); dy = p.y() - self._drag.y(); self._drag = p
         self.spin = (self.spin - dx * 0.45) % 360                          # drag right → globe follows the hand
         lim = math.radians(85)
@@ -2877,10 +2894,16 @@ class GlobeWidget(QtWidgets.QWidget):
         for i, p in enumerate(self._peers):
             if i >= len(proj_arcs): break
             self._flow_arc(qp, proj_arcs[i], p.get("pin", 0.0), p.get("pout", 0.0), p.get("q", 0.6), i)
+        self._hits = []                                                # rebuilt every frame (globe spins)
         for pk in self._peers:                                         # connected peers
             la, lo, col, r, acc = pk["lat"], pk["lon"], pk["col"], pk["r"], pk.get("acc", 0)
             x, y, v = self._proj(la, lo, cx, cy, R)
             if not v: continue
+            self._hits.append((x, y, r, pk))
+            if pk is self._hover_pk:                                   # hovered = gold ring
+                qp.setBrush(QtCore.Qt.NoBrush)
+                qp.setPen(QtGui.QPen(QtGui.QColor("#FFD37A"), 2))
+                qp.drawEllipse(QtCore.QPointF(x, y), r + 4, r + 4)
             if acc and self.show_acc:
                 # GeoIP accuracy ring — angular radius acc/RE on the sphere; the dot is a
                 # centroid, the address is somewhere inside this circle
@@ -2904,6 +2927,8 @@ class GlobeWidget(QtWidgets.QWidget):
             if v:
                 qp.setPen(QtGui.QPen(QtGui.QColor("#F7931A"), 2)); qp.setBrush(QtGui.QBrush(QtGui.QColor("#1a1200")))
                 qp.drawEllipse(QtCore.QPointF(x, y), 6, 6)
+                if self.my_tip:
+                    self._hits.append((x, y, 8, {"tip": self.my_tip}))
         qp.end()
 
 
@@ -3542,6 +3567,7 @@ class GeoMapTab(QtWidgets.QWidget):
             _src = " · (approx — ISP egress, from addrlocal)" if getattr(self, "_my_src", "") == "addrlocal" else ""
             _accs = f" · ±{_macc:,} km ({self._acc_tier(_macc)})" if _macc else ""
             mk.setToolTip(f"bankon: this node · nearest city: {_nc[0]}, {_nc[1]} (~{_nc[2]:.0f} km){_accs}{_src}")
+            self.globe.my_tip = mk.toolTip()             # same truth on the globe's hover
         # connected peers on top, coloured by traffic/direction, ASN in tooltip.
         # EVERY connected peer is accounted for: located ones at their true position, the rest
         # (Tor / I2P / unmapped IPs) in an honest strip — never silently dropped.
@@ -3573,20 +3599,27 @@ class GeoMapTab(QtWidgets.QWidget):
             _ce = nearest_city_entry(g["lat"], g["lon"])
             _pop = f", pop {_ce[5]:,}" if len(_ce) > 5 and _ce[5] else ""
             _city = f"{g['city']} (GeoIP)" if g.get("city") else f"near {_ce[0]} (~{_ce[4]:.0f} km{_pop})"
-            # globe payload: position/size/colour + accuracy + LIVE flow fractions + link
-            # quality + the political-mode label (address · geographic city, country)
-            _ri, _ro = self._rates.get(p.get("addr"), (0.0, 0.0))
-            gpeers.append({"lat": g["lat"], "lon": g["lon"], "col": col, "r": max(4.0, r), "acc": acc,
-                           "pin": NetworkMapTab._flow_frac(_ri), "pout": NetworkMapTab._flow_frac(_ro),
-                           "q": link_quality(p),
-                           "label": ((p.get("addr") or "")[:28],
-                                     f"{g.get('city') or _ce[0]}, {g['country']}")})
             _accs = f"±{acc:,} km ({self._acc_tier(acc)})" if acc else "accuracy unknown"
             _ping = f"{p.get('pingtime', 0) * 1000:.0f} ms" if p.get("pingtime") else "ping ?"
             _up = human_dt(time.time() - p["conntime"]) if p.get("conntime") else "?"
             d.setToolTip(f"{p.get('addr')}  ·  {flag(g['iso'])} {g['country']}  ·  {_city}  ·  {_accs}  ·  "
                          f"AS{an.get('asn','?')} {an.get('org','')}  ·  {(traf/1048576):.1f} MiB  ·  "
                          f"{_ping}  ·  up {_up}  ·  {'in' if inbound else 'out'}{_dnsnote}")
+            # globe payload: position/size/colour + accuracy + LIVE flow fractions + link
+            # quality + the political-mode label + the FULL hover card (ip · location ·
+            # accuracy · speed: ping + live ▼/▲ B/s · traffic · direction)
+            _ri, _ro = self._rates.get(p.get("addr"), (0.0, 0.0))
+            gpeers.append({"lat": g["lat"], "lon": g["lon"], "col": col, "r": max(4.0, r), "acc": acc,
+                           "pin": NetworkMapTab._flow_frac(_ri), "pout": NetworkMapTab._flow_frac(_ro),
+                           "q": link_quality(p),
+                           "label": ((p.get("addr") or "")[:28],
+                                     f"{g.get('city') or _ce[0]}, {g['country']}"),
+                           "tip": (f"{p.get('addr')}\n"
+                                   f"{flag(g['iso'])} {g['country']} · {g.get('city') or _ce[0]}  ·  {_accs}\n"
+                                   f"AS{an.get('asn','?')} {an.get('org','')}\n"
+                                   f"speed: {_ping} · live ▼ {NetworkMapTab._rate_s(_ri)} ▲ {NetworkMapTab._rate_s(_ro)}\n"
+                                   f"{(traf/1048576):.1f} MiB total · up {_up} · "
+                                   f"{'inbound' if inbound else 'outbound'}{_dnsnote.strip()}")})
             if self.cities_chk.isChecked() and _ce:
                 _citymarks[(_ce[0], _ce[1])] = _ce
         # 🏙 optional overlay: nearest MAJOR CITY per located peer — drawn at the city's own
@@ -3634,7 +3667,10 @@ class GeoMapTab(QtWidgets.QWidget):
                 gpeers.append({"lat": g["lat"], "lon": g["lon"], "col": col, "r": 5.0,
                                "acc": g.get("acc") or 0,
                                "label": ((e.get("addr") or "")[:28],
-                                         f"{g.get('city') or '?'}, {g['country']}")})
+                                         f"{g.get('city') or '?'}, {g['country']}"),
+                               "tip": (f"{e.get('kind')} {e.get('addr')}\n"
+                                       f"{flag(g['iso'])} {g['country']} · {g.get('city') or '?'}\n"
+                                       "log-based connection event (peer RPC busy)")})
                 act_plotted += 1
         # AE disc: fit the view to the DISC (square scene rect), not the 2:1 pixmap —
         # otherwise the flat-earth occupies only the centre of a wide letterboxed scene
