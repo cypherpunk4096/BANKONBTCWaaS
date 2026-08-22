@@ -3161,7 +3161,7 @@ class NodeInfoOverlay(QtWidgets.QWidget):
     age · headers) — each line its own toggle — with the time (chosen timezone) riding the
     header. Drawn completely in-house with QPainter; floats top-left over the geo display,
     opposite the 🪙 price overlay. Transparent to the mouse so globe drags pass through."""
-    LBL = {"node": "NODE", "net": "NET", "blocks": "BLOCKS"}
+    LBL = {"node": "NODE", "net": "NET", "blocks": "BLOCKS", "fees": "FEES"}
     def __init__(self, parent, tzfmt):
         super().__init__(parent)
         self._tzfmt = tzfmt
@@ -3325,7 +3325,11 @@ class GeoMapTab(QtWidgets.QWidget):
         self.ovl_net.setToolTip("Overlay line: peers (out/in) · live ▼/▲ B/s totals · our address")
         self.ovl_blocks = QtWidgets.QCheckBox("⛓ blocks")
         self.ovl_blocks.setToolTip("Overlay line: chain tip · tip age · headers")
-        for key, c in (("ovl_node", self.ovl_node), ("ovl_net", self.ovl_net), ("ovl_blocks", self.ovl_blocks)):
+        self.ovl_fees = QtWidgets.QCheckBox("⛽ fees")
+        self.ovl_fees.setToolTip("Overlay line: the fee LOG kept by the Console (sampled every 5 min from "
+                                 "this node) — next-block now + trend · 24h median · range · economical")
+        for key, c in (("ovl_node", self.ovl_node), ("ovl_net", self.ovl_net),
+                       ("ovl_blocks", self.ovl_blocks), ("ovl_fees", self.ovl_fees)):
             c.setChecked(_st.value("geomap/" + key, "true") == "true")
             c.toggled.connect(self._nodeinfo_changed); row2.addWidget(c)
         row2.addWidget(QtWidgets.QLabel("🕐 tz"))
@@ -3555,9 +3559,24 @@ class GeoMapTab(QtWidgets.QWidget):
     # ── 🏠 local-node overlay: prominent, actual data — node/net/blocks toggles + time ──
     def _nodeinfo_changed(self, _on):
         st = QtCore.QSettings("BANKON", "bankon-qt")
-        for key, c in (("ovl_node", self.ovl_node), ("ovl_net", self.ovl_net), ("ovl_blocks", self.ovl_blocks)):
+        for key, c in (("ovl_node", self.ovl_node), ("ovl_net", self.ovl_net),
+                       ("ovl_blocks", self.ovl_blocks), ("ovl_fees", self.ovl_fees)):
             st.setValue("geomap/" + key, "true" if c.isChecked() else "false")
         self._update_nodeinfo()
+    def _on_fees(self, d):
+        d = d or {}
+        now, st, tr = d.get("now") or {}, d.get("stats") or {}, d.get("trend")
+        e1 = now.get("e1"); s1 = st.get("e1") or {}
+        if not d.get("samples"):
+            line = "collecting — the Console logs a sample every 5 min; first stats shortly"
+        else:
+            line = (f"next ~{e1} sat/vB" + (f" ({tr})" if tr else "") if e1 is not None else "next ?")
+            if s1:
+                line += f" · 24h p50 {s1.get('p50')} · range {s1.get('min')}–{s1.get('max')}"
+            if now.get("e144") is not None:
+                line += f" · economical {now['e144']}"
+            line += f" · {d.get('samples')} samples"
+        self.node_overlay.set_data({"fees": line})
     def _on_bci(self, bci, stale):
         self._bci = bci or {}
         self._update_nodeinfo()
@@ -3567,7 +3586,7 @@ class GeoMapTab(QtWidgets.QWidget):
                                         + " " + self.tz_box.currentText()})
     def _update_nodeinfo(self):
         flags = [k for k, c in (("node", self.ovl_node), ("net", self.ovl_net),
-                                ("blocks", self.ovl_blocks)) if c.isChecked()]
+                                ("blocks", self.ovl_blocks), ("fees", self.ovl_fees)) if c.isChecked()]
         self.node_overlay.set_flags(flags)
         self.node_overlay.setVisible(bool(flags))
         if not flags:
@@ -3676,6 +3695,8 @@ class GeoMapTab(QtWidgets.QWidget):
         spawn("getpeerinfo", self._on_peers, timeout=10)
         spawn("getnetworkinfo", self._on_ni, timeout=8)
         spawn("getblockchaininfo", self._on_bci, timeout=10)   # 🏠 overlay: height/sync/tip age
+        if self.ovl_fees.isChecked():                          # ⛽ overlay: the Console's fee log
+            spawn_fn(lambda: fetch_json("/api/fees?hours=24"), self._on_fees)
         if self.feed_chk.isChecked():                          # 🧾 feed: mempool Δ + blocks
             spawn("getmempoolinfo", self._on_mpi, timeout=8)
             spawn_fn(lambda: fetch_json("/api/recentblocks?n=6").get("blocks", []), self._on_feed_blocks)
@@ -4329,6 +4350,13 @@ class BlockSciencePanel(QtWidgets.QFrame):
         self.fullbar.setFormat("block fullness — %v / 4,000,000 WU (%p%)"); v.addWidget(self.fullbar)
         self.feebar = QtWidgets.QLabel("fee percentiles: —")
         self.feebar.setStyleSheet("font-family:monospace;font-size:11px;color:#8aa0b4"); v.addWidget(self.feebar)
+        # ⛽ the Console's continuous fee LOG (sampled every 5 min from this node) as context
+        # under the single-block percentiles — is THIS block's fee regime normal for the day?
+        self.feelog = QtWidgets.QLabel("⛽ fee log: —")
+        self.feelog.setStyleSheet("font-family:monospace;font-size:11px;color:#8aa0b4")
+        self.feelog.setToolTip("Continuous local fee history — the Console samples estimatesmartfee + "
+                               "mempool + each tip block every 5 min into .feehistory (GET /api/fees)")
+        v.addWidget(self.feelog)
         self._analyzing = None; self._hdr = None; self._st = None; self._last_tip = None
     def maybe_tip(self, h):
         # follow-tip: re-analyze only when a NEW tip arrives and no manual height is pinned
@@ -4345,6 +4373,20 @@ class BlockSciencePanel(QtWidgets.QFrame):
         self._analyzing = h; self._last_tip = h; self._hdr = None; self._st = None
         spawn("getblockstats", self._on_stats, params=[h], timeout=25)
         spawn("getblockhash", self._on_hash, params=[h], timeout=10)
+        spawn_fn(lambda: fetch_json("/api/fees?hours=24"), self._on_feelog)   # ⛽ day context
+    def _on_feelog(self, d):
+        d = d or {}
+        if not d.get("samples"):
+            self.feelog.setText("⛽ fee log: collecting — the Console samples every 5 min; stats build shortly")
+            return
+        now, st, tr = d.get("now") or {}, d.get("stats") or {}, d.get("trend") or ""
+        s1, sa = st.get("e1") or {}, st.get("tipAvg") or {}
+        parts = [f"⛽ fee log 24h ({d['samples']} samples):"]
+        if now.get("e1") is not None: parts.append(f"next-block now {now['e1']} sat/vB" + (f" ({tr})" if tr else ""))
+        if s1: parts.append(f"p50 {s1.get('p50')} · range {s1.get('min')}–{s1.get('max')}")
+        if sa: parts.append(f"mined-block avg p50 {sa.get('p50')}")
+        if now.get("e144") is not None: parts.append(f"economical(1d) {now['e144']}")
+        self.feelog.setText("  ·  ".join(parts))
     def _on_hash(self, hsh, stale): spawn("getblockheader", self._on_hdr, params=[hsh], timeout=10)
     def _on_hdr(self, hdr, stale): self._hdr = hdr or {}; self._render()
     def _on_stats(self, st, stale): self._st = st or {}; self._render()
@@ -7061,7 +7103,7 @@ class AdminWindow(QtWidgets.QWidget):
         for k in ("tabs/order", "tabs/geomap", "admin/dock", "admin/geometry", "admin/open",
                   "banner/dock", "geomap/borders", "geomap/cities", "geomap/accuracy",
                   "geomap/price", "geomap/tz", "geomap/ovl_node", "geomap/ovl_net", "geomap/ovl_blocks",
-                  "geomap/feed", "geomap/marks"):
+                  "geomap/ovl_fees", "geomap/feed", "geomap/marks", "geomap/nodeovl", "geomap/nodeovl_geom"):
             st.remove(k)
         self.status.setText("🧭 saved layout forgotten — defaults return next launch.")
 

@@ -1484,6 +1484,76 @@ app.get('/api/filesystem', (req, res) => {
     });
 });
 
+// ---- ⛽ FEE HISTORY — a continuous LOCAL log of what the network charges ----------------
+// Sampled every 5 min from THIS node (estimatesmartfee 1/3/6/144 + mempool + each new tip's
+// avgfeerate) → JSONL at .feehistory (bounded ~2 MB, oldest half trimmed on rotation) and
+// served with computed stats at GET /api/fees. Measured locally — no external fee API, ever.
+const FEE_FILE = join(__dir, '.feehistory');
+let FEE_HIST = [];
+try {
+  FEE_HIST = readFileSync(FEE_FILE, 'utf8').trim().split('\n').filter(Boolean)
+    .map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean).slice(-4200);
+} catch { /* first run — the log starts now */ }
+let _feeTipH = 0;
+const _toSatVb = (btcPerKvb) => btcPerKvb == null ? null : +(btcPerKvb * 1e5).toFixed(2);
+async function _feeSample() {
+  try {
+    const s = { t: Math.floor(Date.now() / 1000) };
+    for (const [key, target] of [['e1', 1], ['e3', 3], ['e6', 6], ['e144', 144]]) {
+      try { s[key] = _toSatVb((await rpc('full', 'estimatesmartfee', [target]))?.feerate); }
+      catch { s[key] = null; }
+    }
+    try {
+      const mp = await rpc('full', 'getmempoolinfo');
+      s.mpTx = mp.size; s.mpVMB = +(mp.bytes / 1e6).toFixed(1); s.mpMin = _toSatVb(mp.mempoolminfee);
+    } catch { /* choked — partial sample is still honest */ }
+    try {
+      s.h = await rpc('full', 'getblockcount');
+      if (s.h && s.h !== _feeTipH) {                       // one tip read per NEW block only
+        _feeTipH = s.h;
+        const st = await rpc('full', 'getblockstats',
+                             [s.h, ['avgfeerate', 'feerate_percentiles', 'totalfee', 'txs']]);
+        s.tipAvg = st.avgfeerate; s.tipP = st.feerate_percentiles;
+        s.tipFee = st.totalfee; s.tipTx = st.txs;
+      }
+    } catch { /* ditto */ }
+    if (s.e1 == null && s.mpTx == null && s.tipAvg == null) return;   // node dark — log nothing
+    FEE_HIST.push(s); if (FEE_HIST.length > 4200) FEE_HIST = FEE_HIST.slice(-4200);
+    await fsp.appendFile(FEE_FILE, JSON.stringify(s) + '\n');
+    try {
+      if (statSync(FEE_FILE).size > 2 * 1024 * 1024)
+        writeFileSync(FEE_FILE, FEE_HIST.slice(-2100).map(x => JSON.stringify(x)).join('\n') + '\n');
+    } catch { /* rotation is best-effort */ }
+  } catch { /* breaker open — next tick */ }
+}
+setInterval(_feeSample, 5 * 60 * 1000); setTimeout(_feeSample, 12000);
+
+const _fq = (sorted, p) => sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))];
+function _feeStats(rows, key) {
+  const v = rows.map(r => r[key]).filter(x => x != null).sort((a, b) => a - b);
+  if (!v.length) return null;
+  return { n: v.length, min: v[0], max: v[v.length - 1],
+           avg: +(v.reduce((a, b) => a + b, 0) / v.length).toFixed(2),
+           p50: _fq(v, 0.5), p90: _fq(v, 0.9) };
+}
+app.get('/api/fees', (req, res) => {
+  const hours = Math.max(1, Math.min(24 * 30, Number(req.query.hours) || 24));
+  const cut = Math.floor(Date.now() / 1000) - hours * 3600;
+  const rows = FEE_HIST.filter(r => r.t >= cut);
+  const latest = FEE_HIST[FEE_HIST.length - 1] || null;
+  const stats = { e1: _feeStats(rows, 'e1'), e3: _feeStats(rows, 'e3'), e6: _feeStats(rows, 'e6'),
+                  e144: _feeStats(rows, 'e144'), tipAvg: _feeStats(rows, 'tipAvg'),
+                  mpTx: _feeStats(rows, 'mpTx') };
+  let trend = null;                                        // current next-block est vs the window median
+  if (stats.e1 && latest?.e1 != null)
+    trend = latest.e1 > stats.e1.p50 * 1.15 ? 'rising'
+          : latest.e1 < stats.e1.p50 * 0.85 ? 'falling' : 'steady';
+  res.json({ ok: true, unit: 'sat/vB', sampleEveryMin: 5, hours, samples: rows.length,
+             loggedSince: FEE_HIST.length ? FEE_HIST[0].t : null,
+             now: latest, trend, stats,
+             series: rows.map(r => ({ t: r.t, e1: r.e1, e6: r.e6, tipAvg: r.tipAvg ?? null })) });
+});
+
 setInterval(warmCheap, Number(process.env.BANKON_WARM_MS) || 25000); warmCheap();
 setInterval(warmChain, 30000); warmChain();
 if (HAMMER) { setInterval(burstBlocks, 60000); burstBlocks(); }   // continuous burst only if opted in
