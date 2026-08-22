@@ -3173,6 +3173,8 @@ class NodeInfoOverlay(QtWidgets.QWidget):
         self._drag = None; self._resz = None
         self.setMouseTracking(True)
         self.setCursor(QtCore.Qt.OpenHandCursor)
+        self.setToolTip("🏠 drag anywhere on this card to move it out of the way (corners snap-dock, "
+                        "anywhere else stays put) · drag ⇲ to resize · both remembered")
         self.hide()
     def _in_grip(self, pos):
         return pos.x() > self.width() - 18 and pos.y() > self.height() - 18
@@ -3385,7 +3387,15 @@ class GeoMapTab(QtWidgets.QWidget):
         self._bci = {}
         self._clock_t = QtCore.QTimer(self); self._clock_t.timeout.connect(self._clock_tick)
         self._clock_t.start(1000)
+        # legend is a TOGGLE — open it for the tallies, close it to give the globe the room
+        self.legend_btn = QtWidgets.QToolButton(); self.legend_btn.setCheckable(True)
+        self.legend_btn.setChecked(_st.value("geomap/legend", "true") == "true")
+        self.legend_btn.setStyleSheet("QToolButton{border:0;color:#8aa0b4;font-weight:700;font-size:11px}")
+        self.legend_btn.setToolTip("Open/close the tallies: peers by country · top ASNs · by speed · by uptime")
+        self.legend_btn.toggled.connect(self._legend_toggled)
+        v.addWidget(self.legend_btn)
         self.legend = QtWidgets.QLabel(""); self.legend.setStyleSheet("color:#d6e3ef"); self.legend.setWordWrap(True); v.addWidget(self.legend)
+        self._legend_toggled(self.legend_btn.isChecked())
         self._peers, self._ni, self._net, self._act = [], {}, [], []
         self._bg = None; self._bg_n = -1     # cached background pixmap + the node count it was built for
         # PACKET FLOW state — same colour law as the Net Map: orange = actual bytes INTO this
@@ -3476,17 +3486,22 @@ class GeoMapTab(QtWidgets.QWidget):
         w = min(360, max(240, self.stack.width() - 24))
         self.price_overlay.setGeometry(max(8, self.stack.width() - w - 12), 10, w, 150)
         self.price_overlay.raise_()
-        # 🏠 card: remembered dock corner (TL/TR/BL/BR) or the remembered free spot + width
+        if self.node_overlay._drag is not None or self.node_overlay._resz is not None:
+            return                               # never yank the card while the hand is on it
+        # 🏠 card: remembered dock corner (TL/TR/BL/BR) or the remembered free spot + width.
+        # DEFAULT = TOP-RIGHT — off the globe's face so the globe stays visible; when the
+        # 🪙 price strip is up there too, the card slides in just below it.
         st = QtCore.QSettings("BANKON", "bankon-qt")
-        dock = st.value("geomap/nodeovl", "TL")
+        dock = st.value("geomap/nodeovl", "TR")
         try:
             gx, gy, gw = [int(t) for t in (st.value("geomap/nodeovl_geom") or "").split(",")]
         except Exception:
             gx, gy, gw = 10, 10, 0
         sw, sh = self.stack.width(), self.stack.height()
-        nw = max(240, min(gw or int(sw * 0.5), max(240, sw - 20)))
+        nw = max(240, min(gw or int(sw * 0.4), max(240, sw - 20)))
         nh = self.node_overlay.wanted_height()
-        pos = {"TL": (10, 10), "TR": (sw - nw - 10, 10),
+        ty = 170 if self.price_overlay.isVisible() else 10       # below the price strip when shown
+        pos = {"TL": (10, 10), "TR": (sw - nw - 10, ty),
                "BL": (10, sh - nh - 10), "BR": (sw - nw - 10, sh - nh - 10)}.get(dock)
         if pos is None:                          # free — clamp the remembered spot into view
             pos = (max(0, min(gx, sw - nw)), max(0, min(gy, sh - nh)))
@@ -3729,6 +3744,11 @@ class GeoMapTab(QtWidgets.QWidget):
         self._act = (d or {}).get("events", [])
         self._fill_act_feed()
         self._redraw()
+    def _legend_toggled(self, on):
+        QtCore.QSettings("BANKON", "bankon-qt").setValue("geomap/legend", "true" if on else "false")
+        self.legend.setVisible(on)
+        self.legend_btn.setText(("▾" if on else "▸") + " peers by country · ASNs · speed · uptime"
+                                + ("" if on else "   (click to open)"))
     # ── 🏆 marks: Network / Net Map knowledge reused on the geo display ──
     def _marks_toggled(self, on):
         QtCore.QSettings("BANKON", "bankon-qt").setValue("geomap/marks", "true" if on else "false")
@@ -7103,7 +7123,8 @@ class AdminWindow(QtWidgets.QWidget):
         for k in ("tabs/order", "tabs/geomap", "admin/dock", "admin/geometry", "admin/open",
                   "banner/dock", "geomap/borders", "geomap/cities", "geomap/accuracy",
                   "geomap/price", "geomap/tz", "geomap/ovl_node", "geomap/ovl_net", "geomap/ovl_blocks",
-                  "geomap/ovl_fees", "geomap/feed", "geomap/marks", "geomap/nodeovl", "geomap/nodeovl_geom"):
+                  "geomap/ovl_fees", "geomap/feed", "geomap/marks", "geomap/nodeovl",
+                  "geomap/nodeovl_geom", "geomap/legend"):
             st.remove(k)
         self.status.setText("🧭 saved layout forgotten — defaults return next launch.")
 

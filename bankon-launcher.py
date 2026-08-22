@@ -204,8 +204,8 @@ class Launcher:
         # DOCK / CALL — window choreography between the ₿UTTON and the Overview
         self.wmrow = Gtk.Box(spacing=6)
         dk = Gtk.Button(label="⚓ DOCK")
-        dk.set_tooltip_text("CLICK: dock the ₿UTTON onto the console's '₿ the wallet you can ₿ANKON' banner "
-                            "(left-hand side, bottom of the console).\n"
+        dk.set_tooltip_text("CLICK: dock the ₿UTTON onto the console's BOTTOM FOOTER "
+                            "(centred on the © / banner strip).\n"
                             "PRESS AND HOLD: summon the console window to appear BEHIND the ₿UTTON.")
         dk.get_style_context().add_class("logmini")
         # two-mode gesture: short click vs press-and-hold (≥550 ms) — handled on press/release
@@ -420,11 +420,12 @@ class Launcher:
         return best
 
     def _dock_pos(self, qt):
-        # DOCK position = the LEFT-HAND SIDE of the console's '₿ the wallet you can ₿ANKON'
-        # banner, which rides the BOTTOM of the console window (Qt default) — the ₿UTTON
-        # parks on that title field like a tug against a hull.
-        _bw, bh = self.win.get_size()
-        return max(0, qt["x"] + 14), max(0, qt["y"] + qt["h"] - bh - 14)
+        # DOCK position = the console's BOTTOM FOOTER: flush against the window's bottom
+        # edge (the © status-bar / banner strip), horizontally centred on it — the ₿UTTON
+        # parks ON the footer like a tug against a hull.
+        bw, bh = self.win.get_size()
+        return (max(0, qt["x"] + (qt["w"] - bw) // 2),
+                max(0, qt["y"] + qt["h"] - bh - 4))
 
     # ── DOCK gesture: click = dock onto the banner · press-and-hold = summon console behind ──
     _DOCK_HOLD_MS = 550
@@ -465,12 +466,12 @@ class Launcher:
             x, y = self._dock_pos(qt)
             self.win.move(x, y)
             self.win.present()                             # ₿UTTON floats above the console
-            self.status.set_text("⚓ ₿UTTON docked — left side of the '₿ the wallet you can ₿ANKON' banner.")
+            self.status.set_text("⚓ ₿UTTON docked — on the console's bottom footer.")
         else:
             scr = Gdk.Screen.get_default()
-            _w, h = self.win.get_size()
-            self.win.move(16, max(0, scr.get_height() - h - 48))
-            self.status.set_text("⚓ Overview not found — docked to the screen's bottom-left instead.")
+            w, h = self.win.get_size()
+            self.win.move(max(0, (scr.get_width() - w) // 2), max(0, scr.get_height() - h - 48))
+            self.status.set_text("⚓ Overview not found — docked to the screen's bottom footer instead.")
 
     def on_call(self, _b):
         bx, by = self.win.get_position()
