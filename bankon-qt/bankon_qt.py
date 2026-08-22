@@ -187,6 +187,22 @@ def link_quality(p):
     return max(0.25, min(1.0, 1.0 - (pt * 1000 - 60) / 720))
 
 
+# International Date Line — the official zigzag, simplified: Bering Strait detour, Aleutian
+# kink, the Kiribati eastern bulge, the Chatham/NZ kink. Longitudes are kept CONTINUOUS
+# past 180° (191 = 169°W) so drawing never seam-breaks mid-zigzag.
+IDL = [(90, 180), (75, 180), (68.98, 191.03), (65.5, 191.03), (64, 180), (53, 180),
+       (52.7, 170), (48, 180), (5, 180), (5, 210), (-11.5, 210), (-11.5, 180),
+       (-43, 180), (-43, 187.5), (-51.5, 187.5), (-51.5, 180), (-90, 180)]
+def _idl_dense(step=2.0):
+    pts = []
+    for (la1, lo1), (la2, lo2) in zip(IDL, IDL[1:]):
+        n = max(1, int((abs(la2 - la1) + abs(lo2 - lo1)) / step))
+        pts.extend((la1 + (la2 - la1) * i / n, lo1 + (lo2 - lo1) * i / n) for i in range(n))
+    pts.append(IDL[-1])
+    return pts
+IDL_DENSE = _idl_dense()
+
+
 CANDLE = "#16C784"
 def sync_color(p):
     # <51% dark; 51%→99% dark green → lighter; ≥99% candle green (held to 100%)
@@ -2694,7 +2710,8 @@ class GlobeWidget(QtWidgets.QWidget):
         self.spin = 0.0
         self.base_tilt = math.radians(20)
         self.view_tilt = self.base_tilt        # vertical drag changes this (view latitude)
-        self.auto = 0.35                       # auto-spin deg/frame (signed: + = east, − = west, 0 = stop)
+        self.auto = 0.0                        # auto-spin deg/frame — DEFAULT NEUTRAL (not spinning)
+        self._centered = False                 # default view centres on the LOCAL NODE once known
         self.zoom = 1.0
         self._drag = None; self._vel = 0.0     # hand-drag state + fling inertia (deg/frame)
         self._nodes, self._peers, self._arcs, self._my = [], [], [], None
@@ -2706,6 +2723,7 @@ class GlobeWidget(QtWidgets.QWidget):
         _st = QtCore.QSettings("BANKON", "bankon-qt")
         self.show_borders = _st.value("geomap/borders", "true") == "true"
         self.show_acc = _st.value("geomap/accuracy", "true") == "true"
+        self.show_utc = _st.value("geomap/utc", "false") == "true"   # 🕛 off by default
         from services.earth import earth_texture
         self._tex = earth_texture()            # real Blue Marble (numpy HxWx3) or None → vector fallback
         self._th, self._tw = (self._tex.shape[0], self._tex.shape[1]) if self._tex is not None else (0, 0)
@@ -2722,6 +2740,7 @@ class GlobeWidget(QtWidgets.QWidget):
     # --- interaction (learned from QGlobe / Qt_Globe_Engine / Marble): grab to rotate,
     #     wheel to zoom, inertial fling on release; pure-QPainter so it works software-rendered ---
     def mousePressEvent(self, e):
+        self._centered = True                  # the hand takes over — stop auto-centering
         self._drag = e.position(); self._vel = 0.0; self.setCursor(QtCore.Qt.ClosedHandCursor)
     def mouseMoveEvent(self, e):
         if self._drag is None:
@@ -2750,14 +2769,28 @@ class GlobeWidget(QtWidgets.QWidget):
         d = e.angleDelta().y()
         self.zoom = max(0.6, min(3.5, self.zoom * (1.12 if d > 0 else 0.89))); self.update()
     def set_auto_speed(self, dpf): self.auto = dpf          # signed deg/frame from the spin slider
+    def center_on(self, lat, lon):
+        """Rotate the globe so (lat, lon) faces the viewer dead-centre: spin puts the
+        longitude at the disc centre (L = 90°), tilt matches the latitude."""
+        self.spin = (90.0 - lon) % 360
+        lim = math.radians(85)
+        self.view_tilt = max(-lim, min(lim, math.radians(lat)))
+        self._vel = 0.0; self._centered = True; self.update()
     def reset_view(self):
-        self.view_tilt = self.base_tilt; self.zoom = 1.0; self._vel = 0.0; self.update()
+        # ⟲ returns to the DEFAULT state: centred on the local node (when known), still
+        if self._my:
+            self.center_on(self._my[0], self._my[1])
+        else:
+            self.view_tilt = self.base_tilt
+        self.zoom = 1.0; self._vel = 0.0; self.update()
     def set_data(self, nodes, peers, my):
         self._nodes_total = len(nodes)         # full count, so captions can be honest about the cut
         self._nodes = nodes[:700]              # subsample the cloud for smooth spin
         self._peers = peers                    # list of dicts — see GeoMapTab._redraw for the keys
         self._my = my
         self._arcs = [great_circle_points(my[0], my[1], p["lat"], p["lon"], 36) for p in peers] if my else []
+        if my and not self._centered:          # DEFAULT view: our node front and centre, no spin
+            self.center_on(my[0], my[1])
         self.update()
     def _proj(self, lat, lon, cx, cy, R):
         p = math.radians(lat); l = math.radians(lon + self.spin)
@@ -2881,6 +2914,14 @@ class GlobeWidget(QtWidgets.QWidget):
             qp.setPen(QtGui.QPen(QtGui.QColor(138, 160, 180, 120), 1.0))
             for line in WORLD_BORDERS:
                 self._polyline(qp, [self._proj(la, lo, cx, cy, R) for lo, la in line])
+        if getattr(self, "show_utc", False):
+            # 🕛 UTC hour meridians (prime highlighted) + the International Date Line zigzag
+            qp.setBrush(QtCore.Qt.NoBrush)
+            for hh in range(-11, 13):
+                qp.setPen(QtGui.QPen(QtGui.QColor(0, 191, 255, 95 if hh == 0 else 40), 1))
+                self._polyline(qp, [self._proj(la, hh * 15, cx, cy, R) for la in range(-84, 87, 6)])
+            qp.setPen(QtGui.QPen(QtGui.QColor(255, 94, 58, 185), 1.5, QtCore.Qt.DashLine))
+            self._polyline(qp, [self._proj(la, lo, cx, cy, R) for (la, lo) in IDL_DENSE])
         qp.setPen(QtCore.Qt.NoPen); qp.setBrush(QtGui.QBrush(QtGui.QColor(255, 255, 255, 130)))
         for (la, lo) in self._nodes:                                    # known-node cloud
             x, y, v = self._proj(la, lo, cx, cy, R)
@@ -3249,7 +3290,7 @@ class GeoMapTab(QtWidgets.QWidget):
         self.spin_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal); self.spin_slider.setFixedWidth(130)
         self.spin_slider.setRange(-100, 100); self.spin_slider.setToolTip("Auto-spin — left=west · centre=stop · right=east")
         self.spin_slider.valueChanged.connect(lambda val: self.globe.set_auto_speed(val / 100 * 1.5))
-        self.spin_slider.setValue(23)                              # ≈ 0.35°/frame east (matches default)
+        self.spin_slider.setValue(0)                               # DEFAULT NEUTRAL — not spinning
         top.addWidget(self.spin_slider)
         reset = QtWidgets.QPushButton("⟲"); reset.setFixedWidth(34); reset.setToolTip("Reset view (tilt + zoom)")
         reset.clicked.connect(self.globe.reset_view); top.addWidget(reset)
@@ -3271,6 +3312,11 @@ class GeoMapTab(QtWidgets.QWidget):
         self.cities_chk.setChecked(_st.value("geomap/cities", "false") == "true")
         self.cities_chk.setToolTip("Label the nearest major city for each located peer (bundled ~800-city table)")
         self.cities_chk.toggled.connect(self._overlay_changed); top.addWidget(self.cities_chk)
+        self.utc_chk = QtWidgets.QCheckBox("🕛 UTC lines")
+        self.utc_chk.setChecked(_st.value("geomap/utc", "false") == "true")   # OFF by default
+        self.utc_chk.setToolTip("UTC hour meridians (every 15°, prime meridian highlighted) + the "
+                                "INTERNATIONAL DATE LINE's official zigzag — off by default")
+        self.utc_chk.toggled.connect(self._overlay_changed); top.addWidget(self.utc_chk)
         self.toggle = QtWidgets.QPushButton("🗺 Flat map"); self.toggle.setToolTip("Switch spinning globe / flat map")
         self.toggle.clicked.connect(self._toggle); top.addWidget(self.toggle)
         # Flat-map projection: plate carrée (EPSG:4326) or the accurate flat-earth
@@ -3455,9 +3501,11 @@ class GeoMapTab(QtWidgets.QWidget):
         st.setValue("geomap/borders", "true" if self.borders_chk.isChecked() else "false")
         st.setValue("geomap/cities", "true" if self.cities_chk.isChecked() else "false")
         st.setValue("geomap/accuracy", "true" if self.acc_chk.isChecked() else "false")
+        st.setValue("geomap/utc", "true" if self.utc_chk.isChecked() else "false")
         self.globe.show_borders = self.borders_chk.isChecked()
         self.globe.show_acc = self.acc_chk.isChecked()
-        self._bg = None                        # borders live in the cached background pixmap
+        self.globe.show_utc = self.utc_chk.isChecked()
+        self._bg = None                        # borders/UTC lines live in the cached background pixmap
         self._redraw(); self.globe.update()
     # ── timezone choice (UTC default · local · fixed UTC offset) — every stamp on this map ──
     def _tzfmt(self, epoch, fmt="%H:%M"):
@@ -3947,6 +3995,38 @@ class GeoMapTab(QtWidgets.QWidget):
                 x, _ = self.proj(lo, 0); qp.drawLine(int(x), 0, int(x), self.H)
             for la in range(-60, 91, 30):
                 _, y = self.proj(0, la); qp.drawLine(0, int(y), self.W, int(y))
+        # 🕛 UTC hour meridians + the International Date Line (toggle, off by default)
+        if self.utc_chk.isChecked():
+            qp.setBrush(QtCore.Qt.NoBrush)
+            f = qp.font(); f.setPointSize(8); qp.setFont(f)
+            for hh in range(-11, 13):
+                lon = hh * 15
+                qp.setPen(QtGui.QPen(QtGui.QColor(0, 191, 255, 95 if hh == 0 else 40), 1))
+                if self.projmode == "flatearth":
+                    x, y = self.proj(lon, -90)
+                    qp.drawLine(int(self.W / 2), int(self.H / 2), int(x), int(y))
+                else:
+                    x, _ = self.proj(lon, 0)
+                    qp.drawLine(int(x), 0, int(x), self.H)
+                    qp.setPen(QtGui.QColor(0, 191, 255, 160 if hh == 0 else 95))
+                    qp.drawText(int(x) + 2, 11, f"UTC{hh:+d}" if hh else "UTC")
+            qp.setPen(QtGui.QPen(QtGui.QColor(255, 94, 58, 190), 1.4, QtCore.Qt.DashLine))
+            if self.projmode == "flatearth":
+                path = QtGui.QPainterPath(); started = False
+                for la, lo in IDL_DENSE:
+                    x, y = self.proj(lo, la)
+                    (path.lineTo if started else path.moveTo)(x, y); started = True
+                qp.drawPath(path)
+            else:
+                for xoff in (0.0, -self.W):    # the zigzag hugs 180° — draw both seam copies
+                    path = QtGui.QPainterPath(); started = False
+                    for la, lo in IDL_DENSE:
+                        x = (lo + 180) / 360 * self.W + xoff
+                        (path.lineTo if started else path.moveTo)(x, (90 - la) / 180 * self.H)
+                        started = True
+                    qp.drawPath(path)
+                qp.setPen(QtGui.QColor(255, 94, 58, 200))
+                qp.drawText(int(self.W) - 30, int(self.H * 0.5), "IDL")
         qp.setPen(QtCore.Qt.NoPen); qp.setBrush(QtGui.QBrush(QtGui.QColor(90, 160, 190, 70)))  # dim density
         for nd in self._net:
             x, y = self.proj(nd["lon"], nd["lat"]); qp.drawEllipse(QtCore.QPointF(x, y), 1.7, 1.7)
@@ -4013,7 +4093,7 @@ class GeoMapTab(QtWidgets.QWidget):
             x, y = self.proj(g["lon"], g["lat"])
             traf = p.get("bytessent", 0) + p.get("bytesrecv", 0); inbound = p.get("inbound")
             col = QtGui.QColor("#16C784") if traf > (1 << 20) else (QtGui.QColor("#F7931A") if inbound else QtGui.QColor("#00BFFF"))
-            r = 5 + min(6, traf / (1 << 21))
+            r = 4 + min(4, traf / (1 << 21))               # smaller dots — the map, not the marker, is the point
             acc = g.get("acc") or 0
             if acc: accs.append(acc)
             if acc and self.acc_chk.isChecked():
@@ -4045,7 +4125,7 @@ class GeoMapTab(QtWidgets.QWidget):
             # quality + the political-mode label + the FULL hover card (ip · location ·
             # accuracy · speed: ping + live ▼/▲ B/s · traffic · direction)
             _ri, _ro = self._rates.get(p.get("addr"), (0.0, 0.0))
-            gpeers.append({"lat": g["lat"], "lon": g["lon"], "col": col, "r": max(4.0, r), "acc": acc,
+            gpeers.append({"lat": g["lat"], "lon": g["lon"], "col": col, "r": max(2.2, r * 0.45), "acc": acc,
                            "pin": NetworkMapTab._flow_frac(_ri), "pout": NetworkMapTab._flow_frac(_ro),
                            "q": link_quality(p),
                            "label": ((p.get("addr") or "")[:28],
@@ -5289,9 +5369,14 @@ class ControlTab(QtWidgets.QWidget):
         self.waas_btn = QtWidgets.QPushButton("Open WaaS")
         self.waas_btn.clicked.connect(lambda: webbrowser.open(WAAS_URL)); ar.addWidget(self.waas_btn)
         ar.addStretch(); v.addLayout(ar)
-        # -- pruned node controls: the lean WaaS backend (bankon-nodes.sh · RPC :8342) --
+        # -- pruned node: an OPTIONAL runtime (off is a valid state) · bankon-nodes.sh · :8342 --
         pr = QtWidgets.QHBoxLayout()
-        pr.addWidget(QtWidgets.QLabel("pruned WaaS node:"))
+        _pl = QtWidgets.QLabel("pruned WaaS node (optional runtime):")
+        _pl.setToolTip("A second, lean node for WaaS work — full validation, prune=2048 (2 GB), no txindex.\n"
+                       "Settings (env, read by bankon-nodes.sh): BANKON_PRUNED_DATADIR · "
+                       "BANKON_PRUNED_DBCACHE (300 MiB default) · RPC :8342 / P2P :8334.\n"
+                       "Off is normal — the archival node serves everything; start it only when wanted.")
+        pr.addWidget(_pl)
         self.pstart_btn = QtWidgets.QPushButton("▶ Start pruned")
         self.pstart_btn.setToolTip("Start the lean pruned node (bankon-nodes.sh start pruned — RPC :8342, "
                                    "prune=2048, plays nice with the archival node)")
@@ -5299,6 +5384,13 @@ class ControlTab(QtWidgets.QWidget):
         pstop = QtWidgets.QPushButton("■ Stop pruned"); pstop.setObjectName("danger")
         pstop.setToolTip("Stop the pruned node — the full archival node keeps running")
         pstop.clicked.connect(lambda: self._pruned("stop")); pr.addWidget(pstop)
+        pinit = QtWidgets.QPushButton("⚙ init config")
+        pinit.setToolTip("bankon-nodes.sh init-pruned — write the pruned node's bitcoin.conf "
+                         "(safe to re-run; required once before the first start)")
+        pinit.clicked.connect(lambda: self._pruned("init-pruned")); pr.addWidget(pinit)
+        self.pstatus_btn = QtWidgets.QPushButton("status ▸")
+        self.pstatus_btn.setToolTip("bankon-nodes.sh status — both nodes' height/peers/pruned state, into the status line")
+        self.pstatus_btn.clicked.connect(lambda: self._pruned("status")); pr.addWidget(self.pstatus_btn)
         pr.addStretch(); v.addLayout(pr)
         # -- 🐧 host OS — shown ABOVE the tools so the platform is never a mystery --
         _pretty, _fam, _pkg = os_release()
@@ -5357,10 +5449,17 @@ class ControlTab(QtWidgets.QWidget):
         spawn_fn(work, self._probed)
     def _probed(self, rows):
         for r, (name, port, up, ms) in enumerate(rows or []):
-            cells = [f"{name}  :{port}", "● UP" if up else "○ DOWN", f"{ms:.1f} ms" if up else "—"]
+            # the pruned node is an OPTIONAL runtime: off is a valid state, not a fault —
+            # never paint it failure-red like a service that should be up
+            optional_off = (port == 8342 and not up)
+            cells = [f"{name}  :{port}",
+                     "● UP" if up else ("○ optional (off)" if optional_off else "○ DOWN"),
+                     f"{ms:.1f} ms" if up else "—"]
             for c, val in enumerate(cells):
                 it = QtWidgets.QTableWidgetItem(val)
-                if c == 1: it.setForeground(QtGui.QColor("#16C784" if up else "#f85149"))
+                if c == 1:
+                    it.setForeground(QtGui.QColor("#16C784" if up else
+                                                  "#8aa0b4" if optional_off else "#f85149"))
                 self.t.setItem(r, c, it)
         self.t.resizeColumnsToContents()
         up_by_port = {port: up for (name, port, up, ms) in rows or []}
@@ -5392,14 +5491,17 @@ class ControlTab(QtWidgets.QWidget):
                 "QPushButton:hover{background:#0a4a24;}")
         else:
             self.pstart_btn.setText("▶ Start pruned")
+            self.pstart_btn.setToolTip("Start the OPTIONAL pruned node — off is a valid state, "
+                                       "the archival node serves everything meanwhile")
             self.pstart_btn.setStyleSheet("")
     NODES_SH = os.path.expanduser("~/bankon-tools/bankon-nodes.sh")
     def _pruned(self, action):
         self.status.setText(f"pruned node: {action}…")
+        args = [action] if action in ("init-pruned", "status") else [action, "pruned"]
         def work():
-            r = subprocess.run(["bash", self.NODES_SH, action, "pruned"],
+            r = subprocess.run(["bash", self.NODES_SH] + args,
                                capture_output=True, text=True, timeout=90)
-            return ((r.stdout or "") + (r.stderr or "")).strip()[-160:] or f"{action} dispatched"
+            return ((r.stdout or "") + (r.stderr or "")).strip()[-300:] or f"{action} dispatched"
         spawn_fn(work, lambda s: (self.status.setText(f"pruned node: {s}"), self._probe()),
                  lambda e: self.status.setText(f"pruned {action} failed: {e}"))
     def _install_etherape(self):
@@ -5966,7 +6068,7 @@ class IceTab(QtWidgets.QWidget):
         scroll = QtWidgets.QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
         body = QtWidgets.QWidget(); v = QtWidgets.QVBoxLayout(body)
         scroll.setWidget(body); outer.addWidget(scroll)
-        h = QtWidgets.QLabel("🧊 ICE — Intrusion Countermeasures Electronics")
+        h = QtWidgets.QLabel("🧊 I.C.E. — Intrusion Countermeasures Electronics")
         h.setStyleSheet("font-weight:700;font-size:15px;color:#00BFFF"); v.addWidget(h)
         sub = QtWidgets.QLabel('"…ice from ICE, Intrusion Countermeasures Electronics." — W. Gibson, Burning Chrome (1982) · docs/ICE.md')
         sub.setStyleSheet("color:#5a6b7b;font-size:10px"); v.addWidget(sub)
@@ -6002,6 +6104,7 @@ class IceTab(QtWidgets.QWidget):
         v.addWidget(self._evidence_panel())
         v.addWidget(self._precision_panel())
         v.addWidget(self._txmon_panel())
+        v.addWidget(self._firewall_panel())
         v.addWidget(self._capture_panel())
         note = QtWidgets.QLabel("ICE gates CPU heat and the machine's radios; the forensic toolkit works offline "
                                 "(local GeoLite2, local .history). AIRGAP severs every RF path between the network "
@@ -6379,6 +6482,66 @@ class IceTab(QtWidgets.QWidget):
     def _txmon_mp(self, m, stale):
         self._tx_mempool = m or {}
     # ---- 🕸 live wire capture ----
+    # shared ONE-CLICK installer (pkexec + the detected package manager) — same idiom as Control
+    def _ice_install(self, pkg, label, after=None):
+        _pretty, _fam, cmd = os_release()
+        if not cmd:
+            label.setText("no known package manager — install manually"); return
+        label.setText(f"⬇ installing {pkg} — authorize in the pkexec prompt…")
+        def work():
+            return subprocess.run(["pkexec"] + cmd + [pkg], capture_output=True, text=True, timeout=600).returncode
+        spawn_fn(work, lambda rc: (label.setText(f"{pkg} install finished (rc {rc})"),
+                                   after() if after else None),
+                 lambda e: label.setText(f"install failed: {e}"))
+    def _firewall_panel(self):
+        # 🛡 ufw — the SOFTWARE wall (docs/ICE.md §1C): diagnostics when found, one-click
+        # installer when not. Passive probe needs no root; the full rule listing is pkexec.
+        fr = QtWidgets.QFrame(); fr.setStyleSheet("QFrame{border:1px solid #0e3d57;border-radius:6px}")
+        fl = QtWidgets.QVBoxLayout(fr)
+        hd = QtWidgets.QLabel("🛡 Firewall — ufw (uncomplicated firewall): the software wall")
+        hd.setStyleSheet("color:#F7931A;font-weight:700;border:0"); fl.addWidget(hd)
+        row = QtWidgets.QHBoxLayout()
+        self.fw_status = QtWidgets.QLabel("checking…"); self.fw_status.setStyleSheet("border:0;color:#8aa0b4")
+        row.addWidget(self.fw_status, 1)
+        self.fw_install = QtWidgets.QPushButton("⬇ Install ufw")
+        self.fw_install.setToolTip("ONE CLICK: pkexec <package manager> install ufw — authorize in the prompt")
+        self.fw_install.setVisible(False)
+        self.fw_install.clicked.connect(lambda: self._ice_install("ufw", self.fw_status, self._fw_probe))
+        row.addWidget(self.fw_install)
+        self.fw_stat_btn = QtWidgets.QPushButton("Status ▸")
+        self.fw_stat_btn.setToolTip("pkexec ufw status verbose — the full rule listing, rendered below")
+        self.fw_stat_btn.clicked.connect(self._fw_verbose); row.addWidget(self.fw_stat_btn)
+        fl.addLayout(row)
+        self.fw_out = QtWidgets.QLabel("")
+        self.fw_out.setStyleSheet("border:0;color:#8aa0b4;font-family:monospace;font-size:10px")
+        self.fw_out.setWordWrap(True); self.fw_out.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        fl.addWidget(self.fw_out)
+        self._fw_probe()
+        return fr
+    def _fw_probe(self):
+        import shutil as _sh
+        if not _sh.which("ufw"):
+            self.fw_status.setText("○ ufw not installed — the software wall is absent")
+            self.fw_status.setStyleSheet("border:0;color:#f85149")
+            self.fw_install.setVisible(True); self.fw_stat_btn.setEnabled(False)
+            return
+        self.fw_install.setVisible(False); self.fw_stat_btn.setEnabled(True)
+        def work():
+            r = subprocess.run(["systemctl", "is-active", "ufw"], capture_output=True, text=True, timeout=6)
+            return (r.stdout or r.stderr).strip()
+        def done(state):
+            up = state == "active"
+            self.fw_status.setText("● ufw ACTIVE (service up — rules enforced)" if up else
+                                   f"○ ufw installed · service {state or 'inactive'} — Status ▸ for the rules")
+            self.fw_status.setStyleSheet("border:0;color:%s" % ("#16C784" if up else "#F7931A"))
+        spawn_fn(work, done)
+    def _fw_verbose(self):
+        self.fw_out.setText("… pkexec ufw status verbose — authorize in the prompt")
+        def work():
+            r = subprocess.run(["pkexec", "ufw", "status", "verbose"], capture_output=True, text=True, timeout=60)
+            return (r.stdout or r.stderr).strip()
+        spawn_fn(work, lambda s: self.fw_out.setText(s[:1200] or "no output"),
+                 lambda e: self.fw_out.setText(f"status failed: {e}"))
     def _capture_panel(self):
         fr = QtWidgets.QFrame(); fr.setStyleSheet("QFrame{border:1px solid #0e3d57;border-radius:6px}")
         fl = QtWidgets.QVBoxLayout(fr)
@@ -6388,11 +6551,21 @@ class IceTab(QtWidgets.QWidget):
         ok, txt = etherape_status()
         self.cap_status = QtWidgets.QLabel(txt); self.cap_status.setStyleSheet("border:0;color:%s" % ("#16C784" if ok else "#8aa0b4"))
         row.addWidget(self.cap_status, 1)
-        lb = QtWidgets.QPushButton("▶ Launch (port 8333 filter)"); lb.setEnabled(ok)
-        lb.setToolTip("pkexec etherape -f 'port 8333' — live pcap of ₿itcoin P2P traffic, radial traffic-proportional display")
-        lb.clicked.connect(lambda: etherape_launch(self.cap_status.setText)); row.addWidget(lb)
+        self.cap_install = QtWidgets.QPushButton("⬇ Install EtherApe")
+        self.cap_install.setToolTip("ONE CLICK: pkexec <package manager> install etherape — flips to launch when done")
+        self.cap_install.setVisible(not ok)
+        self.cap_install.clicked.connect(lambda: self._ice_install("etherape", self.cap_status, self._cap_recheck))
+        row.addWidget(self.cap_install)
+        self.cap_launch = QtWidgets.QPushButton("▶ Launch (port 8333 filter)"); self.cap_launch.setEnabled(ok)
+        self.cap_launch.setToolTip("pkexec etherape -f 'port 8333' — live pcap of ₿itcoin P2P traffic, radial traffic-proportional display")
+        self.cap_launch.clicked.connect(lambda: etherape_launch(self.cap_status.setText)); row.addWidget(self.cap_launch)
         fl.addLayout(row)
         return fr
+    def _cap_recheck(self):
+        ok, txt = etherape_status()
+        self.cap_status.setText(txt)
+        self.cap_status.setStyleSheet("border:0;color:%s" % ("#16C784" if ok else "#f85149"))
+        self.cap_launch.setEnabled(ok); self.cap_install.setVisible(not ok)
     def _cpu_temp(self):
         import glob as _g
         best = None
@@ -6919,8 +7092,8 @@ class AdminWindow(QtWidgets.QWidget):
         # RF kill-switch (AIRGAP) + forensics. NOT the 🖤 blackICE THEME above. Per
         # docs/ICE.md the admin only LINKS to ICE — every ICE action executes in ICE
         # itself ("ICE has precedence"; no remote-control surface).
-        ig = QtWidgets.QGroupBox("🧊 I.C.E — the tool"); iv = QtWidgets.QHBoxLayout(ig)
-        it = QtWidgets.QPushButton("🧊 ICE tab")
+        ig = QtWidgets.QGroupBox("🧊 I.C.E. — the tool"); iv = QtWidgets.QHBoxLayout(ig)
+        it = QtWidgets.QPushButton("🧊 I.C.E. tab")
         it.setToolTip("Open the console's 🧊 ICE tab — CPU temp · AIRGAP (cut all radios) · "
                       "restore radios · forensics · evidence trail")
         it.clicked.connect(self._show_ice_tab); iv.addWidget(it)
@@ -7090,7 +7263,7 @@ class AdminWindow(QtWidgets.QWidget):
         self.main.tabs.setCurrentWidget(self.main.ice)
         self.main.showNormal(); self.main.raise_(); self.main.activateWindow()
         self.raise_()
-        self.status.setText("🧊 ICE tab opened in the console — the wall, not the theme.")
+        self.status.setText("🧊 I.C.E. tab opened in the console — the wall, not the theme.")
     def _launch_ice(self):
         try:
             self.main.ice._launch()
@@ -7124,7 +7297,7 @@ class AdminWindow(QtWidgets.QWidget):
                   "banner/dock", "geomap/borders", "geomap/cities", "geomap/accuracy",
                   "geomap/price", "geomap/tz", "geomap/ovl_node", "geomap/ovl_net", "geomap/ovl_blocks",
                   "geomap/ovl_fees", "geomap/feed", "geomap/marks", "geomap/nodeovl",
-                  "geomap/nodeovl_geom", "geomap/legend"):
+                  "geomap/nodeovl_geom", "geomap/legend", "geomap/utc"):
             st.remove(k)
         self.status.setText("🧭 saved layout forgotten — defaults return next launch.")
 
@@ -7191,7 +7364,7 @@ class Main(QtWidgets.QMainWindow):
         for w, name in [(self.ov,"Overview"),(self.node,"Node"),(self.logs,"Logs"),(self.net,"Network"),(self.map,"Net Map"),
                         (self.netlog,("📡", "Net Log")),(self.mp,"Mempool"),(self.blk,"₿locks"),(self.oracle,"₿TC.oracle"),
                         (self.ords,"🜚 Ordinals"),(self.idx,"Indexes"),(self.ctl,"🖥 Control"),
-                        (self.ice,("🧊", "ICE")),(self.con,"RPC Console")]:
+                        (self.ice,("🧊", "I.C.E.")),(self.con,"RPC Console")]:
             if isinstance(name, tuple):
                 self.tabs.addTab(w, emoji_icon(name[0]), name[1])
             else:
@@ -7299,6 +7472,7 @@ class Main(QtWidgets.QMainWindow):
     def _restore_tab_order(self):
         saved = QtCore.QSettings("BANKON", "bankon-qt").value("tabs/order") or []
         if isinstance(saved, str): saved = [saved]          # QSettings collapses 1-item lists
+        saved = ["I.C.E." if n == "ICE" else n for n in saved]   # tab renamed — keep old orders working
         bar, pos = self.tabs.tabBar(), 0
         for name in saved:                                  # stable re-order; unknown names skip,
             for i in range(pos, self.tabs.count()):         # new tabs keep their default place
