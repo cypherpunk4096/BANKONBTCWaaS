@@ -2712,6 +2712,7 @@ class GlobeWidget(QtWidgets.QWidget):
         self.view_tilt = self.base_tilt        # vertical drag changes this (view latitude)
         self.auto = 0.0                        # auto-spin deg/frame — DEFAULT NEUTRAL (not spinning)
         self._centered = False                 # default view centres on the LOCAL NODE once known
+        self._touched = False                  # True once the hand has rotated the globe
         self.zoom = 1.0
         self._drag = None; self._vel = 0.0     # hand-drag state + fling inertia (deg/frame)
         self._nodes, self._peers, self._arcs, self._my = [], [], [], None
@@ -2741,6 +2742,7 @@ class GlobeWidget(QtWidgets.QWidget):
     #     wheel to zoom, inertial fling on release; pure-QPainter so it works software-rendered ---
     def mousePressEvent(self, e):
         self._centered = True                  # the hand takes over — stop auto-centering
+        self._touched = True                   # …and tab re-opens respect the hand's view
         self._drag = e.position(); self._vel = 0.0; self.setCursor(QtCore.Qt.ClosedHandCursor)
     def mouseMoveEvent(self, e):
         if self._drag is None:
@@ -3131,18 +3133,62 @@ class AdvancedGeoWidget(QtWidgets.QWidget):
 
 
 
-class PriceOverlay(QtWidgets.QWidget):
+class DragCard(QtWidgets.QWidget):
+    """Shared overlay-card interaction: DRAG anywhere on the card to move it (release →
+    on_layout, which snap-docks + remembers), drag the ⇲ corner to RESIZE — clamped to the
+    parent. Subclasses may pin their height via _resize_h()."""
+    MIN_W = 240
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.on_layout = None                  # GeoMapTab's persist/snap hook
+        self._drag = None; self._resz = None
+        self.setMouseTracking(True)
+        self.setCursor(QtCore.Qt.OpenHandCursor)
+    def _resize_h(self, h):                    # default: free height (subclasses may pin)
+        return max(90, min(420, h))
+    def _in_grip(self, pos):
+        return pos.x() > self.width() - 18 and pos.y() > self.height() - 18
+    def mousePressEvent(self, e):
+        if e.button() != QtCore.Qt.LeftButton: return
+        if self._in_grip(e.position()):
+            self._resz = (e.position().x(), e.position().y(), self.width(), self.height())
+        else:
+            self._drag = e.position(); self.setCursor(QtCore.Qt.ClosedHandCursor)
+    def mouseMoveEvent(self, e):
+        par = self.parentWidget()
+        if self._resz is not None and par is not None:
+            w = int(self._resz[2] + e.position().x() - self._resz[0])
+            h = int(self._resz[3] + e.position().y() - self._resz[1])
+            self.resize(max(self.MIN_W, min(par.width() - self.x() - 6, w)), self._resize_h(h))
+            self.update()
+        elif self._drag is not None and par is not None:
+            np_ = self.mapToParent(e.position()) - self._drag
+            self.move(int(max(0, min(np_.x(), par.width() - self.width()))),
+                      int(max(0, min(np_.y(), par.height() - self.height()))))
+        else:
+            self.setCursor(QtCore.Qt.SizeFDiagCursor if self._in_grip(e.position())
+                           else QtCore.Qt.OpenHandCursor)
+    def mouseReleaseEvent(self, e):
+        moved = self._drag is not None or self._resz is not None
+        self._drag = self._resz = None
+        self.setCursor(QtCore.Qt.OpenHandCursor)
+        if moved and self.on_layout:
+            self.on_layout()
+
+
+class PriceOverlay(DragCard):
     """🪙 ₿TC/USD price OVERLAY — floats over the geo display (globe, flat map, flatearth,
     advanced), drawn completely IN-HOUSE with QPainter. Data source is the opt-in CoinGecko
     free-tier poll (casual: once an hour); the chart shows the last ~24 hourly prices with
-    each price MARKED ON THE HOUR. Rendered only while the 🪙 toggle is on — zero cost off."""
+    each price MARKED ON THE HOUR. Drag anywhere to move (corners snap-dock, remembered),
+    drag ⇲ to resize. Rendered only while the 🪙 toggle is on — zero cost off."""
     def __init__(self, parent, tzfmt):
         super().__init__(parent)
         self._tzfmt = tzfmt                    # GeoMapTab's timezone-choice formatter
         self._series = []                      # [(epoch_s on-the-hour, usd)] ascending
         self._spot = None                      # (usd, epoch_s) most recent spot quote
         self._err = ""
-        self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)   # never steal globe drags
+        self.setToolTip("🪙 drag anywhere to move this card (corners snap-dock) · drag ⇲ to resize · remembered")
         self.hide()
     def set_data(self, series, spot):
         self._series = series or []; self._err = ""
@@ -3156,6 +3202,7 @@ class PriceOverlay(QtWidgets.QWidget):
         qp.setPen(QtGui.QPen(QtGui.QColor("#F7931A"), 1))
         qp.setBrush(QtGui.QBrush(QtGui.QColor(4, 7, 12, 215)))      # translucent in-house panel
         qp.drawRoundedRect(0, 0, w - 1, h - 1, 8, 8)
+        qp.setPen(QtGui.QColor("#3a4b5c")); qp.drawText(w - 14, h - 5, "⇲")   # resize grip
         f = qp.font()
         spot, sat = self._spot if self._spot else (None, None)
         f.setPointSize(14); f.setBold(True); qp.setFont(f); qp.setPen(QtGui.QColor("#F7931A"))
@@ -3196,7 +3243,7 @@ class PriceOverlay(QtWidgets.QWidget):
         qp.end()
 
 
-class NodeInfoOverlay(QtWidgets.QWidget):
+class NodeInfoOverlay(DragCard):
     """🏠 LOCAL NODE overlay — this machine's node, PROMINENT, from actual data: NODE
     (height · sync · agent) · NET (peers + live ▼/▲ totals + our address) · BLOCKS (tip ·
     age · headers) — each line its own toggle — with the time (chosen timezone) riding the
@@ -3204,46 +3251,15 @@ class NodeInfoOverlay(QtWidgets.QWidget):
     opposite the 🪙 price overlay. Transparent to the mouse so globe drags pass through."""
     LBL = {"node": "NODE", "net": "NET", "blocks": "BLOCKS", "fees": "FEES"}
     def __init__(self, parent, tzfmt):
-        super().__init__(parent)
+        super().__init__(parent)                # DragCard: drag to move · ⇲ to resize
         self._tzfmt = tzfmt
         self._d = {}
         self._flags = ("node", "net", "blocks")
-        # never in the way: DRAG anywhere on the card to move it (snap-docks to a corner on
-        # release, or stays free), drag the ⇲ grip to RESIZE — both remembered
-        self.on_layout = None                   # GeoMapTab's persist/snap hook
-        self._drag = None; self._resz = None
-        self.setMouseTracking(True)
-        self.setCursor(QtCore.Qt.OpenHandCursor)
         self.setToolTip("🏠 drag anywhere on this card to move it out of the way (corners snap-dock, "
                         "anywhere else stays put) · drag ⇲ to resize · both remembered")
         self.hide()
-    def _in_grip(self, pos):
-        return pos.x() > self.width() - 18 and pos.y() > self.height() - 18
-    def mousePressEvent(self, e):
-        if e.button() != QtCore.Qt.LeftButton: return
-        if self._in_grip(e.position()):
-            self._resz = (e.position().x(), self.width())
-        else:
-            self._drag = e.position(); self.setCursor(QtCore.Qt.ClosedHandCursor)
-    def mouseMoveEvent(self, e):
-        par = self.parentWidget()
-        if self._resz is not None and par is not None:
-            w = int(self._resz[1] + e.position().x() - self._resz[0])
-            self.resize(max(240, min(par.width() - self.x() - 6, w)), self.wanted_height())
-            self.update()
-        elif self._drag is not None and par is not None:
-            np_ = self.mapToParent(e.position()) - self._drag
-            self.move(int(max(0, min(np_.x(), par.width() - self.width()))),
-                      int(max(0, min(np_.y(), par.height() - self.height()))))
-        else:
-            self.setCursor(QtCore.Qt.SizeFDiagCursor if self._in_grip(e.position())
-                           else QtCore.Qt.OpenHandCursor)
-    def mouseReleaseEvent(self, e):
-        moved = self._drag is not None or self._resz is not None
-        self._drag = self._resz = None
-        self.setCursor(QtCore.Qt.OpenHandCursor)
-        if moved and self.on_layout:
-            self.on_layout()
+    def _resize_h(self, h):
+        return self.wanted_height()             # height follows the enabled lines, always
     def set_flags(self, flags):
         self._flags = tuple(flags); self.update()
     def set_data(self, d):
@@ -3298,9 +3314,11 @@ class GeoMapTab(QtWidgets.QWidget):
         self.connected.setToolTip("Plot every CONNECTED peer at its actual location (arcs + live packet flow); "
                                   "peers with no geo data (Tor/unmapped) are listed honestly, never dropped")
         self.connected.toggled.connect(lambda _: self._redraw()); top.addWidget(self.connected)
-        self.allnodes = QtWidgets.QCheckBox("🌐 all known"); self.allnodes.setToolTip(
-            "GLOBAL view — additionally plot the whole addrman network (every node this node knows about)")
-        self.allnodes.toggled.connect(lambda _: self.refresh()); top.addWidget(self.allnodes)
+        self.allnodes = QtWidgets.QCheckBox("🌐 world nodes"); self.allnodes.setToolTip(
+            "₿itnodes-style WORLD MAP — plot every node this node knows about (the whole addrman,\n"
+            "self-sourced via getnodeaddresses; no external crawler API). OFF by default — remembered.")
+        self.allnodes.setChecked(QtCore.QSettings("BANKON", "bankon-qt").value("geomap/world", "false") == "true")
+        self.allnodes.toggled.connect(self._world_toggled); top.addWidget(self.allnodes)
         # POLITICAL overlay (Natural Earth 110m admin_0 boundary lines) + optional nearest-major-city
         # labels — both persisted across sessions. Borders default ON, cities opt-in.
         _st = QtCore.QSettings("BANKON", "bankon-qt")
@@ -3429,7 +3447,8 @@ class GeoMapTab(QtWidgets.QWidget):
         self._price_timer.setInterval(60_000)   # 1-min heartbeat that only ACTS once an hour
         # 🏠 local-node OVERLAY (top-left counterpart) + its data + a 1 s clock in the chosen tz
         self.node_overlay = NodeInfoOverlay(self.stack, self._tzfmt)
-        self.node_overlay.on_layout = self._nodeovl_dropped   # drag/resize → snap-dock + remember
+        self.node_overlay.on_layout = lambda: self._card_dropped(self.node_overlay, "nodeovl")
+        self.price_overlay.on_layout = lambda: self._card_dropped(self.price_overlay, "priceovl")
         self._bci = {}
         self._clock_t = QtCore.QTimer(self); self._clock_t.timeout.connect(self._clock_tick)
         self._clock_t.start(1000)
@@ -3531,30 +3550,35 @@ class GeoMapTab(QtWidgets.QWidget):
         else:
             self._price_timer.stop()           # off = zero network contact
     def _place_overlays(self):
-        w = min(360, max(240, self.stack.width() - 24))
-        self.price_overlay.setGeometry(max(8, self.stack.width() - w - 12), 10, w, 150)
-        self.price_overlay.raise_()
-        if self.node_overlay._drag is not None or self.node_overlay._resz is not None:
-            return                               # never yank the card while the hand is on it
-        # 🏠 card: remembered dock corner (TL/TR/BL/BR) or the remembered free spot + width.
-        # DEFAULT = TOP-RIGHT — off the globe's face so the globe stays visible; when the
-        # 🪙 price strip is up there too, the card slides in just below it.
+        # both cards: remembered dock corner (TL/TR/BL/BR) or the remembered free spot +
+        # size. DEFAULT = TOP-RIGHT for both — off the globe's face — with the 🏠 card
+        # sliding in just below the 🪙 price card when they share that corner.
+        self._place_card(self.price_overlay, "priceovl",
+                         min(360, max(240, self.stack.width() - 24)), 150)
+        ty = (self.price_overlay.geometry().bottom() + 8
+              if self.price_overlay.isVisible() else 10)
+        self._place_card(self.node_overlay, "nodeovl", int(self.stack.width() * 0.4),
+                         self.node_overlay.wanted_height(), ty_tr=ty)
+    def _place_card(self, card, key, def_w, def_h, ty_tr=10):
+        if card._drag is not None or card._resz is not None:
+            return                               # never yank a card while the hand is on it
         st = QtCore.QSettings("BANKON", "bankon-qt")
-        dock = st.value("geomap/nodeovl", "TR")
+        dock = st.value(f"geomap/{key}", "TR")
         try:
-            gx, gy, gw = [int(t) for t in (st.value("geomap/nodeovl_geom") or "").split(",")]
+            parts = [int(t) for t in (st.value(f"geomap/{key}_geom") or "").split(",")]
+            gx, gy, gw = parts[0], parts[1], parts[2]
+            gh = parts[3] if len(parts) > 3 else 0
         except Exception:
-            gx, gy, gw = 10, 10, 0
+            gx, gy, gw, gh = 10, 10, 0, 0
         sw, sh = self.stack.width(), self.stack.height()
-        nw = max(240, min(gw or int(sw * 0.4), max(240, sw - 20)))
-        nh = self.node_overlay.wanted_height()
-        ty = 170 if self.price_overlay.isVisible() else 10       # below the price strip when shown
-        pos = {"TL": (10, 10), "TR": (sw - nw - 10, ty),
+        nw = max(240, min(gw or def_w, max(240, sw - 20)))
+        nh = card._resize_h(gh or def_h)
+        pos = {"TL": (10, 10), "TR": (sw - nw - 10, ty_tr),
                "BL": (10, sh - nh - 10), "BR": (sw - nw - 10, sh - nh - 10)}.get(dock)
         if pos is None:                          # free — clamp the remembered spot into view
             pos = (max(0, min(gx, sw - nw)), max(0, min(gy, sh - nh)))
-        self.node_overlay.setGeometry(pos[0], pos[1], nw, nh)
-        self.node_overlay.raise_()
+        card.setGeometry(pos[0], pos[1], nw, nh)
+        card.raise_()
     def eventFilter(self, obj, ev):
         if obj is self.stack and ev.type() == QtCore.QEvent.Resize:
             self._place_overlays()
@@ -3604,10 +3628,10 @@ class GeoMapTab(QtWidgets.QWidget):
     def close_aux_windows(self):
         for w, _g in list(self._watchers): w.close()
         if self._max_win is not None: self._toggle_max()
-    def _nodeovl_dropped(self):
+    def _card_dropped(self, card, key):
         # drop → snap-dock to the nearest stack corner (≤40 px) or keep the free spot; remember
         st = QtCore.QSettings("BANKON", "bankon-qt")
-        g = self.node_overlay.geometry()
+        g = card.geometry()
         sw, sh = self.stack.width(), self.stack.height()
         dock = "free"
         for k, (dx, dy) in {"TL": (g.left() - 10, g.top() - 10),
@@ -3616,8 +3640,8 @@ class GeoMapTab(QtWidgets.QWidget):
                             "BR": (sw - 10 - g.right(), sh - 10 - g.bottom())}.items():
             if abs(dx) < 40 and abs(dy) < 40:
                 dock = k; break
-        st.setValue("geomap/nodeovl", dock)
-        st.setValue("geomap/nodeovl_geom", f"{g.x()},{g.y()},{g.width()}")
+        st.setValue(f"geomap/{key}", dock)
+        st.setValue(f"geomap/{key}_geom", f"{g.x()},{g.y()},{g.width()},{g.height()}")
         self._place_overlays()
     # ── 🏠 local-node overlay: prominent, actual data — node/net/blocks toggles + time ──
     def _nodeinfo_changed(self, _on):
@@ -3668,9 +3692,18 @@ class GeoMapTab(QtWidgets.QWidget):
                                + (f" · headers {bci.get('headers', 0):,}" if bci.get("headers") else ""))
         peers = self._peers or []
         if peers or self._ni:
-            inn = sum(1 for p in peers if p.get("inbound")); out = len(peers) - inn
+            ni = self._ni or {}
+            # AUTHORITATIVE counts: the SAME getnetworkinfo.connections law as the Overview,
+            # Network and Control tabs — the peer list only fills gaps, so no display disagrees
+            n = ni.get("connections")
+            inn = ni.get("connections_in"); out = ni.get("connections_out")
+            if n is None:
+                n = len(peers); inn = sum(1 for p in peers if p.get("inbound")); out = n - inn
+            else:
+                if inn is None: inn = sum(1 for p in peers if p.get("inbound"))
+                if out is None: out = n - inn
             tin = sum(r[0] for r in self._rates.values()); tout = sum(r[1] for r in self._rates.values())
-            la = (self._ni or {}).get("localaddresses") or []
+            la = ni.get("localaddresses") or []
             myip, approx = (la[0].get("address") if la else None), ""
             if not myip:
                 from collections import Counter
@@ -3678,7 +3711,7 @@ class GeoMapTab(QtWidgets.QWidget):
                                for p in peers if p.get("addrlocal"))
                 myip = seen.most_common(1)[0][0] if seen else None
                 approx = " (approx)" if myip else ""
-            d["net"] = (f"{len(peers)} peers ({out} out · {inn} in) · live ▼ {NetworkMapTab._rate_s(tin)}"
+            d["net"] = (f"{n} peers ({out} out · {inn} in) · live ▼ {NetworkMapTab._rate_s(tin)}"
                         f" ▲ {NetworkMapTab._rate_s(tout)}" + (f" · via {myip}{approx}" if myip else ""))
         self.node_overlay.set_data(d)
         self._place_overlays()
@@ -3774,15 +3807,18 @@ class GeoMapTab(QtWidgets.QWidget):
         spawn_fn(lambda: fetch_json("/api/netactivity?n=60"), self._on_act)   # log-based geo fallback (works during choke)
     def _on_peers(self, peers, stale):
         import time as _t
-        now = _t.time()
-        for p in (peers or []):                       # real per-peer B/s between polls
+        now = _t.monotonic()                          # monotonic like the Net Map — clock jumps
+        for p in (peers or []):                       # can't fake a burst. Real per-peer B/s.
             a = p.get("addr")
             prev = self._prev.get(a)
-            if prev and now > prev[2]:
-                dt = now - prev[2]
+            if prev:
+                dt = max(0.001, now - prev[2])
                 self._rates[a] = (max(0, p.get("bytesrecv", 0) - prev[0]) / dt,
                                   max(0, p.get("bytessent", 0) - prev[1]) / dt)
             self._prev[a] = (p.get("bytesrecv", 0), p.get("bytessent", 0), now)
+        live = {p.get("addr") for p in peers or []}   # departed peers must not haunt the totals
+        self._rates = {a: r for a, r in self._rates.items() if a in live}
+        self._prev = {a: s for a, s in self._prev.items() if a in live}
         self._peers = peers or []
         self._resolve_hostnames(self._peers)     # DNS-named peers → plottable (async, once/session)
         self._redraw()
@@ -3792,6 +3828,18 @@ class GeoMapTab(QtWidgets.QWidget):
         self._act = (d or {}).get("events", [])
         self._fill_act_feed()
         self._redraw()
+    def _world_toggled(self, on):
+        QtCore.QSettings("BANKON", "bankon-qt").setValue("geomap/world", "true" if on else "false")
+        self.refresh()
+    def showEvent(self, e):
+        # DEFAULT open = the GLOBE, centred on the local node; flat/advanced are one click
+        # away. A hand-rotated view is respected — only an untouched globe re-centres.
+        if self.stack.currentIndex() != 0:
+            self.stack.setCurrentIndex(0)
+            self.toggle.setText("🗺 Flat map")
+        if not self.globe._touched and self.globe._my:
+            self.globe.center_on(self.globe._my[0], self.globe._my[1])
+        super().showEvent(e)
     def _legend_toggled(self, on):
         QtCore.QSettings("BANKON", "bankon-qt").setValue("geomap/legend", "true" if on else "false")
         self.legend.setVisible(on)
@@ -5392,6 +5440,18 @@ class ControlTab(QtWidgets.QWidget):
         self.pstatus_btn.setToolTip("bankon-nodes.sh status — both nodes' height/peers/pruned state, into the status line")
         self.pstatus_btn.clicked.connect(lambda: self._pruned("status")); pr.addWidget(self.pstatus_btn)
         pr.addStretch(); v.addLayout(pr)
+        # -- 🩸 monit0r — memory-leak watch over the whole ₿ANKON stack (RSS, 30 s samples) --
+        mfr = QtWidgets.QLabel("🩸 monit0r — memory-leak watch: sampling…")
+        mfr.setStyleSheet("color:#8aa0b4;font-family:monospace;font-size:11px")
+        mfr.setWordWrap(True); mfr.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        mfr.setToolTip("RSS of every ₿ANKON process sampled every 30 s (/proc, no dependencies).\n"
+                       "Verdict compares the window's first third to its last: steady growth\n"
+                       "→ 'growing ⚠' → 'LEAK-SUSPECT'. Needs ~5 min of samples before it judges.")
+        self.monitor_lbl = mfr
+        v.addWidget(mfr)
+        self._mon_hist = {}                     # name -> deque[(monotonic_s, rss_mb)]
+        self._mon_t = QtCore.QTimer(self); self._mon_t.timeout.connect(self._mon_tick)
+        self._mon_t.start(30_000); QtCore.QTimer.singleShot(2000, self._mon_tick)
         # -- 🐧 host OS — shown ABOVE the tools so the platform is never a mystery --
         _pretty, _fam, _pkg = os_release()
         self._pkg_cmd = _pkg
@@ -5480,6 +5540,64 @@ class ControlTab(QtWidgets.QWidget):
             self.start_btn.setText("▶ Start node")
             self.start_btn.setToolTip("Start bitcoind")
             self.start_btn.setStyleSheet("")
+    # ── 🩸 monit0r: RSS history + leak verdicts, pure /proc (no psutil dependency) ──
+    # the node services both run as bare `node server.mjs` — only the CWD tells them apart
+    MON_PROCS = [("bankon-qt", "bankon_qt.py", None), ("bitcoind", "bitcoind", None),
+                 ("console", "server.mjs", "bankon-console"), ("waas", "server.mjs", "bankon-waas")]
+    @staticmethod
+    def _rss_mb(pattern, cwd_part=None):
+        try:
+            out = subprocess.run(["pgrep", "-f", pattern], capture_output=True, text=True, timeout=5).stdout
+            total = 0
+            for pid in out.split():
+                try:
+                    if cwd_part and cwd_part not in os.readlink(f"/proc/{pid}/cwd"):
+                        continue
+                    with open(f"/proc/{pid}/status") as f:
+                        for ln in f:
+                            if ln.startswith("VmRSS:"):
+                                total += int(ln.split()[1]); break
+                except Exception:
+                    pass
+            return total / 1024.0 if total else None
+        except Exception:
+            return None
+    def _mon_tick(self):
+        # leaks grow while unwatched, so sampling continues even when the tab is hidden
+        def work():
+            return [(name, self._rss_mb(pat, cwd)) for name, pat, cwd in self.MON_PROCS]
+        spawn_fn(work, self._mon_render)
+    def _mon_render(self, rows):
+        now = time.monotonic()
+        lines = []
+        for name, mb in rows or []:
+            if mb is None:
+                lines.append(f"{name:<10} — not running"); continue
+            h = self._mon_hist.setdefault(name, deque(maxlen=240))   # 240 × 30 s = 2 h window
+            h.append((now, mb))
+            if len(h) < 10:
+                lines.append(f"{name:<10} {mb:8.1f} MB · learning ({len(h)}/10 samples)")
+                continue
+            third = max(1, len(h) // 3)
+            first = sum(v for _, v in list(h)[:third]) / third
+            last = sum(v for _, v in list(h)[-third:]) / third
+            span_h = max(0.003, (h[-1][0] - h[0][0]) / 3600.0)
+            slope = (last - first) / span_h                          # MB per hour, smoothed
+            grown = (last - first) / max(1.0, first) * 100
+            verdict, col = "stable", ""
+            if slope > 30 and grown > 15: verdict = "LEAK-SUSPECT ✗"
+            elif slope > 8: verdict = "growing ⚠"
+            elif slope < -8: verdict = "shrinking ✓"
+            lines.append(f"{name:<10} {mb:8.1f} MB · Δ{last - first:+7.1f} MB "
+                         f"({grown:+5.1f}%) · {slope:+6.1f} MB/h · {verdict}")
+        span = 0
+        for h in self._mon_hist.values():
+            if len(h) > 1: span = max(span, int((h[-1][0] - h[0][0]) / 60))
+        self.monitor_lbl.setText("🩸 monit0r — memory-leak watch (RSS · 30 s samples · "
+                                 f"{span} min window)\n" + "\n".join(lines))
+        bad = any("LEAK" in l for l in lines)
+        self.monitor_lbl.setStyleSheet("color:%s;font-family:monospace;font-size:11px"
+                                       % ("#f85149" if bad else "#8aa0b4"))
     def _style_pruned_btn(self, up):
         if up is None: return
         if up:
@@ -7297,7 +7415,8 @@ class AdminWindow(QtWidgets.QWidget):
                   "banner/dock", "geomap/borders", "geomap/cities", "geomap/accuracy",
                   "geomap/price", "geomap/tz", "geomap/ovl_node", "geomap/ovl_net", "geomap/ovl_blocks",
                   "geomap/ovl_fees", "geomap/feed", "geomap/marks", "geomap/nodeovl",
-                  "geomap/nodeovl_geom", "geomap/legend", "geomap/utc"):
+                  "geomap/nodeovl_geom", "geomap/priceovl", "geomap/priceovl_geom",
+                  "geomap/legend", "geomap/utc", "geomap/world"):
             st.remove(k)
         self.status.setText("🧭 saved layout forgotten — defaults return next launch.")
 

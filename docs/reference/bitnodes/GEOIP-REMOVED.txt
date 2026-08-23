@@ -1,1 +1,0 @@
-GeoIP data removed to save space — re-fetch per the upstream README if you run the crawler. Source: https://github.com/ayeowch/bitnodes
