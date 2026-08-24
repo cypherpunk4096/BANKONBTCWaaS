@@ -5563,10 +5563,36 @@ class ControlTab(QtWidgets.QWidget):
         except Exception:
             return None
     def _mon_tick(self):
-        # leaks grow while unwatched, so sampling continues even when the tab is hidden
+        # PREFER the Console's persistent 24/7 log (/api/monit0r — survives Qt restarts);
+        # fall back to in-process sampling only when the Console is unreachable. Either
+        # way sampling continues while the tab is hidden — leaks grow unwatched.
         def work():
-            return [(name, self._rss_mb(pat, cwd)) for name, pat, cwd in self.MON_PROCS]
-        spawn_fn(work, self._mon_render)
+            try:
+                return ("srv", fetch_json("/api/monit0r?hours=6"))
+            except Exception:
+                return ("local", [(name, self._rss_mb(pat, cwd)) for name, pat, cwd in self.MON_PROCS])
+        spawn_fn(work, lambda r: self._mon_render_srv(r[1]) if r[0] == "srv" else self._mon_render(r[1]))
+    def _mon_render_srv(self, d):
+        d = d or {}
+        procs = d.get("procs") or {}
+        NAME = {"qt": "bankon-qt", "bitcoind": "bitcoind", "console": "console", "waas": "waas"}
+        MARK = {"LEAK-SUSPECT": "LEAK-SUSPECT ✗", "growing": "growing ⚠",
+                "shrinking": "shrinking ✓", "stable": "stable"}
+        lines = []
+        for k in ("qt", "bitcoind", "console", "waas"):
+            p = procs.get(k) or {}
+            if p.get("now") is None:
+                lines.append(f"{NAME[k]:<10} — not running"); continue
+            if p.get("verdict") == "learning":
+                lines.append(f"{NAME[k]:<10} {p['now']:8.1f} MB · learning ({p.get('n', 0)}/10 samples)")
+                continue
+            lines.append(f"{NAME[k]:<10} {p['now']:8.1f} MB · Δ{p['deltaMB']:+7.1f} MB "
+                         f"({p['growPct']:+5.1f}%) · {p['slopeMBh']:+6.1f} MB/h · {MARK.get(p['verdict'], p['verdict'])}")
+        self.monitor_lbl.setText(f"🩸 monit0r — memory-leak watch (RSS · 1 min samples · "
+                                 f"{d.get('hours', 6)}h window · Console log, 24/7)\n" + "\n".join(lines))
+        bad = bool(d.get("leakSuspects"))
+        self.monitor_lbl.setStyleSheet("color:%s;font-family:monospace;font-size:11px"
+                                       % ("#f85149" if bad else "#8aa0b4"))
     def _mon_render(self, rows):
         now = time.monotonic()
         lines = []

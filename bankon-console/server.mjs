@@ -1554,6 +1554,77 @@ app.get('/api/fees', (req, res) => {
              series: rows.map(r => ({ t: r.t, e1: r.e1, e6: r.e6, tipAvg: r.tipAvg ?? null })) });
 });
 
+// ---- 🩸 MONIT0R — persistent memory-leak watch over the whole ₿ANKON stack --------------
+// The Console runs 24/7 under systemd, so IT keeps the memory log: RSS of bankon-qt,
+// bitcoind, the WaaS (told apart from us by /proc cwd) and the Console itself (exact,
+// process.memoryUsage), sampled every 60 s → .monhistory (JSONL, ~2 MB bound). Served
+// with leak verdicts at GET /api/monit0r; the Qt Control panel reads this instead of its
+// own short-lived session view. Leaks are judged by GROWTH (slope + %), never by size.
+const MON_FILE = join(__dir, '.monhistory');
+let MON_HIST = [];
+try {
+  MON_HIST = readFileSync(MON_FILE, 'utf8').trim().split('\n').filter(Boolean)
+    .map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean).slice(-3000);
+} catch { /* first run — the log starts now */ }
+const _pgrep = (pat) => new Promise(res =>
+  execFile('pgrep', ['-f', pat], (e, out) => res((out || '').trim().split(/\s+/).filter(Boolean))));
+async function _rssMB(pat, cwdPart = null) {
+  let total = 0;
+  for (const pid of await _pgrep(pat)) {
+    try {
+      if (cwdPart && !(await fsp.readlink(`/proc/${pid}/cwd`)).includes(cwdPart)) continue;
+      const m = (await fsp.readFile(`/proc/${pid}/status`, 'utf8')).match(/^VmRSS:\s+(\d+)/m);
+      if (m) total += Number(m[1]);
+    } catch { /* raced a dying pid */ }
+  }
+  return total ? +(total / 1024).toFixed(1) : null;
+}
+async function _monSample() {
+  try {
+    const s = { t: Math.floor(Date.now() / 1000),
+                console: +(process.memoryUsage().rss / 1048576).toFixed(1) };
+    s.qt = await _rssMB('bankon_qt.py');
+    s.bitcoind = await _rssMB('bitcoind');
+    s.waas = await _rssMB('server.mjs', 'bankon-waas');
+    MON_HIST.push(s); if (MON_HIST.length > 3000) MON_HIST = MON_HIST.slice(-3000);
+    await fsp.appendFile(MON_FILE, JSON.stringify(s) + '\n');
+    try {
+      if (statSync(MON_FILE).size > 2 * 1024 * 1024)
+        writeFileSync(MON_FILE, MON_HIST.slice(-1500).map(x => JSON.stringify(x)).join('\n') + '\n');
+    } catch { /* rotation is best-effort */ }
+  } catch { /* next tick */ }
+}
+setInterval(_monSample, 60 * 1000); setTimeout(_monSample, 5000);
+
+function _monVerdict(rows, key) {
+  const v = rows.map(r => ({ t: r.t, v: r[key] })).filter(x => x.v != null);
+  if (v.length < 10)
+    return { now: v.length ? v[v.length - 1].v : null, n: v.length, verdict: 'learning' };
+  const third = Math.max(1, Math.floor(v.length / 3));
+  const avg = a => a.reduce((s, x) => s + x.v, 0) / a.length;
+  const first = avg(v.slice(0, third)), last = avg(v.slice(-third));
+  const spanH = Math.max(0.01, (v[v.length - 1].t - v[0].t) / 3600);
+  const slope = +((last - first) / spanH).toFixed(1);     // smoothed MB per hour
+  const grow = +((last - first) / Math.max(1, first) * 100).toFixed(1);
+  const verdict = (slope > 30 && grow > 15) ? 'LEAK-SUSPECT'
+                : slope > 8 ? 'growing' : slope < -8 ? 'shrinking' : 'stable';
+  return { now: v[v.length - 1].v, n: v.length, first: +first.toFixed(1), last: +last.toFixed(1),
+           deltaMB: +(last - first).toFixed(1), slopeMBh: slope, growPct: grow, verdict };
+}
+app.get('/api/monit0r', (req, res) => {
+  const hours = Math.max(1, Math.min(24 * 14, Number(req.query.hours) || 6));
+  const cut = Math.floor(Date.now() / 1000) - hours * 3600;
+  const rows = MON_HIST.filter(r => r.t >= cut);
+  const procs = {};
+  for (const k of ['qt', 'bitcoind', 'console', 'waas']) procs[k] = _monVerdict(rows, k);
+  res.json({ ok: true, unit: 'MB RSS', sampleEveryMin: 1, hours, samples: rows.length,
+             loggedSince: MON_HIST.length ? MON_HIST[0].t : null, procs,
+             leakSuspects: Object.entries(procs).filter(([, v]) => v.verdict === 'LEAK-SUSPECT')
+                                                .map(([k]) => k),
+             series: rows.map(r => ({ t: r.t, qt: r.qt ?? null, bitcoind: r.bitcoind ?? null,
+                                      console: r.console ?? null, waas: r.waas ?? null })) });
+});
+
 setInterval(warmCheap, Number(process.env.BANKON_WARM_MS) || 25000); warmCheap();
 setInterval(warmChain, 30000); warmChain();
 if (HAMMER) { setInterval(burstBlocks, 60000); burstBlocks(); }   // continuous burst only if opted in

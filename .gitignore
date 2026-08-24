@@ -43,6 +43,7 @@ passwords.*
 *.swp
 bankon-console/.history
 bankon-console/.feehistory
+bankon-console/.monhistory
 
 # bankon-vault policy runtime state
 **/.policy_state.json
