@@ -77,6 +77,7 @@ New here? Start with **[../README.md](../README.md)** then **[../USAGE.md](../US
 | [reference/bitnodes/README.md](reference/bitnodes/README.md) | Local Bitnodes source reference (MIT) |
 | [upstream/README.md](upstream/README.md) | Local copies of key Bitcoin Core docs |
 | [cypherpunk4096/bitcoin](https://github.com/cypherpunk4096/bitcoin) | **Shipped Bitcoin Core, pinned** — fork of bitcoin/bitcoin; branch `bankon-v31.0` = the upstream `v31.0` tag BANKON BTC WaaS v0.0.2 runs against |
+| [cypherpunk4096/bankon-delivery](https://github.com/cypherpunk4096/bankon-delivery) | **bankon-delivery** (separate project) — full-node delivery over LAN; confirmed $50-in-BTC receipt IS the authentication; tip-attested manifest at the data-initiation moment; FireFTP/FireSSH lineage |
 | [upstream/descriptors.md](upstream/descriptors.md) · [upstream/psbt.md](upstream/psbt.md) · [upstream/multisig-tutorial.md](upstream/multisig-tutorial.md) | Descriptors · PSBT · multisig |
 | [upstream/offline-signing-tutorial.md](upstream/offline-signing-tutorial.md) · [upstream/managing-wallets.md](upstream/managing-wallets.md) | Offline signing · wallet management |
 | [upstream/JSON-RPC-interface.md](upstream/JSON-RPC-interface.md) · [upstream/bitcoin-conf.md](upstream/bitcoin-conf.md) | JSON-RPC interface · bitcoin.conf |
