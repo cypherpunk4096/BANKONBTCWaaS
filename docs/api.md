@@ -95,6 +95,19 @@ Scannable QR of the BIP21 payment request (via `qrencode`). `svg` (default, `ima
 - **GET `/api/rage/status`** — `{ target, tokenSet }`.
 - **POST `/api/rage/handoff`** — `{ count }` → gathers node addresses → POSTs to pgvectorscale; `{ ok, gathered, source, stale, target, push }`.
 
+### ⛽ Fee history & 🩸 monit0r (continuous local logs — never an external API)
+- **GET `/api/fees?hours=24`** — the Console's fee log: every 5 min it samples THIS node
+  (`estimatesmartfee` targets 1/3/6/144 in sat/vB, mempool size/vMB/min-fee, each new tip
+  block's avgfeerate/percentiles/totalfee/txs) into `.feehistory` (JSONL, ~2 MB bound).
+  Returns `{ now, trend: rising|steady|falling, stats: {e1,e3,e6,e144,tipAvg,mpTx →
+  n/min/max/avg/p50/p90}, series }`. Surfaced on the Qt geo map's 🏠 card (⛽ line) and
+  under ₿lock science.
+- **GET `/api/monit0r?hours=6`** — persistent memory-leak watch: RSS of bankon-qt ·
+  bitcoind · waas · the Console itself, sampled every 60 s into `.monhistory`. Returns
+  per-process `{ now, deltaMB, slopeMBh, growPct, verdict: stable|growing|shrinking|
+  LEAK-SUSPECT|learning }` + `leakSuspects` + `series`. Verdicts judge GROWTH (first-third
+  vs last-third averages), never absolute size. Powers Control's 🩸 monit0r panel.
+
 ### Blocks, oracle & sync (live during IBD — read from `debug.log`)
 - **GET `/api/recentblocks?n=90`** — recent blocks `{ height, hash, time, nTx }`. `nTx` is enriched on demand from `getblockheader` (≤24/request, circuit-safe, cached) → returns `enriched` + `source`.
 - **GET `/api/oracle`** — genesis time, height, all-time & windowed avg block time, protocol target, recommended poll interval.

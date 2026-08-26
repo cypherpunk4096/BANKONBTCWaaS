@@ -21,6 +21,11 @@
 > that node; without `bitcoind` running there is nothing to attach to. Don't have it?
 > The installer sets it up for you, SHA256-verified: `./bankon.sh --only core`
 > (or `./bankon install-core`). Your node, your chain, your keys.
+>
+> **Shipped version, pinned:** the exact Bitcoin Core this release runs against is
+> forked at [cypherpunk4096/bitcoin](https://github.com/cypherpunk4096/bitcoin)
+> (branch `bankon-v31.0` = the upstream `v31.0` tag) — an auditable snapshot that
+> can't drift under BANKON BTC WaaS v0.0.2.
 
 > ### ⚡ Effortless — one command
 > ```bash
@@ -87,12 +92,29 @@ whether it is the **live RPC truth** or a **log-window event count**, because th
   - **₿TC.oracle** — the clock kept on a Bitcoin block; every blocktime figure exact
     Decimal at 18 dp; anti-clockblock multi-source cross-checks; per-block science
     (`getblockstats`) with integer-satoshi economics.
-  - **🧊 ICE / blackICE** — CPU-heat + radio wall, geo/IP forensics, and a **live
-    blockchain transaction monitor**: parses the node's ZMQ `rawtx` feed locally
-    (txid, vsize, output sums in integer sats — verified exact against Core RPC).
-  - **Net Map / Geo Map / Network log** — peers on a globe, connection events with
-    BIP324 transport + role detail, three numeric display modes
-    (human · scientific · 18-dec exact).
+  - **🧊 I.C.E.** (the tool — *Intrusion Countermeasures Electronics*; 🖤 blackICE is
+    a theme) — CPU-heat + radio wall (AIRGAP), 🛡 ufw firewall diagnostics with
+    one-click installer, geo/IP forensics, and a **live blockchain transaction
+    monitor**: parses the node's ZMQ `rawtx` feed locally (txid, vsize, output sums
+    in integer sats — verified exact against Core RPC).
+  - **Net Map / Geo Map / Network log** — peers on a spinning globe that **opens
+    centred on your own node**: per-point data labels + hover cards (ip · city,
+    country · ±km GeoIP accuracy · ping · live ▼/▲ B/s), comet packet flow whose
+    brightness encodes link quality, 🎯 accuracy rings, 🕛 UTC/date-line overlay,
+    🌐 ₿itnodes-style world-nodes view, draggable/dockable 🏠 node + 🪙 price cards,
+    ⛶ fullscreen with retract, extra watcher-globe windows, and a 📡 live feed
+    column (connections · mempool Δ · blocks). Connection events carry BIP324
+    transport + role detail; three numeric display modes (human · scientific ·
+    18-dec exact).
+  - **🛠 Admin popup** — every toolbar toggle + admin actions in one resizable
+    window with launcher-style ⚓ DOCK / 📞 CALL choreography (finds the console
+    and the GTK launcher across displays; dock position remembered).
+  - **🖥 Control** — node ▶/■ with pressed-state truth, optional pruned-node
+    runtime, host OS + thermal cards, service probes, and **🩸 monit0r**.
+- **⛽ fee log + 🩸 monit0r** — the always-on Console samples fees (5 min) and
+  every process's RSS (1 min) into bounded local logs, served with computed stats
+  and leak verdicts at `/api/fees` and `/api/monit0r`. Measured locally — never an
+  external API.
 - **Watchdog + doctor** — `bankon-monitor.sh` (systemd timer) and `bankon doctor`.
 
 ## Exact BANKON creation

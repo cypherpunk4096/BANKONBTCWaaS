@@ -28,10 +28,11 @@ New here? Start with **[../README.md](../README.md)** then **[../USAGE.md](../US
 | [../SECURITY.md](../SECURITY.md) | **Threat model, trust boundaries, disclosure policy** (the GitHub security policy) |
 | [../bankon-vault/README.md](../bankon-vault/README.md) | **bankon-vault** — chain-agnostic vault, BTC signature access + gating, sign-don't-export, ICE frozen storage |
 | [../bankon-ord/README.md](../bankon-ord/README.md) | **bankon-ord** (optional) — ordinals/inscriptions/runes via ordinals/ord, wallet-isolated, mainnet+testnet |
+| [ordinals.md](ordinals.md) | **🜚 Ordinals guide** — theory in a paragraph, the different custody model, the fail-closed guardrails, diagnostics; behind the WaaS FAQ topic |
 | [../bankonos/README.md](../bankonos/README.md) | **bankonOS installer** — sovereign workstation, multi-OS (Alpine/OpenBSD favoured, Debian-compatible), modular |
 | [origins.md](origins.md) | **Origins & lineage** — bankonme (founding vision) → … → cypherpunk2048; + [bankonme-archive.txt](bankonme-archive.txt) |
 | [security.md](security.md) | Non-custodial guarantees, auth, backups, offline client |
-| [ICE.md](ICE.md) | **🧊 ICE** — the wall between the network and the wallet (thermal scaling + RF AIRGAP) + the **blackICE** roadmap |
+| [ICE.md](ICE.md) | **🧊 I.C.E.** — the TOOL: the wall between the network and the wallet (thermal scaling + RF AIRGAP + ufw) + the **blackICE** roadmap (🖤 blackICE the theme is unrelated) |
 | [operations.md](operations.md) | Launcher, systemd, monitoring, multi-node, pruning |
 | [testing.md](testing.md) | Sign / e2e / multisig / anchor test suites |
 | [waas-accuracy.md](waas-accuracy.md) | Accurate WaaS positioning — proven vs built vs gated vs future |
@@ -74,6 +75,7 @@ New here? Start with **[../README.md](../README.md)** then **[../USAGE.md](../US
 | [inspiration-bitnodes.md](inspiration-bitnodes.md) | Bitnodes review — ideas BANKON borrows |
 | [reference/bitnodes/README.md](reference/bitnodes/README.md) | Local Bitnodes source reference (MIT) |
 | [upstream/README.md](upstream/README.md) | Local copies of key Bitcoin Core docs |
+| [cypherpunk4096/bitcoin](https://github.com/cypherpunk4096/bitcoin) | **Shipped Bitcoin Core, pinned** — fork of bitcoin/bitcoin; branch `bankon-v31.0` = the upstream `v31.0` tag BANKON BTC WaaS v0.0.2 runs against |
 | [upstream/descriptors.md](upstream/descriptors.md) · [upstream/psbt.md](upstream/psbt.md) · [upstream/multisig-tutorial.md](upstream/multisig-tutorial.md) | Descriptors · PSBT · multisig |
 | [upstream/offline-signing-tutorial.md](upstream/offline-signing-tutorial.md) · [upstream/managing-wallets.md](upstream/managing-wallets.md) | Offline signing · wallet management |
 | [upstream/JSON-RPC-interface.md](upstream/JSON-RPC-interface.md) · [upstream/bitcoin-conf.md](upstream/bitcoin-conf.md) | JSON-RPC interface · bitcoin.conf |
