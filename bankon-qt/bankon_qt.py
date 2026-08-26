@@ -178,6 +178,17 @@ def anim_on(w):
         return w.isVisible()
 
 
+def goto_tab(widget, attr):
+    """Cross-link between tabs: jump the main window to the tab held in Main.<attr>."""
+    try:
+        main = widget.window()
+        target = getattr(main, attr, None)
+        if target is not None:
+            main.tabs.setCurrentWidget(target)
+    except Exception:
+        pass
+
+
 def link_quality(p):
     """Link QUALITY 0.25..1.0 from the peer's measured ping — one law for every map:
     ≤60 ms → 1.0 (crisp, bright), ≥600 ms → 0.25 (dim, diffuse). Unknown ping = 0.6."""
@@ -4687,6 +4698,17 @@ class OracleTab(QtWidgets.QWidget):
                        "• clockblock — wall-time as the ruler: block intervals, all-time and 2016-block averages\n"
                        "Every blocktime figure is exact Decimal arithmetic at 18 dp — no float drift.")
         v.addWidget(sub)
+        # ⇄ the ordinal connection, stated where the clock lives: the oracle numbers the
+        # blocks; ordinal theory numbers the sats those blocks mint — one ordering, twice
+        xlink = QtWidgets.QLabel("⇄ <a href='ord' style='color:#F7931A'>🜚 Ordinals</a> — ordinal theory numbers "
+                                 "every sat by the block order this clock keeps; block science below measures the "
+                                 "blocks whose sats carry the inscriptions")
+        xlink.setAlignment(QtCore.Qt.AlignCenter)
+        xlink.setStyleSheet("color:#5a7891;font-size:10px;border:0")
+        xlink.setToolTip("Open the 🜚 Ordinals tab — same chain, same ordering: the oracle counts blocks, "
+                         "ordinals count the sats inside them")
+        xlink.linkActivated.connect(lambda _: goto_tab(self, "ords"))
+        v.addWidget(xlink)
         # ANTI-CLOCKBLOCK: never trust one clock. Tip height/time are cross-checked across
         # independent sources every refresh — Console cache · debug.log tail · the node
         # queried DIRECTLY (cache bypass) · a second node when one runs (pruned :8342) —
@@ -5930,6 +5952,16 @@ class OrdinalsTab(QtWidgets.QWidget):
             os.environ["PATH"] = _cargo + os.pathsep + os.environ.get("PATH", "")
         h = QtWidgets.QLabel("🜚 Ordinals — inscriptions · runes · sat hunting (gated interaction)")
         h.setStyleSheet("font-weight:700;font-size:15px;color:#F7931A"); v.addWidget(h)
+        # ⇄ the oracle connection, stated where the sats live: every sat is numbered by
+        # the block order the ₿TC.oracle keeps — the same ordering, read from the other end
+        xlink = QtWidgets.QLabel("⇄ <a href='oracle' style='color:#00BFFF'>₿TC.oracle</a> — every sat here is "
+                                 "numbered by the block order the oracle's ₿LOCKCLOCK keeps; its ₿lock science "
+                                 "measures the blocks these inscriptions ride in")
+        xlink.setStyleSheet("color:#5a7891;font-size:10px;border:0")
+        xlink.setToolTip("Open the ₿TC.oracle tab — same chain, same ordering: ordinals count the sats, "
+                         "the oracle counts (and measures) the blocks that mint them")
+        xlink.linkActivated.connect(lambda _: goto_tab(self, "oracle"))
+        v.addWidget(xlink)
         top = QtWidgets.QHBoxLayout()
         top.addWidget(QtWidgets.QLabel("network:"))
         self.netbox = QtWidgets.QComboBox(); self.netbox.addItems(["mainnet", "testnet", "signet", "regtest"])
