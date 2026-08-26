@@ -29,6 +29,7 @@ New here? Start with **[../README.md](../README.md)** then **[../USAGE.md](../US
 | [../bankon-vault/README.md](../bankon-vault/README.md) | **bankon-vault** — chain-agnostic vault, BTC signature access + gating, sign-don't-export, ICE frozen storage |
 | [../bankon-ord/README.md](../bankon-ord/README.md) | **bankon-ord** (optional) — ordinals/inscriptions/runes via ordinals/ord, wallet-isolated, mainnet+testnet |
 | [ordinals.md](ordinals.md) | **🜚 Ordinals guide** — theory in a paragraph, the different custody model, the fail-closed guardrails, diagnostics; behind the WaaS FAQ topic |
+| [/faq.html](../bankon-waas/public/faq.html) | **WaaS FAQ page** (:8088/faq.html) — custody, wallet types & SegWit, air-gapped signing, ordinals; split out of the create-wallet page so the flow stays lean |
 | [../bankonos/README.md](../bankonos/README.md) | **bankonOS installer** — sovereign workstation, multi-OS (Alpine/OpenBSD favoured, Debian-compatible), modular |
 | [origins.md](origins.md) | **Origins & lineage** — bankonme (founding vision) → … → cypherpunk2048; + [bankonme-archive.txt](bankonme-archive.txt) |
 | [security.md](security.md) | Non-custodial guarantees, auth, backups, offline client |

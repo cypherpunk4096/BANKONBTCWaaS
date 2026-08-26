@@ -53,6 +53,9 @@
   .wtabs button { background:none; border:none; border-bottom:3px solid transparent; color:#7d8590;
     font-size:1rem; font-weight:700; padding:.4rem .9rem; cursor:pointer; border-radius:0; }
   .wtabs button.on { color:var(--btc); border-bottom-color:var(--btc); }
+  .wtabs a.faqlink { margin-left:auto; align-self:center; color:#7d8590; font-weight:700; font-size:1rem;
+    text-decoration:none; padding:.4rem .9rem; border-bottom:3px solid transparent; }
+  .wtabs a.faqlink:hover { color:var(--btc); }
   .obadge { font-weight:700; }
 </style>
 </head>
@@ -60,7 +63,7 @@
   <h1>₿ANKON WaaS ₿ANKON ₿TC <small>Wallet&nbsp;as&nbsp;a&nbsp;Service · non-custodial</small></h1>
   <p class="muted">Your keys and passphrase are generated <b>here, in your browser</b>. BANKON never receives them — only a public watch-only descriptor is sent so the node can show balances and prepare unsigned transactions.</p>
 
-  <div class="wtabs"><button id="wt-wallet" class="on">₿ Wallet</button><button id="wt-ordinals">🜚 Ordinals</button></div>
+  <div class="wtabs"><button id="wt-wallet" class="on">₿ Wallet</button><button id="wt-ordinals">🜚 Ordinals</button><a class="faqlink" href="/faq.html" title="FAQ — custody, wallet types &amp; SegWit, air-gapped signing, ordinals">❓ FAQ</a></div>
   <div id="tab-wallet">
 
   <fieldset>
@@ -175,207 +178,9 @@
     <div id="wlist" class="muted">— not loaded —</div>
   </fieldset>
 
-  <fieldset>
-    <legend>❓ FAQ <span class="muted">— tap a question; each answer links to the full guide</span></legend>
-
-    <details name="faq">
-      <summary>Is BANKON custodial? Where do my keys live?</summary>
-      <p class="muted">No. Your keys are minted <b>here in your browser</b> and never reach the server —
-        BANKON even rejects any request containing a secret. The node only holds a <b>watch-only</b>
-        descriptor and builds <b>unsigned</b> transactions; you sign locally.
-        <a href="/docs/security.md" target="_blank" rel="noopener">Security guarantees ↗</a> ·
-        <a href="/docs/architecture.md" target="_blank" rel="noopener">Non-custodial data flow ↗</a></p>
-    </details>
-
-    <details name="faq">
-      <summary>New here — what is BANKON BTC WaaS?</summary>
-      <p class="muted">A non-custodial Wallet-as-a-Service that attaches to your own Bitcoin Core node —
-        it watches and drafts, it never holds your keys.
-        <a href="/docs/introduction.md" target="_blank" rel="noopener">Introduction ↗</a> ·
-        <a href="/docs/getting-started.md" target="_blank" rel="noopener">Getting started ↗</a></p>
-    </details>
-
-    <details name="faq">
-      <summary>What are Ordinals — inscriptions, runes, rare sats?</summary>
-      <p class="muted"><b>Ordinal theory</b> numbers every satoshi by the order it was mined, so an
-        individual sat can be tracked, collected, and <b>inscribed</b> with content carried in a taproot
-        witness — an immutable on-chain artifact; <b>runes</b> are fungible tokens etched/minted with the
-        same tooling. <b>Custody differs from the wallets above:</b> ordinal wallets are descriptor
-        wallets <b>inside your own Bitcoin Core</b> (the node holds those keys), and BANKON keeps
-        <b>ordinal</b> and <b>cardinal</b> (plain-BTC) wallets strictly separated so an inscribed sat is
-        never spent away as change. Every action is gated fail-closed — dry-run first, explicit
-        ⚠ broadcast, refused over 0.1 ₿TC or on unknown balance. Use the 🜚 Ordinals tab above, the
-        Console's 🜚 tab, or the Qt app's 🜚 tab — one gated engine behind all three.
-        <a href="/docs/ordinals.md" target="_blank" rel="noopener">Ordinals guide ↗</a></p>
-    </details>
-
-    <details name="faq">
-      <summary>Which wallet type should I choose?</summary>
-      <p class="muted">Short answer: <b>Native SegWit (bc1q…)</b> — the BTC Standard default, lowest fees,
-        universally spendable. <b>Taproot (bc1p…)</b> if you want the newest script system and best privacy.
-        <b>Legacy (1…)</b> only if you must receive from very old software. Tap each type below for the
-        full technical explanation.
-        <a href="/docs/wallets.md" target="_blank" rel="noopener">Wallet types &amp; the create→sign→send loop ↗</a></p>
-
-      <details name="wtypes">
-        <summary>What SegWit actually is <span class="pfx">BIP141 · BIP143</span></summary>
-        <div class="body muted">
-          <p><b>Segregated Witness</b> (activated August 2017) restructures how a Bitcoin transaction
-          carries its signatures. Pre-SegWit, the unlocking data (signature + public key, the
-          <i>scriptSig</i>) sat inside each input, so it was hashed into the <b>txid</b>. SegWit moves that
-          data into a separate <b>witness</b> section that is committed to by a new <b>wtxid</b> merkle root
-          (stored in the coinbase), while the txid is computed over the transaction <i>without</i> witnesses.</p>
-          <ul>
-            <li><b>Fixes transaction malleability</b> — a third party can no longer mutate a signature
-              encoding to change your txid before confirmation. Unconfirmed txid chains (and protocols
-              built on them, like Lightning) become safe.</li>
-            <li><b>Weight units &amp; the witness discount</b> — blocks are limited to 4,000,000
-              <i>weight units</i>. Non-witness bytes cost 4 WU each; witness bytes cost 1 WU. Fee rates are
-              quoted per <b>vbyte</b> (= weight ÷ 4), so signature data is effectively 75% cheaper. That is
-              the entire reason SegWit inputs cost less to spend.</li>
-            <li><b>BIP143 signature hashing</b> — SegWit inputs sign a digest that commits to the input's
-              <i>amount</i> and uses linear-time hashing. This kills the O(n²) sighash DoS and lets hardware
-              wallets sign without streaming every previous transaction.</li>
-            <li><b>Script versioning</b> — the output format (<i>witness version</i> + program) made future
-              upgrades soft-fork-clean: version 0 = P2WPKH/P2WSH, version 1 = Taproot.</li>
-          </ul>
-        </div>
-      </details>
-
-      <details name="wtypes">
-        <summary>Native SegWit — P2WPKH <span class="pfx">bc1q… · BIP84 · default</span></summary>
-        <div class="body muted">
-          <span class="tag good">lowest fees</span><span class="tag good">BTC Standard default</span><span class="tag info">bech32</span>
-          <p><b>Pay-to-Witness-Public-Key-Hash.</b> The output script is just
-          <code>OP_0 &lt;20-byte HASH160(pubkey)&gt;</code>; the signature and public key go in the witness,
-          where every byte gets the 4× discount. A typical input weighs <b>≈68 vB</b> vs ≈148 vB for
-          legacy — roughly <b>54% cheaper to spend</b>.</p>
-          <ul>
-            <li><b>Address encoding:</b> bech32 (BIP173) — lowercase, case-insensitive, with a BCH checksum
-              that <i>guarantees</i> detection of up to 4 character errors and even locates typos. QR codes
-              encode smaller in alphanumeric mode.</li>
-            <li><b>Derivation:</b> BIP84 — <code>m/84'/0'/0'</code> from your BIP39 phrase;
-              descriptor <code>wpkh(…)</code>.</li>
-            <li><b>Compatibility:</b> spendable by all nodes; virtually every exchange and wallet can send
-              to bc1q addresses today.</li>
-          </ul>
-        </div>
-      </details>
-
-      <details name="wtypes">
-        <summary>Taproot — P2TR <span class="pfx">bc1p… · BIP86 · newest</span></summary>
-        <div class="body muted">
-          <span class="tag good">best privacy</span><span class="tag good">Schnorr</span><span class="tag warn">rare legacy senders can't pay it</span>
-          <p><b>Pay-to-Taproot</b> (BIPs 340/341/342, activated November 2021) is witness <b>version 1</b>:
-          <code>OP_1 &lt;32-byte x-only pubkey&gt;</code>. The key it exposes is a <i>tweaked</i> key that can
-          commit to a hidden tree of alternative spending scripts (<b>MAST</b>).</p>
-          <ul>
-            <li><b>Schnorr signatures (BIP340)</b> — 64-byte, provably non-malleable, and <i>linear</i>:
-              multiple signers can aggregate into one signature (MuSig2), so a multisig spend can look
-              identical on-chain to a single-sig spend.</li>
-            <li><b>Key-path vs script-path</b> — the everyday spend is just one signature
-              (<b>≈57.5 vB</b> per input, the cheapest spend in Bitcoin). Only if you use a fallback
-              script does that branch get revealed — unused conditions stay secret forever.</li>
-            <li><b>Privacy</b> — every key-path spend looks the same, whether it hides a 2-of-3, a
-              timelock, or nothing.</li>
-            <li><b>Encoding / derivation:</b> bech32m (BIP350, fixes a bech32 checksum weakness for v1+);
-              BIP86 — <code>m/86'/0'/0'</code>; descriptor <code>tr(…)</code>.</li>
-            <li><b>Caveat:</b> a handful of very old exchange withdrawal systems still can't send to
-              bc1p…; anything maintained can.</li>
-          </ul>
-        </div>
-      </details>
-
-      <details name="wtypes">
-        <summary>Legacy — P2PKH <span class="pfx">1… · BIP44 · compat only</span></summary>
-        <div class="body muted">
-          <span class="tag warn">highest fees</span><span class="tag info">works with anything since 2009</span>
-          <p><b>Pay-to-Public-Key-Hash</b> — the original address format. Output script
-          <code>OP_DUP OP_HASH160 &lt;pubkey-hash&gt; OP_EQUALVERIFY OP_CHECKSIG</code>; the signature and
-          pubkey travel in the scriptSig at full 4 WU/byte, so an input weighs <b>≈148 vB</b>.</p>
-          <ul>
-            <li><b>Encoding:</b> Base58Check — mixed case, no error-location, checksum only detects.</li>
-            <li><b>No malleability fix, no amount commitment</b> in the classic sighash — the problems
-              SegWit was built to solve.</li>
-            <li><b>Derivation:</b> BIP44 — <code>m/44'/0'/0'</code>; descriptor <code>pkh(…)</code>.</li>
-            <li>Choose it only when a counterparty literally cannot send to bech32.</li>
-          </ul>
-        </div>
-      </details>
-
-      <details name="wtypes">
-        <summary>Nested SegWit — P2SH-P2WPKH <span class="pfx">3… · BIP49 · transitional</span></summary>
-        <div class="body muted">
-          <span class="tag info">not minted by BANKON</span>
-          <p>The 2017-era bridge format: a P2WPKH program wrapped inside <b>Pay-to-Script-Hash</b> so old
-          wallets could send to SegWit users via a familiar <code>3…</code> address. Inputs weigh
-          <b>≈91 vB</b> — cheaper than legacy, dearer than native. Derivation BIP49
-          (<code>m/49'/0'/0'</code>), descriptor <code>sh(wpkh(…))</code>. Now that bc1q is universally
-          supported the wrapper is pure overhead, so BANKON doesn't create these — but it can watch and
-          spend them if you import one.</p>
-        </div>
-      </details>
-
-      <details name="wtypes">
-        <summary>Multisig — P2WSH <span class="pfx">bc1q… (62 chars) · N-of-M</span></summary>
-        <div class="body muted">
-          <span class="tag good">no single point of failure</span><span class="tag info">wsh(sortedmulti)</span>
-          <p><b>Pay-to-Witness-Script-Hash</b> — witness v0 with a <b>32-byte</b> SHA256 of the full
-          spending script (vs 20 bytes for P2WPKH, hence the longer address). BANKON registers
-          <code>wsh(sortedmulti(N, xpub…))</code> descriptors: N of M cosigners must sign, and
-          <code>sortedmulti</code> orders keys deterministically so every cosigner derives identical
-          addresses.</p>
-          <ul>
-            <li><b>Cosigners share only public data</b> — <code>{ xpub, fingerprint, path }</code> at
-              <code>m/48'/0'/0'/2'</code> (BIP48). No seed ever leaves a device.</li>
-            <li><b>Spending flow:</b> the node builds a PSBT (BIP174) → each required cosigner signs
-              offline → <code>combinepsbt</code> merges the partials → broadcast. Verified end-to-end
-              2-of-3 on regtest.</li>
-            <li><b>Cost:</b> the witness reveals the full script + N signatures, so inputs are heavier
-              than single-sig (a 2-of-3 input ≈105 vB) — still far cheaper than legacy multisig, thanks
-              to the witness discount.</li>
-          </ul>
-        </div>
-      </details>
-    </details>
-
-    <details name="faq">
-      <summary>Do I need Bitcoin Core running?</summary>
-      <p class="muted">To register a wallet, see balances, build a send, or broadcast — yes.
-        To <b>generate</b> or <b>sign</b> a wallet — no; those are client-side and work air-gapped.
-        <a href="/docs/airgapped-waas.md" target="_blank" rel="noopener">Standalone &amp; air-gapped WaaS ↗</a></p>
-    </details>
-
-    <details name="faq">
-      <summary>Can I sign offline / air-gapped?</summary>
-      <p class="muted">Yes. The <a href="/offline-client.html" target="_blank" rel="noopener">offline signer</a>
-        makes zero network calls (the crypto libraries are vendored locally). Recommended for real
-        funds: an online watch-only host plus an offline signer.
-        <a href="/docs/airgapped-waas.md" target="_blank" rel="noopener">Air-gap guide ↗</a></p>
-    </details>
-
-    <details name="faq">
-      <summary>How do I receive a payment (with an amount)?</summary>
-      <p class="muted">BANKON builds a shareable <code>bitcoin:</code> payment request (amount, label,
-        message) — something Bitcoin Core doesn't provide.
-        <a href="/docs/waas-beyond-core.md" target="_blank" rel="noopener">WaaS beyond Bitcoin Core ↗</a> ·
-        <a href="/docs/api.md" target="_blank" rel="noopener">API reference ↗</a></p>
-    </details>
-
-    <details name="faq">
-      <summary>Where are the diagnostics / node dashboard?</summary>
-      <p class="muted">The read-only Console runs separately at
-        <a href="http://127.0.0.1:8090" target="_blank" rel="noopener">:8090</a> (or the native Qt app).
-        <a href="/docs/console.md" target="_blank" rel="noopener">Console ↗</a> ·
-        <a href="/docs/server.md" target="_blank" rel="noopener">Server reference ↗</a></p>
-    </details>
-
-    <details name="faq">
-      <summary>Full documentation?</summary>
-      <p class="muted"><a href="/docs/NAV.md" target="_blank" rel="noopener">Documentation index (NAV) ↗</a> ·
-        <a href="https://github.com/cypherpunk2048" target="_blank" rel="noopener">BTC Standard ↗</a></p>
-    </details>
-  </fieldset>
+  <p class="muted" style="text-align:center;margin:1.2rem 0">
+    ❓ Questions? <a href="/faq.html">Read the FAQ</a> — custody, wallet types &amp; SegWit explained, air-gapped signing, ordinals, docs.
+  </p>
 
   </div><!-- /tab-wallet -->
 
