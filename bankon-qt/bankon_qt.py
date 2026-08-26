@@ -4698,15 +4698,31 @@ class OracleTab(QtWidgets.QWidget):
                        "• clockblock — wall-time as the ruler: block intervals, all-time and 2016-block averages\n"
                        "Every blocktime figure is exact Decimal arithmetic at 18 dp — no float drift.")
         v.addWidget(sub)
+        # the two Greek times, mapped to the oracle's two faces: χρόνος measures the flow,
+        # καιρός names the strike — the cypherpunk4096 standard's clock vocabulary
+        greek = QtWidgets.QLabel("χρόνος chronos: the measured interval (clockblock)   ·   "
+                                 "καιρός kairos: the moment the block strikes (blockclock)")
+        greek.setAlignment(QtCore.Qt.AlignCenter)
+        greek.setStyleSheet("color:#5a7891;font-size:10px;letter-spacing:1px;border:0")
+        greek.setToolTip("Greek keeps two words for time, and the oracle keeps both:\n"
+                         "• CHRONOS (χρόνος) — sequential, measured time: block intervals, averages, the 18-dp\n"
+                         "  blocktime ruler — clockblock's domain\n"
+                         "• KAIROS (καιρός) — the opportune, decisive moment: a block FOUND, difficulty struck,\n"
+                         "  a halving crossed — blockclock's domain\n"
+                         "Ten minutes is chronos; the block itself is kairos. Same vocabulary as LIQlocker\n"
+                         "(chronos-measured blocktime, kairos release) — the cypherpunk4096 standard.")
+        v.addWidget(greek)
         # ⇄ the ordinal connection, stated where the clock lives: the oracle numbers the
         # blocks; ordinal theory numbers the sats those blocks mint — one ordering, twice
         xlink = QtWidgets.QLabel("⇄ <a href='ord' style='color:#F7931A'>🜚 Ordinals</a> — ordinal theory numbers "
-                                 "every sat by the block order this clock keeps; block science below measures the "
-                                 "blocks whose sats carry the inscriptions")
+                                 "every sat by the block order this clock keeps; an inscription is kairos "
+                                 "made permanent in chronos order")
         xlink.setAlignment(QtCore.Qt.AlignCenter)
         xlink.setStyleSheet("color:#5a7891;font-size:10px;border:0")
-        xlink.setToolTip("Open the 🜚 Ordinals tab — same chain, same ordering: the oracle counts blocks, "
-                         "ordinals count the sats inside them")
+        xlink.setToolTip("Open the 🜚 Ordinals tab — same chain, same ordering: the oracle counts blocks,\n"
+                         "ordinals count the sats inside them. In the oracle's vocabulary: inscribing is a\n"
+                         "KAIROS (the seized moment) that the chain then carries forever in CHRONOS "
+                         "(the measured block order).")
         xlink.linkActivated.connect(lambda _: goto_tab(self, "ords"))
         v.addWidget(xlink)
         # ANTI-CLOCKBLOCK: never trust one clock. Tip height/time are cross-checked across
@@ -5955,11 +5971,12 @@ class OrdinalsTab(QtWidgets.QWidget):
         # ⇄ the oracle connection, stated where the sats live: every sat is numbered by
         # the block order the ₿TC.oracle keeps — the same ordering, read from the other end
         xlink = QtWidgets.QLabel("⇄ <a href='oracle' style='color:#00BFFF'>₿TC.oracle</a> — every sat here is "
-                                 "numbered by the block order the oracle's ₿LOCKCLOCK keeps; its ₿lock science "
-                                 "measures the blocks these inscriptions ride in")
+                                 "numbered by the block order the oracle's ₿LOCKCLOCK keeps; inscribing is "
+                                 "kairos (the seized moment), the sat's number is chronos (the measured order)")
         xlink.setStyleSheet("color:#5a7891;font-size:10px;border:0")
-        xlink.setToolTip("Open the ₿TC.oracle tab — same chain, same ordering: ordinals count the sats, "
-                         "the oracle counts (and measures) the blocks that mint them")
+        xlink.setToolTip("Open the ₿TC.oracle tab — same chain, same ordering: ordinals count the sats,\n"
+                         "the oracle counts (and measures) the blocks that mint them. χρόνος chronos =\n"
+                         "the measured interval · καιρός kairos = the decisive moment — the oracle keeps both.")
         xlink.linkActivated.connect(lambda _: goto_tab(self, "oracle"))
         v.addWidget(xlink)
         top = QtWidgets.QHBoxLayout()
