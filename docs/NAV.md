@@ -76,7 +76,7 @@ New here? Start with **[../README.md](../README.md)** then **[../USAGE.md](../US
 | [inspiration-bitnodes.md](inspiration-bitnodes.md) | Bitnodes review — ideas BANKON borrows |
 | [reference/bitnodes/README.md](reference/bitnodes/README.md) | Local Bitnodes source reference (MIT) |
 | [upstream/README.md](upstream/README.md) | Local copies of key Bitcoin Core docs |
-| [cypherpunk4096/bitcoin](https://github.com/cypherpunk4096/bitcoin) | **Shipped Bitcoin Core, pinned** — fork of bitcoin/bitcoin; branch `bankon-v31.0` = the upstream `v31.0` tag BANKON BTC WaaS v0.0.2 runs against |
+| [cypherpunk4096/bitcoin](https://github.com/cypherpunk4096/bitcoin) | **Shipped Bitcoin Core, pinned** — fork of bitcoin/bitcoin; the immutable `v31.0` tag = the exact version BANKON BTC WaaS v0.0.2 runs against |
 | [cypherpunk4096/pay2play](https://github.com/cypherpunk4096/pay2play) | **pay2play** (separate project) — pay to play: a confirmed BTC payment IS the login. $50 full-chain delivery (tip-attested) · $99+$1 lifetime WaaS membership · wallet-signature auth (cryptossh concept in-house) · FireFTP/FireSSH lineage |
 | [upstream/descriptors.md](upstream/descriptors.md) · [upstream/psbt.md](upstream/psbt.md) · [upstream/multisig-tutorial.md](upstream/multisig-tutorial.md) | Descriptors · PSBT · multisig |
 | [upstream/offline-signing-tutorial.md](upstream/offline-signing-tutorial.md) · [upstream/managing-wallets.md](upstream/managing-wallets.md) | Offline signing · wallet management |

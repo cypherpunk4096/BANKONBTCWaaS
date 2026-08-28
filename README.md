@@ -24,8 +24,8 @@
 >
 > **Shipped version, pinned:** the exact Bitcoin Core this release runs against is
 > forked at [cypherpunk4096/bitcoin](https://github.com/cypherpunk4096/bitcoin)
-> (branch `bankon-v31.0` = the upstream `v31.0` tag) — an auditable snapshot that
-> can't drift under BANKON BTC WaaS v0.0.2.
+> (the immutable `v31.0` tag, [releases/tag/v31.0](https://github.com/cypherpunk4096/bitcoin/releases/tag/v31.0)) —
+> an auditable snapshot that can't drift under BANKON BTC WaaS v0.0.2.
 
 > ### ⚡ Effortless — one command
 > ```bash
