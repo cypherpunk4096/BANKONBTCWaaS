@@ -218,6 +218,8 @@ See [ROADMAP.md](docs/ROADMAP.md) and [TODO.md](docs/TODO.md).
 
 **User sovereignty:** you own your filesystem and may do anything you deem appropriate with it — no license term here restricts what you do to your own files. BANKON is non-custodial and never phones home.
 
+**In plain words:** do what the fuck you want — `dothefuck:`. (That's the marketing voice; the licence terms are in [LICENSE](LICENSE) and the reasons in [POLICY.md](POLICY.md).)
+
 **Run it on free foundations:** [Alpine](https://alpinelinux.org/downloads/) · [Debian](https://www.debian.org/distrib/) · [OpenBSD](https://www.openbsd.org/).
 
 Wallets implement the **BTC Standard** — https://github.com/cypherpunk2048

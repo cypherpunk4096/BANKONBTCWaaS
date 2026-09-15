@@ -43,7 +43,12 @@ BANKON is a tool you run on hardware you own. Accordingly:
   [docs/security.md](docs/security.md)): keys are minted client-side, the node holds only
   watch-only descriptors, signing is local.
 - **No phone-home.** The software runs entirely on infrastructure you control and makes
-  no telemetry or callback to BANKON.
+  no telemetry or callback to BANKON. It never phones home.
+
+**In plain words** — the marketing, comedian-zone reading of the BANKON licence: **do what the
+fuck you want**, spelled `dothefuck:`. That is the spirit, not the licence text: what you do
+with your own copy and your own filesystem is yours, and the copyleft terms above still apply
+when you *redistribute* modified encryption code.
 
 The GPLv3's copyleft constrains *redistribution of modified encryption code* (you must
 pass on the same freedoms) — it does **not** constrain your private use or what you do to

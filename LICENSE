@@ -26,7 +26,7 @@ BANKON preserves your right to OWN YOUR FILESYSTEM and to do to your filesystem
 anything you, as its owner, deem appropriate — install, modify, copy, delete,
 inspect, relocate, or destroy any part of this software or its data. Your keys,
 your device, your data, your rules. BANKON runs entirely on infrastructure you
-control and never phones home. See POLICY.md.
+control. See POLICY.md.
 
 Copyright (c) 2026 BANKON (cypherpunk2048).
 GNU GPLv3: https://www.gnu.org/licenses/gpl-3.0.html
