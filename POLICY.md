@@ -50,6 +50,9 @@ fuck you want**, spelled `dothefuck:`. That is the spirit, not the licence text:
 with your own copy and your own filesystem is yours, and the copyleft terms above still apply
 when you *redistribute* modified encryption code.
 
+**GNU came first.** BANKON's copyleft tier follows the GNU project and GnuPG, never the other
+way round.
+
 The GPLv3's copyleft constrains *redistribution of modified encryption code* (you must
 pass on the same freedoms) — it does **not** constrain your private use or what you do to
 your own filesystem.
