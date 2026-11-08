@@ -9,10 +9,20 @@
 # proposal that authorises it; and when the council changes, the master is rotated (vault.rekey), so a
 # removed executive's old share opens nothing.
 #
-# A share is sealed to its seat: the holder signs an enrolment message with the seat's wallet
-# (EIP-191 personal_sign), and the share is encrypted (AES-256-GCM) under HKDF-SHA512 of that
-# signature. Wallets sign deterministically (RFC 6979), so the holder reproduces the signature to open
-# it; a leaked envelope is useless without the seat's wallet.
+# A share is sealed to its seat, under two keys the seat holds: its wallet and its ML-KEM key.
+#
+#   envelope v2 (hybrid, the default): the holder signs an enrolment message with the seat's wallet
+#   (EIP-191 personal_sign) that names its ML-KEM-768 public key (FIPS 203). Genesis encapsulates to
+#   that key, and the share is encrypted (AES-256-GCM) under HKDF-SHA512 of the signature AND the
+#   ML-KEM shared secret. Opening needs the wallet (to reproduce the deterministic RFC 6979
+#   signature) and the seat's ML-KEM seed (to decapsulate).
+#   envelope v1 (classical, only when asked for): the key is HKDF of the signature alone. A quantum
+#   computer that recovers the seat's secp256k1 key from its public key can recompute that signature,
+#   so a v1 envelope harvested today could be opened then. v1 envelopes still open; genesis makes
+#   them only with allow_classical=True.
+#
+# The ML-KEM key is derived from a 32-byte seed the holder keeps offline (24 BIP-39 words), kept
+# apart from the wallet: a key derived from the wallet would fall with it.
 """
     council = Council.from_chain(rpc, roles_contract)          # online: export the DAIO council
     council.save("council.json")
@@ -42,9 +52,15 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from . import shamir
 from .evm import keccak256, recover_personal_sign
 
-VERSION = "1.0.0"
+VERSION = "2.0.0"
+ENVELOPE_V1 = "1.0.0"
+ENVELOPE_V2 = "2.0.0"
 MASTER_BYTES = 64
 DAIO_INFO = b"bankon-overseer-daio-v1"
+KEM = "ML-KEM-768"                        # FIPS 203, NIST category 3
+KEM_EK_BYTES = 1184
+PQ_SEED_BYTES = 32
+_PQ_SEED_DOMAIN = b"bankon-daio-mlkem768-seed-v1"
 
 # DAIO ExecutiveRoles.ExecutiveRole (0 = NONE) and its default role weights in basis points
 SEATS = ["CEO", "CISO", "CRO", "CFO", "CPO", "COO", "CTO", "CLO"]
@@ -150,9 +166,96 @@ class Council:
         return cls(seats, {"chainId": int(chain, 16), "contract": roles_contract, "block": int(block, 16)})
 
 
+# ── the seat's ML-KEM key (FIPS 203) ────────────────────────────────────────────────────────────────
+def _mlkem():
+    """cryptography's ML-KEM (OpenSSL), when this build has it; None otherwise."""
+    try:
+        from cryptography.hazmat.primitives.asymmetric import mlkem
+        mlkem.MLKEM768PrivateKey.from_seed_bytes
+        return mlkem
+    except Exception:
+        return None
+
+
+def pq_available() -> bool:
+    return _mlkem() is not None
+
+
+def _need_mlkem():
+    m = _mlkem()
+    if m is None:
+        raise DaioError("ML-KEM is not available: hybrid envelopes need a `cryptography` with ML-KEM "
+                        "(pip install --user --upgrade cryptography)")
+    return m
+
+
+def _pq_seed_bytes(seed) -> bytes:
+    """The seat's seed, as 64 hex characters or 24 BIP-39 words."""
+    if isinstance(seed, (bytes, bytearray)):
+        b = bytes(seed)
+    else:
+        t = str(seed).strip()
+        if len(t.split()) == 24:
+            try:
+                from embit import bip39
+                b = bip39.mnemonic_to_bytes(t)
+            except Exception:
+                raise DaioError("the ML-KEM seed's 24 words do not check")
+        else:
+            try:
+                b = bytes.fromhex(t[2:] if t.startswith("0x") else t)
+            except ValueError:
+                raise DaioError("the ML-KEM seed is neither 64 hex characters nor 24 words")
+    if len(b) != PQ_SEED_BYTES:
+        raise DaioError(f"the ML-KEM seed is {PQ_SEED_BYTES} bytes")
+    return b
+
+
+def _pq_private(seed):
+    # the FIPS 203 key-generation seed d || z (64 bytes), expanded from the holder's 32 bytes
+    fips_seed = hashlib.shake_256(_PQ_SEED_DOMAIN + _pq_seed_bytes(seed)).digest(64)
+    return _need_mlkem().MLKEM768PrivateKey.from_seed_bytes(fips_seed)
+
+
+def pq_fingerprint(ek: bytes) -> str:
+    return hashlib.sha256(ek).hexdigest()
+
+
+def pq_public_key(seed) -> bytes:
+    return _pq_private(seed).public_key().public_bytes_raw()
+
+
+def pq_keygen() -> dict:
+    """A seat's ML-KEM key: the seed (keep it OFFLINE, apart from the wallet) and the public key
+    (it goes into the enrolment)."""
+    seed = os.urandom(PQ_SEED_BYTES)
+    ek = pq_public_key(seed)
+    try:
+        from embit import bip39
+        words = bip39.mnemonic_from_bytes(seed)
+    except Exception:
+        words = None
+    return {"kem": KEM, "seed": seed.hex(), "words": words, "mlkem_ek": ek.hex(), "fingerprint": pq_fingerprint(ek)}
+
+
+def _enrolment(value) -> Tuple[str, Optional[bytes]]:
+    """An enrolment is the seat's signature, or {"signature": …, "mlkem_ek": …} with its ML-KEM key."""
+    if isinstance(value, dict):
+        sig = value.get("signature", "")
+        ek = value.get("mlkem_ek")
+        ekb = bytes.fromhex(ek) if ek else None
+        if ekb is not None and len(ekb) != KEM_EK_BYTES:
+            raise DaioError(f"an {KEM} public key is {KEM_EK_BYTES} bytes")
+        return sig, ekb
+    return str(value), None
+
+
 # ── messages a seat signs ───────────────────────────────────────────────────────────────────────────
-def enrolment_message(ceremony: str, role: str, address: str) -> str:
-    return (f"BANKON-VAULT DAIO ceremony {ceremony}\nseat: {role}\naddress: {address.lower()}\n"
+def enrolment_message(ceremony: str, role: str, address: str, mlkem_fingerprint: Optional[str] = None) -> str:
+    """What a seat signs to enrol. With its ML-KEM key's fingerprint, the signature binds that key to
+    the seat, so whoever runs genesis cannot seal the seat's share to another key."""
+    kem = f"{KEM} key: {mlkem_fingerprint}\n" if mlkem_fingerprint else ""
+    return (f"BANKON-VAULT DAIO ceremony {ceremony}\nseat: {role}\naddress: {address.lower()}\n{kem}"
             f"I hold this seat's share of the vault for the DAIO. Signing moves nothing.")
 
 
@@ -170,31 +273,62 @@ def _check_sig(message: str, signature: str, address: str, what: str):
 
 
 # ── envelopes: a share sealed to its seat ───────────────────────────────────────────────────────────
+def _sig_bytes(enrol_sig: str) -> bytes:
+    return bytes.fromhex(enrol_sig[2:] if enrol_sig.startswith("0x") else enrol_sig)
+
+
 def _wrap_key(ceremony: str, role: str, address: str, enrol_sig: str) -> bytes:
-    sig = bytes.fromhex(enrol_sig[2:] if enrol_sig.startswith("0x") else enrol_sig)
+    """v1: the signature alone (classical; see the header)."""
     return HKDF(algorithm=SHA512(), length=32, salt=hashlib.sha256(ceremony.encode()).digest(),
-                info=b"bankon-daio-envelope-v1:" + role.encode() + b":" + address.lower().encode()).derive(sig)
+                info=b"bankon-daio-envelope-v1:" + role.encode() + b":" + address.lower().encode()).derive(_sig_bytes(enrol_sig))
 
 
-def _aad(ceremony, role, address) -> bytes:
-    return f"{ceremony}|{role}|{address.lower()}".encode()
+def _wrap_key_v2(ceremony: str, role: str, address: str, enrol_sig: str, ss: bytes, fp: str) -> bytes:
+    """v2: the signature and the ML-KEM shared secret, both required. If either primitive falls, the
+    other still stands."""
+    return HKDF(algorithm=SHA512(), length=32, salt=hashlib.sha256(ceremony.encode()).digest(),
+                info=b"bankon-daio-envelope-v2:" + role.encode() + b":" + address.lower().encode() + b":" + fp.encode()
+                ).derive(_sig_bytes(enrol_sig) + ss)
 
 
-def seal(ceremony: str, seat: Seat, enrol_sig: str, payload: dict) -> dict:
+def _aad(ceremony, role, address, fp: Optional[str] = None) -> bytes:
+    return f"{ceremony}|{role}|{address.lower()}".encode() + (f"|{KEM}:{fp}".encode() if fp else b"")
+
+
+def seal(ceremony: str, seat: Seat, enrol_sig: str, payload: dict, mlkem_ek: Optional[bytes] = None) -> dict:
     nonce = os.urandom(12)
-    ct = AESGCM(_wrap_key(ceremony, seat.role, seat.address, enrol_sig)).encrypt(
-        nonce, json.dumps(payload).encode(), _aad(ceremony, seat.role, seat.address))
-    return {"version": VERSION, "ceremony": ceremony, "role": seat.role, "address": seat.address,
-            "nonce": nonce.hex(), "ct": ct.hex()}
+    data = json.dumps(payload).encode()
+    if mlkem_ek is None:
+        ct = AESGCM(_wrap_key(ceremony, seat.role, seat.address, enrol_sig)).encrypt(
+            nonce, data, _aad(ceremony, seat.role, seat.address))
+        return {"version": ENVELOPE_V1, "ceremony": ceremony, "role": seat.role, "address": seat.address,
+                "nonce": nonce.hex(), "ct": ct.hex()}
+    fp = pq_fingerprint(mlkem_ek)
+    ss, kem_ct = _need_mlkem().MLKEM768PublicKey.from_public_bytes(mlkem_ek).encapsulate()
+    key = _wrap_key_v2(ceremony, seat.role, seat.address, enrol_sig, ss, fp)
+    ct = AESGCM(key).encrypt(nonce, data, _aad(ceremony, seat.role, seat.address, fp))
+    return {"version": ENVELOPE_V2, "ceremony": ceremony, "role": seat.role, "address": seat.address,
+            "kem": KEM, "mlkem_ek_fp": fp, "kem_ct": kem_ct.hex(), "nonce": nonce.hex(), "ct": ct.hex()}
 
 
-def unseal(envelope: dict, enrol_sig: str) -> dict:
+def unseal(envelope: dict, enrol_sig: str, pq_seed=None) -> dict:
+    role, fp = envelope.get("role"), envelope.get("mlkem_ek_fp")
+    if fp:
+        if pq_seed is None:
+            raise DaioError(f"{role}: this envelope is hybrid: it opens with the seat's wallet AND its ML-KEM seed")
+        dk = _pq_private(pq_seed)
+        if pq_fingerprint(dk.public_key().public_bytes_raw()) != fp:
+            raise DaioError(f"{role}: that ML-KEM seed is not this seat's key")
+        ss = dk.decapsulate(bytes.fromhex(envelope["kem_ct"]))
+        key = _wrap_key_v2(envelope["ceremony"], role, envelope["address"], enrol_sig, ss, fp)
+        aad = _aad(envelope["ceremony"], role, envelope["address"], fp)
+    else:
+        key = _wrap_key(envelope["ceremony"], role, envelope["address"], enrol_sig)
+        aad = _aad(envelope["ceremony"], role, envelope["address"])
     try:
-        pt = AESGCM(_wrap_key(envelope["ceremony"], envelope["role"], envelope["address"], enrol_sig)).decrypt(
-            bytes.fromhex(envelope["nonce"]), bytes.fromhex(envelope["ct"]),
-            _aad(envelope["ceremony"], envelope["role"], envelope["address"]))
+        pt = AESGCM(key).decrypt(bytes.fromhex(envelope["nonce"]), bytes.fromhex(envelope["ct"]), aad)
     except Exception:
-        raise DaioError(f"{envelope.get('role')}: the envelope does not open with that signature")
+        raise DaioError(f"{role}: the envelope does not open with that signature" + (" and seed" if fp else ""))
     return json.loads(pt)
 
 
@@ -232,6 +366,8 @@ class DaioManifest:
     veto_commitments: Dict[str, str]
     created: int
     version: str = VERSION
+    kem: str = ""                                                    # "ML-KEM-768" for hybrid envelopes
+    kem_fingerprints: Dict[str, str] = field(default_factory=dict)   # role → sha256 of its ML-KEM key
 
     def to_dict(self):
         return dict(self.__dict__)
@@ -241,20 +377,32 @@ class DaioManifest:
         return cls(**{k: d[k] for k in cls.__dataclass_fields__ if k in d})
 
 
-def genesis(council: Council, enrolments: Dict[str, str], ceremony: str,
-            master: Optional[bytes] = None) -> Tuple[Dict[str, dict], DaioManifest]:
+def genesis(council: Council, enrolments: Dict[str, object], ceremony: str,
+            master: Optional[bytes] = None, allow_classical: bool = False) -> Tuple[Dict[str, dict], DaioManifest]:
     """Make a 64-byte master (or take one, for rotation), split it among the council's share-holding
-    seats by the DAIO's rules, and seal each seat's part to its wallet. Returns ({role: envelope},
-    manifest). Run AIR-GAPPED. The master is not returned and is wiped here."""
+    seats by the DAIO's rules, and seal each seat's part to its wallet and its ML-KEM key. Returns
+    ({role: envelope}, manifest). Run AIR-GAPPED. The master is not returned and is wiped here.
+
+    enrolments: {role: {"signature": …, "mlkem_ek": hex}}. A seat enrolled with a bare signature gets a
+    classical (v1) envelope only if allow_classical is True; otherwise genesis refuses it."""
     holders = council.holders
     if len(holders) < 3:
         raise DaioError("a DAIO ceremony needs at least three voting seats")
     if not ceremony or not all(c in "0123456789abcdef" for c in ceremony):
         raise DaioError("genesis needs the ceremony id the seats enrolled for (new_ceremony())")
+    sigs, eks = {}, {}
     for s in holders:                                   # every holder enrolled, by its own wallet
         if s.role not in enrolments:
             raise DaioError(f"{s.role} has not enrolled")
-        _check_sig(enrolment_message(ceremony, s.role, s.address), enrolments[s.role], s.address, s.role)
+        sig, ek = _enrolment(enrolments[s.role])
+        if ek is None and not allow_classical:
+            raise DaioError(f"{s.role} enrolled without an {KEM} key: its envelope would be classical, and a quantum "
+                            f"computer could open it (enrol with `daio pq-keygen`, or pass allow_classical=True)")
+        if ek is not None:
+            _need_mlkem()
+        _check_sig(enrolment_message(ceremony, s.role, s.address, pq_fingerprint(ek) if ek else None),
+                   sig, s.address, s.role)
+        sigs[s.role], eks[s.role] = sig, ek
     veto = [s.role for s in holders if s.veto]
     m = bytearray(master if master is not None else os.urandom(MASTER_BYTES))
     if len(m) != MASTER_BYTES:
@@ -274,13 +422,15 @@ def genesis(council: Council, enrolments: Dict[str, str], ceremony: str,
         payload = {"share": enc}
         if s.role in pieces:
             payload["veto_piece"] = pieces[s.role].hex()
-        envelopes[s.role] = seal(ceremony, s, enrolments[s.role], payload)
+        envelopes[s.role] = seal(ceremony, s, sigs[s.role], payload, eks[s.role])
     weight_total = sum(s.weight for s in holders)
     manifest = DaioManifest(
         ceremony=ceremony, council=council.to_dict(), threshold=k, total=len(holders),
         weight_total=weight_total, weight_required=supermajority(weight_total), veto=veto,
         master_fingerprint=fingerprint, share_commitments=commits,
-        veto_commitments={r: _fp(p) for r, p in pieces.items()}, created=int(time.time()))
+        veto_commitments={r: _fp(p) for r, p in pieces.items()}, created=int(time.time()),
+        kem=KEM if any(eks.values()) else "",
+        kem_fingerprints={r: pq_fingerprint(ek) for r, ek in eks.items() if ek is not None})
     _wipe(m)
     return envelopes, manifest
 
@@ -306,7 +456,7 @@ class Session:
     def message(self) -> str:
         return approval_message(self.manifest.ceremony, self.proposal, self.action, self.payload)
 
-    def present(self, role: str, envelope: dict, enrol_sig: str, approval_sig: str) -> dict:
+    def present(self, role: str, envelope: dict, enrol_sig: str, approval_sig: str, pq_seed=None) -> dict:
         if time.time() > self.expires:
             self.wipe()
             raise DaioError("the session has expired")
@@ -316,9 +466,12 @@ class Session:
         if envelope.get("ceremony") != self.manifest.ceremony or envelope.get("role") != role \
                 or envelope.get("address", "").lower() != seat.address.lower():
             raise DaioError(f"{role}: the envelope is not this seat's, for this ceremony")
-        _check_sig(enrolment_message(self.manifest.ceremony, role, seat.address), enrol_sig, seat.address, f"{role} enrolment")
+        want_fp = self.manifest.kem_fingerprints.get(role)
+        if want_fp and envelope.get("mlkem_ek_fp") != want_fp:        # a hybrid seat cannot be presented as classical
+            raise DaioError(f"{role}: the manifest seals this seat with {self.manifest.kem}; the envelope does not match")
+        _check_sig(enrolment_message(self.manifest.ceremony, role, seat.address, want_fp), enrol_sig, seat.address, f"{role} enrolment")
         _check_sig(self.message(), approval_sig, seat.address, f"{role} approval of proposal {self.proposal}")
-        payload = unseal(envelope, enrol_sig)
+        payload = unseal(envelope, enrol_sig, pq_seed)
         if _commit(role, payload["share"].encode()) != self.manifest.share_commitments[role]:
             raise DaioError(f"{role}: the share does not match the manifest")
         if role in self.manifest.veto:
@@ -337,7 +490,8 @@ class Session:
         return {"ceremony": self.manifest.ceremony, "proposal": self.proposal, "action": self.action,
                 "presented": sorted(self._shares), "shares": len(self._shares), "threshold": self.manifest.threshold,
                 "weight": self.weight(), "weight_required": self.manifest.weight_required,
-                "veto_missing": missing_veto, "ready": self.ready(), "expires": int(self.expires)}
+                "veto_missing": missing_veto, "ready": self.ready(), "expires": int(self.expires),
+                "kem": self.manifest.kem or "none (classical envelopes)"}
 
     def ready(self) -> bool:
         return (len(self._shares) >= self.manifest.threshold and self.weight() >= self.manifest.weight_required
@@ -403,7 +557,8 @@ def new_ceremony() -> str:
     return os.urandom(8).hex()
 
 
-def rotate(vault, session: Session, new_council: Council, new_enrolments: Dict[str, str], ceremony: str):
+def rotate(vault, session: Session, new_council: Council, new_enrolments: Dict[str, object], ceremony: str,
+           allow_classical: bool = False):
     """The council changed: with the CURRENT quorum's session ready, make a new master for the new
     council and rekey the vault to it, so the old shares (a removed executive's included) open nothing.
     Returns (envelopes, manifest) for the new council. AIR-GAPPED."""
@@ -412,7 +567,8 @@ def rotate(vault, session: Session, new_council: Council, new_enrolments: Dict[s
     vault.unlock(DaioOverseer(session, vault._salt))
     new_master = bytearray(os.urandom(MASTER_BYTES))
     try:
-        envelopes, manifest = genesis(new_council, new_enrolments, ceremony=ceremony, master=bytes(new_master))
+        envelopes, manifest = genesis(new_council, new_enrolments, ceremony=ceremony, master=bytes(new_master),
+                                      allow_classical=allow_classical)
         vault.rekey(_MasterOverseer(new_master, vault._salt))
         return envelopes, manifest
     finally:

@@ -7,7 +7,7 @@
 #   bankon-vault list
 #   bankon-vault sign --id btc.seed --psbt <base64|-@file>               # per-sign approval; prints signed PSBT
 #   bankon-vault serve [--port 8099]                                     # signing oracle (loopback)
-#   bankon-vault daio council|enrol|genesis|approve-message|serve        # the DAIO ceremony (bankon_vault/daio.py)
+#   bankon-vault daio council|pq-keygen|enrol|genesis|approve-message|serve   # the DAIO ceremony (bankon_vault/daio.py)
 from __future__ import annotations
 
 import argparse
@@ -64,7 +64,9 @@ def main(argv=None):
     tb.add_argument("--file", default=os.path.expanduser("~/.bankon-vault.tomb")); tb.add_argument("--mount", default=DEFAULT_PATH)
     ce = sub.add_parser("ceremony"); ce.add_argument("--threshold", type=int, default=3); ce.add_argument("--total", type=int, default=5)
     dg = sub.add_parser("daio", help="the DAIO ceremony: a vault whose quorum is the DAIO's executive council")
-    dg.add_argument("daio_cmd", choices=["council", "enrol", "genesis", "approve-message", "serve"])
+    dg.add_argument("daio_cmd", choices=["council", "pq-keygen", "enrol", "genesis", "approve-message", "serve"])
+    dg.add_argument("--pq-keys", default="pq-keys.json", help='{"CISO": "<ML-KEM public key, hex>", …} from each seat\'s `daio pq-keygen`')
+    dg.add_argument("--allow-classical", action="store_true", help="seal seats without an ML-KEM key (v1 envelopes, not quantum-safe)")
     dg.add_argument("--rpc"); dg.add_argument("--roles", help="the DAIO's ExecutiveRoles contract")
     dg.add_argument("--council", default="council.json"); dg.add_argument("--ceremony")
     dg.add_argument("--enrolments", default="enrolments.json", help='{"CISO": "0x…signature", …}')
@@ -152,15 +154,36 @@ def main(argv=None):
             for st in c.seats:
                 print(f"  {st.role:5} {st.address}  weight {st.weight}{'  veto' if st.veto else ''}")
             return
+        if args.daio_cmd == "pq-keygen":
+            # run by EACH seat holder, on their own machine: the seed never leaves it
+            k = daio.pq_keygen()
+            print(f"{k['kem']} key for one DAIO seat")
+            print(f"  public key (give it to the ceremony, in pq-keys.json): {k['mlkem_ek']}")
+            print(f"  fingerprint: {k['fingerprint']}")
+            print(f"\n  SEED: keep it OFFLINE, apart from your wallet. Opening your envelope needs both.")
+            print(f"  {k['words'] or k['seed']}")
+            if k["words"]:
+                print(f"  (the same seed in hex: {k['seed']})")
+            return
         council = daio.Council.load(args.council) if args.daio_cmd in ("enrol", "genesis") else None
         if args.daio_cmd == "enrol":
             cid = args.ceremony or daio.new_ceremony()
-            msgs = {st.role: daio.enrolment_message(cid, st.role, st.address) for st in council.holders}
+            pq = json.load(open(args.pq_keys)) if os.path.exists(args.pq_keys) else {}
+            missing = [st.role for st in council.holders if st.role not in pq]
+            if missing and not args.allow_classical:
+                sys.exit(f"no ML-KEM key for {', '.join(missing)} in {args.pq_keys}: each seat runs `daio pq-keygen` "
+                         f"and hands in its public key (or pass --allow-classical for v1 envelopes, not quantum-safe)")
+            msgs, template = {}, {}
+            for st in council.holders:
+                ek = pq.get(st.role)
+                fp = daio.pq_fingerprint(bytes.fromhex(ek)) if ek else None
+                msgs[st.role] = daio.enrolment_message(cid, st.role, st.address, fp)
+                template[st.role] = {"signature": "0x…", "mlkem_ek": ek} if ek else "0x…"
             path = os.path.join(args.out, f"enrol-{cid}.json")
             with open(path, "w") as f:
-                json.dump({"ceremony": cid, "messages": msgs}, f, indent=2)
+                json.dump({"ceremony": cid, "messages": msgs, "enrolments_template": template}, f, indent=2)
             print(f"ceremony {cid}: each seat signs its message with its own wallet (personal_sign) → {path}")
-            print(f"collect the signatures as {args.enrolments}: {{\"CISO\": \"0x…\", …}}; the CEO holds no share")
+            print(f"collect them as {args.enrolments} (the template is in that file); the CEO holds no share")
             return
         if args.daio_cmd == "genesis":
             from .core import BankonVault
@@ -171,7 +194,8 @@ def main(argv=None):
             enrol = json.load(open(args.enrolments))
             master = bytearray(os.urandom(daio.MASTER_BYTES))
             try:
-                envelopes, manifest = daio.genesis(council, enrol, ceremony=args.ceremony, master=bytes(master))
+                envelopes, manifest = daio.genesis(council, enrol, ceremony=args.ceremony, master=bytes(master),
+                                                   allow_classical=args.allow_classical)
                 if args.adopt:                               # bind this vault to the DAIO's master
                     v = _open(args.path)
                     n = v.rekey(daio._MasterOverseer(master, open(v.salt_file, "rb").read()))
@@ -189,6 +213,7 @@ def main(argv=None):
             print(f"\n⚰️  DAIO GENESIS {args.ceremony}: {manifest.threshold}-of-{manifest.total} seats, "
                   f"weight ≥ {manifest.weight_required}/{manifest.weight_total}, veto: {', '.join(manifest.veto) or 'none'}")
             print(f"   manifest (public, no secret) and one sealed envelope per seat → {args.out}/")
+            print(f"   envelopes: " + (f"hybrid (wallet + {manifest.kem})" if manifest.kem else "CLASSICAL (v1): a quantum computer could open them"))
             return
         if args.daio_cmd == "approve-message":
             m = daio.DaioManifest.from_dict(json.load(open(args.manifest)))

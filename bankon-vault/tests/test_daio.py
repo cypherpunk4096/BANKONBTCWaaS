@@ -43,20 +43,39 @@ KEYS = {role: 1000 + i for i, role in enumerate(daio.SEATS)}        # CEO … CL
 ADDR = {role: _pub_addr(d) for role, d in KEYS.items()}
 
 
+# each seat's ML-KEM seed, derived from its test key so a replaced seat gets its own
+def pqseed(d: int) -> bytes:
+    return hashlib.sha256(b"test-daio-pq-seed" + d.to_bytes(32, "big")).digest()
+
+
+def pq_ek(d: int) -> bytes:
+    return daio.pq_public_key(pqseed(d))
+
+
+def emsg(cid: str, role: str, keys=KEYS, address=None) -> str:
+    """The v2 enrolment message: it names the seat's ML-KEM key."""
+    return daio.enrolment_message(cid, role, address or _pub_addr(keys[role]), daio.pq_fingerprint(pq_ek(keys[role])))
+
+
 def council(keys=KEYS):
     return Council([Seat(r, _pub_addr(d), daio.DEFAULT_WEIGHTS[r], r in daio.DEFAULT_VETO) for r, d in keys.items()],
                    {"chainId": 31337, "contract": "0x" + "11" * 20, "block": 1})
 
 
 def enrol(c: Council, cid: str, keys=KEYS):
+    return {s.role: {"signature": sign(keys[s.role], emsg(cid, s.role, keys, s.address)), "mlkem_ek": pq_ek(keys[s.role]).hex()}
+            for s in c.holders}
+
+
+def enrol_classical(c: Council, cid: str, keys=KEYS):
     return {s.role: sign(keys[s.role], daio.enrolment_message(cid, s.role, s.address)) for s in c.holders}
 
 
 def present_all(session, envelopes, roles, keys=KEYS):
     m = session.manifest
     for r in roles:
-        session.present(r, envelopes[r], sign(keys[r], daio.enrolment_message(m.ceremony, r, session.council.seat(r).address)),
-                        sign(keys[r], session.message()))
+        session.present(r, envelopes[r], sign(keys[r], emsg(m.ceremony, r, keys, session.council.seat(r).address)),
+                        sign(keys[r], session.message()), pqseed(keys[r]))
 
 
 # ── tests ──────────────────────────────────────────────────────────────────────────────────────────
@@ -79,7 +98,7 @@ def test_genesis_follows_the_daio_rules():
 
 def test_genesis_refuses_a_wrong_enrolment():
     c = council(); cid = daio.new_ceremony(); e = enrol(c, cid)
-    e["CFO"] = sign(KEYS["CTO"], daio.enrolment_message(cid, "CFO", ADDR["CFO"]))   # signed by the wrong seat
+    e["CFO"] = dict(e["CFO"], signature=sign(KEYS["CTO"], emsg(cid, "CFO")))   # signed by the wrong seat
     try:
         genesis(c, e, cid); assert False
     except DaioError as x:
@@ -117,20 +136,20 @@ def test_refusals():
     s = Session(m, 9, "unlock")
     # approval of another proposal
     try:
-        s.present("CFO", env["CFO"], sign(KEYS["CFO"], daio.enrolment_message(cid, "CFO", ADDR["CFO"])),
-                  sign(KEYS["CFO"], daio.approval_message(cid, 10, "unlock"))); assert False
+        s.present("CFO", env["CFO"], sign(KEYS["CFO"], emsg(cid, "CFO")),
+                  sign(KEYS["CFO"], daio.approval_message(cid, 10, "unlock")), pqseed(KEYS["CFO"])); assert False
     except DaioError as x:
         assert "approval" in str(x)
     # one seat's envelope presented as another's
     try:
-        s.present("CTO", env["CFO"], sign(KEYS["CTO"], daio.enrolment_message(cid, "CTO", ADDR["CTO"])),
-                  sign(KEYS["CTO"], s.message())); assert False
+        s.present("CTO", env["CFO"], sign(KEYS["CTO"], emsg(cid, "CTO")),
+                  sign(KEYS["CTO"], s.message()), pqseed(KEYS["CTO"])); assert False
     except DaioError as x:
         assert "not this seat" in str(x)
     # a tampered envelope does not open
     bad = dict(env["COO"]); ct = bytearray(bytes.fromhex(bad["ct"])); ct[3] ^= 1; bad["ct"] = ct.hex()
     try:
-        s.present("COO", bad, sign(KEYS["COO"], daio.enrolment_message(cid, "COO", ADDR["COO"])), sign(KEYS["COO"], s.message())); assert False
+        s.present("COO", bad, sign(KEYS["COO"], emsg(cid, "COO")), sign(KEYS["COO"], s.message()), pqseed(KEYS["COO"])); assert False
     except DaioError as x:
         assert "does not open" in str(x)
     # the CEO holds no share
@@ -228,7 +247,7 @@ def test_the_service_runs_a_session_end_to_end():
             assert post(f"{base}/{sid}/unlock")[0] == 400                 # not yet a quorum
             for r in ["CISO", "CRO", "CFO", "CPO", "COO"]:
                 code, st = post(f"{base}/{sid}/present", {"role": r, "envelope": env[r],
-                    "enrol_signature": sign(KEYS[r], daio.enrolment_message(cid, r, ADDR[r])), "approval_signature": sign(KEYS[r], msg)})
+                    "enrol_signature": sign(KEYS[r], emsg(cid, r)), "approval_signature": sign(KEYS[r], msg), "pq_seed": pqseed(KEYS[r]).hex()})
                 assert code == 200, st
             assert st["ready"] and st["weight"] == 5400
             code, u = post(f"{base}/{sid}/unlock")
@@ -277,8 +296,8 @@ def test_a_sign_session_signs_only_the_approved_transaction_then_locks():
             if payload:
                 assert f"payload: {payload}" in msg
             for r in quorum:
-                svc.present(sid, {"role": r, "envelope": env[r], "enrol_signature": sign(KEYS[r], daio.enrolment_message(cid, r, ADDR[r])),
-                                  "approval_signature": sign(KEYS[r], msg)})
+                svc.present(sid, {"role": r, "envelope": env[r], "enrol_signature": sign(KEYS[r], emsg(cid, r)),
+                                  "approval_signature": sign(KEYS[r], msg), "pq_seed": pqseed(KEYS[r]).hex()})
             svc.unlock(sid)
             oracle = svc.oracles[sid]
             ch = oracle.challenge("btc.seed", psbt)
@@ -300,6 +319,108 @@ def test_a_sign_session_signs_only_the_approved_transaction_then_locks():
         Session(m, 1, "sign"); assert False                   # a sign session must name its PSBT
     except DaioError:
         pass
+
+
+# ── the post-quantum layer: ML-KEM-768 (FIPS 203) beside the wallet ──────────────────────────────────
+# One NIST ACVP key-generation vector (ML-KEM-768, internalProjection, usnistgov/ACVP-Server): the
+# backend must derive exactly this public key from d || z.
+
+
+def _acvp_vector():
+    path = os.environ.get("ACVP_MLKEM_KEYGEN")          # the JSON file, when the test host has it
+    if not path or not os.path.exists(path):
+        return None
+    for g in json.load(open(path))["testGroups"]:
+        if g["parameterSet"] == "ML-KEM-768":
+            return g["tests"][0]
+    return None
+
+
+def test_mlkem_keygen_matches_the_fips203_vectors_when_given():
+    t = _acvp_vector()
+    if t is None:
+        return                                           # set ACVP_MLKEM_KEYGEN to run it
+    from cryptography.hazmat.primitives.asymmetric import mlkem
+    k = mlkem.MLKEM768PrivateKey.from_seed_bytes(bytes.fromhex(t["d"] + t["z"]))
+    assert k.public_key().public_bytes_raw().hex().upper() == t["ek"].upper()
+
+
+def test_a_seat_key_is_reproducible_from_its_seed_and_words():
+    k = daio.pq_keygen()
+    assert len(bytes.fromhex(k["mlkem_ek"])) == daio.KEM_EK_BYTES
+    assert daio.pq_public_key(k["seed"]).hex() == k["mlkem_ek"]
+    if k["words"]:
+        assert len(k["words"].split()) == 24 and daio.pq_public_key(k["words"]).hex() == k["mlkem_ek"]
+    assert daio.pq_public_key(daio.pq_keygen()["seed"]).hex() != k["mlkem_ek"]
+
+
+def test_genesis_seals_hybrid_envelopes_and_records_the_keys():
+    c = council(); cid = daio.new_ceremony()
+    env, m = genesis(c, enrol(c, cid), cid)
+    assert m.kem == "ML-KEM-768" and set(m.kem_fingerprints) == {s.role for s in c.holders}
+    for r, e in env.items():
+        assert e["version"] == daio.ENVELOPE_V2 and e["mlkem_ek_fp"] == m.kem_fingerprints[r] and len(bytes.fromhex(e["kem_ct"])) == 1088
+
+
+def test_genesis_refuses_a_classical_seat_unless_asked():
+    c = council(); cid = daio.new_ceremony(); e = enrol(c, cid)
+    e["CFO"] = sign(KEYS["CFO"], daio.enrolment_message(cid, "CFO", ADDR["CFO"]))    # no ML-KEM key
+    try:
+        genesis(c, e, cid); assert False
+    except DaioError as x:
+        assert "CFO" in str(x) and "ML-KEM" in str(x)
+    env, m = genesis(c, e, cid, allow_classical=True)                               # only when asked
+    assert env["CFO"]["version"] == daio.ENVELOPE_V1 and "CFO" not in m.kem_fingerprints
+
+
+def test_an_attacker_with_the_wallet_key_but_not_the_seed_cannot_open_a_hybrid_envelope():
+    # the quantum adversary of a v1 envelope: it has recovered the seat's secp256k1 key from its public
+    # key, so it can reproduce the deterministic enrolment signature
+    c = council(); cid = daio.new_ceremony()
+    env, _ = genesis(c, enrol(c, cid), cid)
+    forged = sign(KEYS["CFO"], emsg(cid, "CFO"))
+    for seed in (None, os.urandom(32)):
+        try:
+            daio.unseal(env["CFO"], forged, seed); assert False
+        except DaioError as x:
+            assert "ML-KEM" in str(x)
+    assert "share" in daio.unseal(env["CFO"], forged, pqseed(KEYS["CFO"]))          # the holder, with both
+    # the same adversary DOES open a classical (v1) envelope: the weakness this layer removes
+    envc, _ = genesis(c, enrol_classical(c, cid), cid, allow_classical=True)
+    assert "share" in daio.unseal(envc["CFO"], sign(KEYS["CFO"], daio.enrolment_message(cid, "CFO", ADDR["CFO"])))
+
+
+def test_genesis_refuses_a_substituted_mlkem_key():
+    # whoever runs genesis swaps a seat's ML-KEM key for its own: the seat signed the fingerprint of the
+    # real key, so the enrolment no longer checks
+    c = council(); cid = daio.new_ceremony(); e = enrol(c, cid)
+    e["CRO"] = dict(e["CRO"], mlkem_ek=daio.pq_keygen()["mlkem_ek"])
+    try:
+        genesis(c, e, cid); assert False
+    except DaioError as x:
+        assert "CRO" in str(x)
+
+
+def test_a_hybrid_seat_cannot_be_downgraded_to_a_classical_envelope():
+    c = council(); cid = daio.new_ceremony()
+    env, m = genesis(c, enrol(c, cid), cid)
+    # an attacker substitutes a v1 envelope for the CTO, sealed under the reproducible signature alone
+    v1 = daio.seal(cid, c.seat("CTO"), sign(KEYS["CTO"], daio.enrolment_message(cid, "CTO", ADDR["CTO"])), {"share": "x"})
+    s = Session(m, 5, "unlock")
+    try:
+        s.present("CTO", v1, sign(KEYS["CTO"], daio.enrolment_message(cid, "CTO", ADDR["CTO"])), sign(KEYS["CTO"], s.message())); assert False
+    except DaioError as x:
+        assert "ML-KEM" in str(x)
+
+
+def test_classical_ceremonies_still_reconstitute():
+    c = council(); cid = daio.new_ceremony()
+    env, m = genesis(c, enrol_classical(c, cid), cid, allow_classical=True)
+    assert m.kem == "" and m.kem_fingerprints == {}
+    s = Session(m, 3, "unlock")
+    for r in ["CISO", "CRO", "CFO", "CPO", "COO"]:
+        s.present(r, env[r], sign(KEYS[r], daio.enrolment_message(cid, r, ADDR[r])), sign(KEYS[r], s.message()))
+    assert s.ready() and len(s.master()) == 64 and "classical" in s.status()["kem"]
 
 
 if __name__ == "__main__":

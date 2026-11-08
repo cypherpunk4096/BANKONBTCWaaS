@@ -49,6 +49,11 @@ their real capability, not the aspirational one.** So, honestly:
     (`.pqc.json`: KEM ciphertext + an ungrindable ss-commitment); the decapsulation key goes to
     the operator, offline. A KEM — not a PQC signature — because Falcon/ML-DSA signatures are
     randomized and cannot serve as deterministic key-derivation IKM.
+  - **Hybrid DAIO envelopes** (`daio.py`, envelope v2): each seat's share is sealed under HKDF of its
+    deterministic wallet signature **and** an ML-KEM-768 shared secret encapsulated to the seat's own
+    key, whose fingerprint the seat signs at enrolment. A v1 envelope (signature only) could be opened
+    by a quantum computer that recovers the seat's secp256k1 key; v2 needs the seat's ML-KEM seed as
+    well. Genesis refuses classical seats unless asked, and a v2 seat cannot be downgraded.
   - **ML-DSA (FIPS 204) identity + quorum** (`pqc_mldsa`, `chains/pqc.MLDSAAdapter`): Tier-Q
     identity keys, and `pqc_mldsa.make_verifier()` plugs into `PolicyEngine(verify_sig=…)` so
     **N-of-M signing approval is post-quantum** even while the BTC signature stays secp256k1.

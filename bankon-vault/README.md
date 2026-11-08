@@ -102,11 +102,21 @@ the vault opens only for the DAIO's executive council, by the DAIO's own rules.
   (≥ 2/3 of the council's weight, 4800 of 7200 by default) and the **veto seats' pieces** (CISO and CRO,
   `hasVetoPower` in the DAIO): the split master is `master ⊕ piece_CISO ⊕ piece_CRO`, so no quorum
   opens the vault without both.
-- **Shares sealed to seats.** Each executive enrols by signing a message naming the ceremony and the seat
-  with the seat's wallet (EIP-191). The share is sealed with AES-256-GCM under HKDF-SHA512 of that
-  signature; wallets sign deterministically (RFC 6979), so the holder reproduces it to open the envelope.
-  A leaked envelope is useless without the seat's wallet. Signatures are checked here with a
-  self-contained Keccak-256 and secp256k1 recovery (`evm.py`); nothing holds a private key.
+- **Shares sealed to seats, under two keys.** Each executive makes an **ML-KEM-768** key (FIPS 203,
+  `daio pq-keygen`): a 32-byte seed kept offline as 24 words, apart from the wallet, and a public key
+  handed to the ceremony. The executive then enrols by signing, with the seat's wallet (EIP-191), a
+  message naming the ceremony, the seat and the ML-KEM key's fingerprint, so whoever runs genesis cannot
+  seal the share to another key. Genesis encapsulates to that key, and the share is sealed with
+  AES-256-GCM under HKDF-SHA512 of the signature **and** the ML-KEM shared secret (envelope v2). Opening
+  needs the wallet (to reproduce the deterministic RFC 6979 signature) and the seed (to decapsulate).
+  Signatures are checked here with a self-contained Keccak-256 and secp256k1 recovery (`evm.py`);
+  nothing holds a private key.
+- **Why both.** A v1 envelope was sealed under the signature alone. A quantum computer that recovers a
+  seat's secp256k1 key from its public key (which any of its signatures reveals) can recompute that
+  signature, so a v1 envelope harvested today could be opened then. With the ML-KEM secret in the key,
+  it needs the seed too. Genesis refuses a seat without an ML-KEM key unless `--allow-classical` asks
+  for v1; v1 envelopes still open, and a v2 seat cannot be presented with a v1 envelope. ML-KEM comes from
+  `cryptography`'s OpenSSL backend, whose key generation matches NIST's ACVP vectors.
 - **With the DAIO.** Every reconstitution names a DAIO proposal and an action; each holder signs approval
   of exactly that (`daio approve-message`). An `unlock` session opens the vault for signing within the
   vault's policy; a `sign` session also names the **sha256 of the one PSBT** the quorum approved, signs that
@@ -122,15 +132,21 @@ the vault opens only for the DAIO's executive council, by the DAIO's own rules.
 
 ```bash
 bankon-vault daio council --rpc $RPC --roles <ExecutiveRoles>       # online: the council → council.json
-bankon-vault daio enrol --council council.json                       # AIR-GAPPED: a ceremony id + one message per seat
-#   each seat signs its message with its own wallet → enrolments.json {"CISO": "0x…", …}
+bankon-vault daio pq-keygen                                          # EACH seat, on its own machine: ML-KEM seed (24 words, offline) + public key
+#   collect the public keys → pq-keys.json {"CISO": "<hex>", …}
+bankon-vault daio enrol --council council.json --pq-keys pq-keys.json  # AIR-GAPPED: a ceremony id + one message per seat
+#   each seat signs its message with its own wallet → enrolments.json {"CISO": {"signature": "0x…", "mlkem_ek": "<hex>"}, …}
 bankon-vault daio genesis --council council.json --ceremony <id> --enrolments enrolments.json --out daio/ [--adopt]
 #   → daio/daio-manifest.json (public) + daio/envelope-<SEAT>.json (one per seat); --adopt rekeys this vault to it
 bankon-vault daio approve-message --manifest daio/daio-manifest.json --proposal 42 --action unlock
 bankon-vault daio serve --port 8098                                  # the ceremony service
 ```
 
-Tested in `tests/test_daio.py` (10): the DAIO's rules at genesis, every 5-of-7 quorum (ready exactly when
+Tested in `tests/test_daio.py` (18). Post-quantum: a seat's key reproduced from its seed and words, and
+(with `ACVP_MLKEM_KEYGEN` pointing at NIST's vectors) matching FIPS 203; genesis sealing v2 and recording
+each key; refusing a classical seat unless asked, and a substituted ML-KEM key; an attacker holding a
+seat's wallet key but not its seed unable to open a v2 envelope, though it opens a v1 one; no downgrade
+of a v2 seat to a v1 envelope; classical ceremonies still reconstituting. And the original ten: the DAIO's rules at genesis, every 5-of-7 quorum (ready exactly when
 both veto seats are in it), a vault unlocked by the quorum, the refusals (an approval of another
 proposal, one seat's envelope presented as another's, a tampered envelope, the CEO), rotation retiring a
 removed executive, the council read from a stand-in `ExecutiveRoles` RPC, the service end to end, and a

@@ -9,7 +9,8 @@
 """
   POST /daio/session                {manifest, proposal, action[, payload_sha256]} → {session, message, expires}
   GET  /daio/session/<id>                                                 → status
-  POST /daio/session/<id>/present   {role, envelope, enrol_signature, approval_signature} → status
+  POST /daio/session/<id>/present   {role, envelope, enrol_signature, approval_signature[, pq_seed]} → status
+                                    (pq_seed: the seat's ML-KEM seed, 64 hex or 24 words, for a hybrid envelope)
   POST /daio/session/<id>/unlock                                          → {unlocked, fingerprint}
   POST /daio/session/<id>/challenge {entry_id, psbt_b64}                  → {nonce, message, expires_at}
   POST /daio/session/<id>/sign      {nonce, entry_id, psbt_b64}           → {signed_psbt}
@@ -64,7 +65,8 @@ class DaioService:
         return st
 
     def present(self, sid, body):
-        return self._get(sid).present(body["role"], body["envelope"], body["enrol_signature"], body["approval_signature"])
+        return self._get(sid).present(body["role"], body["envelope"], body["enrol_signature"], body["approval_signature"],
+                                      body.get("pq_seed"))
 
     def unlock(self, sid):
         s = self._get(sid)
