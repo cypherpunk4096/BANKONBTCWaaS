@@ -1,0 +1,21 @@
+#!/sbin/openrc-run
+# bankon-vault DAIO ceremony service for OpenRC hosts (Alpine, Devuan): loopback only, shares in RAM.
+# Settings in /etc/conf.d/bankon-vault-daio: BANKON_VAULT_USER, BANKON_VAULT_PATH, BANKON_VAULT_DIR, PORT.
+name="bankon-vault-daio"
+description="BANKON vault — DAIO ceremony service"
+: ${BANKON_VAULT_USER:=bankon}
+: ${BANKON_VAULT_DIR:=/home/${BANKON_VAULT_USER}/bankon-tools/bankon-vault}
+: ${BANKON_VAULT_PATH:=/home/${BANKON_VAULT_USER}/.bankon-vault}
+: ${PORT:=8098}
+command="/usr/bin/env"
+command_args="python3 -m bankon_vault.cli --path ${BANKON_VAULT_PATH} daio serve --port ${PORT}"
+command_user="${BANKON_VAULT_USER}"
+command_background="yes"
+directory="${BANKON_VAULT_DIR}"
+pidfile="/run/${RC_SVCNAME}.pid"
+rc_ulimit="-c 0"
+
+depend() {
+    need localmount
+    after net
+}

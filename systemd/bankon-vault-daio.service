@@ -1,0 +1,22 @@
+# bankon-vault DAIO ceremony service: the DAIO's executives complete reconstitution sessions here
+# (bankon-vault/bankon_vault/daio_service.py). Loopback only; shares live in RAM for one session.
+[Unit]
+Description=BANKON vault — DAIO ceremony service (quorum = the DAIO executive council)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/bankon-tools/bankon-vault
+ExecStart=/usr/bin/env python3 -m bankon_vault.cli --path %h/.bankon-vault daio serve --port 8098
+# Environment=BANKON_VAULT_TOKEN=change-me
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LimitCORE=0
+
+[Install]
+WantedBy=default.target

@@ -7,6 +7,7 @@
 #   bankon-vault list
 #   bankon-vault sign --id btc.seed --psbt <base64|-@file>               # per-sign approval; prints signed PSBT
 #   bankon-vault serve [--port 8099]                                     # signing oracle (loopback)
+#   bankon-vault daio council|enrol|genesis|approve-message|serve        # the DAIO ceremony (bankon_vault/daio.py)
 from __future__ import annotations
 
 import argparse
@@ -62,6 +63,15 @@ def main(argv=None):
     tb = sub.add_parser("tomb"); tb.add_argument("tomb_cmd", choices=["status", "open", "close"])
     tb.add_argument("--file", default=os.path.expanduser("~/.bankon-vault.tomb")); tb.add_argument("--mount", default=DEFAULT_PATH)
     ce = sub.add_parser("ceremony"); ce.add_argument("--threshold", type=int, default=3); ce.add_argument("--total", type=int, default=5)
+    dg = sub.add_parser("daio", help="the DAIO ceremony: a vault whose quorum is the DAIO's executive council")
+    dg.add_argument("daio_cmd", choices=["council", "enrol", "genesis", "approve-message", "serve"])
+    dg.add_argument("--rpc"); dg.add_argument("--roles", help="the DAIO's ExecutiveRoles contract")
+    dg.add_argument("--council", default="council.json"); dg.add_argument("--ceremony")
+    dg.add_argument("--enrolments", default="enrolments.json", help='{"CISO": "0x…signature", …}')
+    dg.add_argument("--manifest", default="daio-manifest.json"); dg.add_argument("--out", default=".")
+    dg.add_argument("--adopt", action="store_true", help="rekey the vault at --path to the new DAIO master")
+    dg.add_argument("--proposal", type=int); dg.add_argument("--action", default="unlock", choices=["unlock", "sign", "rotate"])
+    dg.add_argument("--port", type=int, default=8098); dg.add_argument("--net", default="main")
     mg = sub.add_parser("migrate"); mg.add_argument("--json"); mg.add_argument("--env"); mg.add_argument("--context", default="imported")
     fp = sub.add_parser("pqc-falcon"); fp.add_argument("pqc_cmd", choices=["status", "demo"]); fp.add_argument("--variant", default="Falcon-512")
     pq = sub.add_parser("pqc"); pq.add_argument("pqc_cmd", choices=["status", "enroll"]); pq.add_argument("--variant", default="ML-KEM-768")
@@ -130,6 +140,67 @@ def main(argv=None):
         print("\n   Write these down, distribute, and DESTROY this screen. Unlock later with any "
               f"{args.threshold} shares.")
         return
+
+    if args.cmd == "daio":
+        from . import daio
+        if args.daio_cmd == "council":
+            if not (args.rpc and args.roles):
+                sys.exit("daio council needs --rpc URL and --roles <ExecutiveRoles address>")
+            c = daio.Council.from_chain(args.rpc, args.roles)
+            c.save(args.council)
+            print(f"council of {len(c.seats)} seats at block {c.source['block']} (chain {c.source['chainId']}) → {args.council}")
+            for st in c.seats:
+                print(f"  {st.role:5} {st.address}  weight {st.weight}{'  veto' if st.veto else ''}")
+            return
+        council = daio.Council.load(args.council) if args.daio_cmd in ("enrol", "genesis") else None
+        if args.daio_cmd == "enrol":
+            cid = args.ceremony or daio.new_ceremony()
+            msgs = {st.role: daio.enrolment_message(cid, st.role, st.address) for st in council.holders}
+            path = os.path.join(args.out, f"enrol-{cid}.json")
+            with open(path, "w") as f:
+                json.dump({"ceremony": cid, "messages": msgs}, f, indent=2)
+            print(f"ceremony {cid}: each seat signs its message with its own wallet (personal_sign) → {path}")
+            print(f"collect the signatures as {args.enrolments}: {{\"CISO\": \"0x…\", …}}; the CEO holds no share")
+            return
+        if args.daio_cmd == "genesis":
+            from .core import BankonVault
+            if not args.ceremony:
+                sys.exit("daio genesis needs --ceremony (from `daio enrol`)")
+            if BankonVault.network_connected():
+                print("⚠  NETWORK IS CONNECTED. Run the DAIO genesis AIR-GAPPED (ICE AIRGAP). [Ctrl-C to abort]", file=sys.stderr)
+            enrol = json.load(open(args.enrolments))
+            master = bytearray(os.urandom(daio.MASTER_BYTES))
+            try:
+                envelopes, manifest = daio.genesis(council, enrol, ceremony=args.ceremony, master=bytes(master))
+                if args.adopt:                               # bind this vault to the DAIO's master
+                    v = _open(args.path)
+                    n = v.rekey(daio._MasterOverseer(master, open(v.salt_file, "rb").read()))
+                    v.lock()
+                    print(f"🔁 rekeyed {n} entr{'y' if n == 1 else 'ies'}: the vault now opens only by the DAIO's quorum")
+            finally:
+                for i in range(len(master)):
+                    master[i] = 0
+            os.makedirs(args.out, exist_ok=True)
+            with open(os.path.join(args.out, "daio-manifest.json"), "w") as f:
+                json.dump(manifest.to_dict(), f, indent=2)
+            for role, env in envelopes.items():
+                with open(os.path.join(args.out, f"envelope-{role}.json"), "w") as f:
+                    json.dump(env, f, indent=2)
+            print(f"\n⚰️  DAIO GENESIS {args.ceremony}: {manifest.threshold}-of-{manifest.total} seats, "
+                  f"weight ≥ {manifest.weight_required}/{manifest.weight_total}, veto: {', '.join(manifest.veto) or 'none'}")
+            print(f"   manifest (public, no secret) and one sealed envelope per seat → {args.out}/")
+            return
+        if args.daio_cmd == "approve-message":
+            m = daio.DaioManifest.from_dict(json.load(open(args.manifest)))
+            if args.proposal is None:
+                sys.exit("approve-message needs --proposal <DAIO proposal id>")
+            print(daio.approval_message(m.ceremony, args.proposal, args.action))
+            return
+        if args.daio_cmd == "serve":
+            from .daio_service import DaioService, serve
+            from .core import BankonVault
+            serve(DaioService(BankonVault(args.path), BitcoinAdapter(args.net), ApprovalGate(_cli_approve)), port=args.port)
+            return
 
     if args.cmd == "pqc-falcon":
         from . import pqc_falcon

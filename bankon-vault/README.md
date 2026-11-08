@@ -89,6 +89,53 @@ Migrating an old store? `migrate.py` imports a legacy JSON / `.env` (or an in-me
 bankon-vault migrate --json legacy.json           # or --env legacy.env
 ```
 
+### The DAIO ceremony — a vault whose quorum is the DAIO (`daio.py`, `daio_service.py`)
+A custom ceremony **from** and **with** the DAIO (Decentralized Autonomous Intelligence Organization):
+the vault opens only for the DAIO's executive council, by the DAIO's own rules.
+
+- **From the DAIO.** `daio council` reads the council from the DAIO's `ExecutiveRoles` contract —
+  `getRoleHolder(uint8)` and `roleWeights(uint8)` for the CEO and the Seven Soldiers (CISO, CRO, CFO,
+  CPO, COO, CTO, CLO) at one block — and writes `council.json` for the air-gapped ceremony.
+- **The DAIO's quorum.** The share-holding seats are those with a vote (the CEO's DAIO weight is 0: an
+  emergency override, not a vote, so the CEO holds no share). The threshold is the DAIO's 2/3
+  supermajority of those seats (5 of 7); reconstitution also needs the DAIO's weighted approval
+  (≥ 2/3 of the council's weight, 4800 of 7200 by default) and the **veto seats' pieces** (CISO and CRO,
+  `hasVetoPower` in the DAIO): the split master is `master ⊕ piece_CISO ⊕ piece_CRO`, so no quorum
+  opens the vault without both.
+- **Shares sealed to seats.** Each executive enrols by signing a message naming the ceremony and the seat
+  with the seat's wallet (EIP-191). The share is sealed with AES-256-GCM under HKDF-SHA512 of that
+  signature; wallets sign deterministically (RFC 6979), so the holder reproduces it to open the envelope.
+  A leaked envelope is useless without the seat's wallet. Signatures are checked here with a
+  self-contained Keccak-256 and secp256k1 recovery (`evm.py`); nothing holds a private key.
+- **With the DAIO.** Every reconstitution names a DAIO proposal and an action; each holder signs approval
+  of exactly that (`daio approve-message`). An `unlock` session opens the vault for signing within the
+  vault's policy; a `sign` session also names the **sha256 of the one PSBT** the quorum approved, signs that
+  transaction and no other, then locks the vault. When the council changes (an executive appointed or
+  removed), a `rotate` session lets the current quorum make a new master for the new council and
+  `rekey` the vault: the old shares, a removed executive's included, open nothing.
+- **As a service.** `daio serve` (loopback :8098; `systemd/bankon-vault-daio.service`,
+  `bankon-vault/openrc/bankon-vault-daio`) runs reconstitution sessions: executives present their
+  envelope, enrolment signature and approval one at a time, from wherever they sign; shares live in RAM
+  for one session (ten minutes) and are wiped when it is ready, expires or closes. Once unlocked, signing
+  goes through the same single-use, payload-bound challenge as the signing oracle, gated by the vault's
+  `PolicyEngine` with the DAIO quorum in the place of the person at a terminal.
+
+```bash
+bankon-vault daio council --rpc $RPC --roles <ExecutiveRoles>       # online: the council → council.json
+bankon-vault daio enrol --council council.json                       # AIR-GAPPED: a ceremony id + one message per seat
+#   each seat signs its message with its own wallet → enrolments.json {"CISO": "0x…", …}
+bankon-vault daio genesis --council council.json --ceremony <id> --enrolments enrolments.json --out daio/ [--adopt]
+#   → daio/daio-manifest.json (public) + daio/envelope-<SEAT>.json (one per seat); --adopt rekeys this vault to it
+bankon-vault daio approve-message --manifest daio/daio-manifest.json --proposal 42 --action unlock
+bankon-vault daio serve --port 8098                                  # the ceremony service
+```
+
+Tested in `tests/test_daio.py` (10): the DAIO's rules at genesis, every 5-of-7 quorum (ready exactly when
+both veto seats are in it), a vault unlocked by the quorum, the refusals (an approval of another
+proposal, one seat's envelope presented as another's, a tampered envelope, the CEO), rotation retiring a
+removed executive, the council read from a stand-in `ExecutiveRoles` RPC, the service end to end, and a
+`sign` session that signs only the approved PSBT and then locks.
+
 ### Residual-free — close clean, uninstall traceless
 - **Clean close:** `lock()` zeroizes the master `bytearray` **and `munlock`s** its pages; an **atexit
   hook auto-locks every live vault**, so even a crash or a forgotten `close()` never leaves an unlocked
